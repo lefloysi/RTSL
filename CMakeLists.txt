@@ -9,11 +9,12 @@ target_compile_features(rtsl PUBLIC cxx_std_17)
 target_include_directories(rtsl
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_sources(rtsl
     PRIVATE
-        
         
         
 )
@@ -35,6 +36,11 @@ target_link_libraries(rtslc
 )
 
 target_compile_features(rtslc PRIVATE cxx_std_17)
+
+target_include_directories(rtslc
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 
 set_target_properties(rtslc PROPERTIES
     CXX_EXTENSIONS OFF
