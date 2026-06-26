@@ -13,7 +13,9 @@ target_include_directories(rtsl
 
 target_sources(rtsl
     PRIVATE
-        src/rtsl.cpp
+        
+        
+        
 )
 
 set_target_properties(rtsl PROPERTIES
@@ -24,7 +26,7 @@ add_executable(rtslc)
 
 target_sources(rtslc
     PRIVATE
-        src/rtslc.cpp
+        
 )
 
 target_link_libraries(rtslc

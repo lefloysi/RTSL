@@ -58,4 +58,5 @@ RTSL_API void rtslDestroyLinker(rtsl_linker linker);
 #ifdef __cplusplus
 }
 #endif
+
 #endif /* RTSL_H */
