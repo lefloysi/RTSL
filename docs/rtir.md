@@ -104,7 +104,7 @@ Required reflection content per `rtslp`:
   (or empty), assigned `location`, and `has_location` (false for builtin
   slots that consume no location).
 - **`entry_table`** — one record per backend entry point. Carries the
-  4-letter stage entry name (`vert`, `frag`, `comp`), the canonical mangled
+  4-letter stage entry name (`vert`, `frag`), the canonical mangled
   symbol id, the SSA function id, the stage family, the parameter and return
   payload type ids, and the list of resource and stage-interface ids the
   entry transitively references.
@@ -395,4 +395,5 @@ introduced incrementally:
 6. `Backend/GlslBackend.cpp` is retired — Vulkan no longer goes through GLSL.
 
 Until those land, only this design is current; the rest of the codebase still
-reflects the old IR.
+reflects the old IR. Compute-stage support is intentionally out of scope for
+the v0.1 surface.

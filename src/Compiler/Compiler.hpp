@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Basic/Diagnostics.h"
-#include "Basic/SourceManager.h"
-#include "Serialization/Artifact.h"
+#include "Basic/Diagnostics.hpp"
+#include "Basic/SourceManager.hpp"
+#include "Serialization/Artifact.hpp"
 
 #include <string>
 #include <string_view>

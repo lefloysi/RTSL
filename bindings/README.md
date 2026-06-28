@@ -10,7 +10,8 @@ Each subdirectory is a binding of the RTSL public API to one host language.
 
 RTSL's primary user is `rtslc` (the compiler CLI). The C binding exists so
 embedding apps can drive compilation from C/C++ host code without depending
-on the internal C++ headers.
+on the internal C++ headers. For v0.1, this binding is the supported host API;
+other language bindings remain planned work.
 
 CMake is used only here and at the repository root for the compiler
 library and CLI; everything else is orchestrated from

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "Basic/SourceManager.h"
+#include "Basic/SourceManager.hpp"
 
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@ public:
     void clear();
     void report(int code, DiagnosticSeverity severity, SourceLocation location,
                 std::string source_name, std::string message);
+    void render(std::ostream &out, const SourceManager *sources = nullptr) const;
 
     [[nodiscard]] bool has_error() const;
     [[nodiscard]] const std::vector<Diagnostic> &diagnostics() const { return diagnostics_; }

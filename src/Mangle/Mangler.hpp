@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AST/AST.h"
+#include "AST/AST.hpp"
 
 #include <string>
 #include <string_view>
@@ -11,7 +11,7 @@ namespace rtsl {
 // Shape-agnostic mangling input. The Mangler used to take IRFunction
 // directly, which tied it to the old (statement-string) IR. Decoupling it
 // lets the SSA IR own its own mangled-name slot (StringId) while the
-// frontend / IR-gen pass computes the value through this small adapter.
+// frontend / IR-gen pass derives the value through this small adapter.
 struct MangleInput {
     std::string_view name;                 // authored display name
     StageKind stage = StageKind::none;     // none for ordinary functions

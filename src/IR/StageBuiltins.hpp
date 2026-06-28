@@ -6,7 +6,7 @@
 
 namespace rtsl {
 
-// One member of a builtin carrier struct (RtVertex/RtFragment/RtCompute). The
+// One member of a builtin carrier struct (RtVertex/RtFragment). The
 // carrier is passed by reference into a stage entry; the generated runtime
 // copies inputs in before the call and outputs out after it.
 struct StageBuiltin {

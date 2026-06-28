@@ -83,8 +83,7 @@ typedef enum rtsl_stage {
     RTSL_STAGE_NONE = 0,
     RTSL_STAGE_VERTEX = 1,
     RTSL_STAGE_FRAGMENT = 2,
-    RTSL_STAGE_GEOMETRY = 3,
-    RTSL_STAGE_COMPUTE = 4
+    RTSL_STAGE_GEOMETRY = 3
 } rtsl_stage;
 
 typedef enum rtsl_stage_role {
@@ -107,7 +106,7 @@ typedef struct rtsl_stage_variable {
 
 /* Reflection metadata describing a backend entry point. */
 typedef struct rtsl_entry_info {
-    const char* name;  /* 4-letter backend entry name (vert/frag/geom/comp) or user name */
+    const char* name;  /* 4-letter backend entry name (vert/frag/geom) or user name */
     rtsl_stage stage;
 } rtsl_entry_info;
 

@@ -1,4 +1,4 @@
-#include "Mangle/Mangler.h"
+#include "Mangle/Mangler.hpp"
 
 #include <cstdint>
 #include <string_view>

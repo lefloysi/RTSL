@@ -1,8 +1,8 @@
-#include "IR/IR.h"
+#include "IR/IR.hpp"
 
-#include "IR/StageBuiltins.h"
-#include "IR/UniformLowering.h"
-#include "Mangle/Mangler.h"
+#include "IR/StageBuiltins.hpp"
+#include "IR/UniformLowering.hpp"
+#include "Mangle/Mangler.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -426,35 +426,43 @@ public:
         fn_.body.push_back(std::move(label));
     }
 
-    void lower_statement(const std::string &raw) {
-        const std::string trimmed = trim(raw);
-        if (trimmed.empty()) return;
-        std::string statement = trimmed;
-        if (statement.back() == ';') statement.pop_back();
-        statement = trim(statement);
-
-        if (statement.starts_with("return ") || statement == "return") {
-            lower_return(statement);
+    void lower_statement(const Decl::BodyStatement &statement) {
+        switch (statement.kind) {
+        case Decl::BodyStatementKind::return_stmt:
+            lower_return(statement.expr);
+            return;
+        case Decl::BodyStatementKind::block:
+            for (const auto &child : statement.children) {
+                lower_statement(child);
+            }
+            return;
+        case Decl::BodyStatementKind::if_stmt:
+            lower_if(statement);
+            return;
+        case Decl::BodyStatementKind::while_stmt:
+            lower_while(statement);
+            return;
+        case Decl::BodyStatementKind::do_stmt:
+            lower_do_while(statement);
+            return;
+        case Decl::BodyStatementKind::for_stmt:
+            lower_for(statement);
+            return;
+            for (const auto &child : statement.children) {
+                lower_statement(child);
+            }
+            return;
+        case Decl::BodyStatementKind::assignment:
+            lower_assign(statement.lhs, statement.expr);
+            return;
+        case Decl::BodyStatementKind::declaration:
+            lower_decl(statement.type_name, statement.name, statement.expr);
+            return;
+        case Decl::BodyStatementKind::expression:
+        case Decl::BodyStatementKind::unknown:
+            lower_expression(statement.expr);
             return;
         }
-        // var-decl-with-init from synthesized wrappers: "Type name = expr"
-        // The current parser captures "Vertex out = call()" as a single
-        // statement with whitespace; detect by leading word that's a known type.
-        if (const auto decl = try_decl(statement); decl) {
-            lower_decl(decl->type, decl->name, decl->init);
-            return;
-        }
-        // Assignment: lhs '=' rhs
-        if (const auto eq = find_top_level_eq(statement); eq != std::string::npos) {
-            lower_assign(statement.substr(0, eq), statement.substr(eq + 1));
-            return;
-        }
-        // Bare expression / call — emit and drop the result.
-        Lex lex(statement);
-        Tok first = lex.next();
-        if (first.kind == TokKind::end) return;
-        ExprParser parser(*this, statement);
-        parser.parse_expression();
     }
 
     // Compute final-pass id for the function's parameter list now that
@@ -485,50 +493,168 @@ private:
         bool is_pointer = false;
     };
 
-    struct DeclMatch {
-        std::string type;
-        std::string name;
-        std::string init;
-    };
-
-    // Very limited: matches "<TypeName> <ident> = <expr>". Used for the stage
-    // wrappers' "OutputType out = vert_main(...)" line.
-    [[nodiscard]] std::optional<DeclMatch> try_decl(const std::string &stmt) {
-        Lex lex(stmt);
-        const Tok type = lex.next();
-        if (type.kind != TokKind::ident) return std::nullopt;
-        if (!types_.find(type.text)) return std::nullopt;
-        const Tok name = lex.next();
-        if (name.kind != TokKind::ident) return std::nullopt;
-        const Tok eq = lex.next();
-        if (eq.kind != TokKind::eq) return std::nullopt;
-        // Remaining text is the initializer.
-        const auto eq_pos = stmt.find('=');
-        return DeclMatch{type.text, name.text, trim(stmt.substr(eq_pos + 1))};
-    }
-
-    [[nodiscard]] static std::size_t find_top_level_eq(const std::string &stmt) {
-        int depth = 0;
-        for (std::size_t i = 0; i < stmt.size(); ++i) {
-            const char c = stmt[i];
-            if (c == '(') ++depth;
-            else if (c == ')') --depth;
-            else if (c == '=' && depth == 0) {
-                // Skip "==".
-                if (i + 1 < stmt.size() && stmt[i + 1] == '=') { ++i; continue; }
-                return i;
-            }
-        }
-        return std::string::npos;
-    }
-
     static std::string trim(std::string_view text) {
         while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.remove_prefix(1);
         while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.remove_suffix(1);
         return std::string(text);
     }
 
-    void lower_decl(const std::string &type_name, const std::string &local_name, const std::string &init) {
+    void lower_expression(const Decl::Expr &expr) {
+        const Value v = lower_expr(expr);
+        (void)v;
+    }
+
+    void emit_branch(IRId target) {
+        IRInstruction inst;
+        inst.op = IROp::Branch;
+        inst.operands = {target};
+        fn_.body.push_back(std::move(inst));
+    }
+
+    void emit_branch_conditional(IRId cond, IRId true_label, IRId false_label) {
+        IRInstruction inst;
+        inst.op = IROp::BranchConditional;
+        inst.operands = {cond, true_label, false_label};
+        fn_.body.push_back(std::move(inst));
+    }
+
+    IRId emit_label() {
+        IRInstruction label;
+        label.op = IROp::Label;
+        label.result_id = builder_.fresh_id();
+        fn_.body.push_back(std::move(label));
+        return fn_.body.back().result_id;
+    }
+
+    void lower_if(const Decl::BodyStatement &statement) {
+        const Value cond = lower_expr(statement.expr);
+        IRInstruction merge;
+        merge.op = IROp::SelectionMerge;
+        merge.operands = {builder_.fresh_id()};
+        fn_.body.push_back(std::move(merge));
+        const IRId merge_label = fn_.body.back().operands.front();
+        const IRId then_label = builder_.fresh_id();
+        const IRId else_label = builder_.fresh_id();
+        emit_branch_conditional(cond.id, then_label, else_label);
+        IRInstruction then_inst;
+        then_inst.op = IROp::Label;
+        then_inst.result_id = then_label;
+        fn_.body.push_back(std::move(then_inst));
+        for (const auto &child : statement.children) lower_statement(child);
+        emit_branch(merge_label);
+        IRInstruction else_inst;
+        else_inst.op = IROp::Label;
+        else_inst.result_id = else_label;
+        fn_.body.push_back(std::move(else_inst));
+        for (const auto &child : statement.else_children) lower_statement(child);
+        emit_branch(merge_label);
+        IRInstruction merge_inst;
+        merge_inst.op = IROp::Label;
+        merge_inst.result_id = merge_label;
+        fn_.body.push_back(std::move(merge_inst));
+    }
+
+    void lower_while(const Decl::BodyStatement &statement) {
+        const IRId merge_label = builder_.fresh_id();
+        const IRId head_label = builder_.fresh_id();
+        const IRId body_label = builder_.fresh_id();
+        emit_branch(head_label);
+
+        IRInstruction head_inst;
+        head_inst.op = IROp::Label;
+        head_inst.result_id = head_label;
+        fn_.body.push_back(std::move(head_inst));
+
+        IRInstruction merge;
+        merge.op = IROp::LoopMerge;
+        merge.operands = {merge_label, head_label};
+        fn_.body.push_back(std::move(merge));
+        const Value cond = lower_expr(statement.expr);
+        emit_branch_conditional(cond.id, body_label, merge_label);
+
+        IRInstruction body_inst;
+        body_inst.op = IROp::Label;
+        body_inst.result_id = body_label;
+        fn_.body.push_back(std::move(body_inst));
+        for (const auto &child : statement.children) lower_statement(child);
+        emit_branch(head_label);
+
+        IRInstruction merge_inst;
+        merge_inst.op = IROp::Label;
+        merge_inst.result_id = merge_label;
+        fn_.body.push_back(std::move(merge_inst));
+    }
+
+    void lower_do_while(const Decl::BodyStatement &statement) {
+        const IRId body_label = builder_.fresh_id();
+        const IRId cond_label = builder_.fresh_id();
+        const IRId merge_label = builder_.fresh_id();
+        emit_branch(body_label);
+
+        IRInstruction body_inst;
+        body_inst.op = IROp::Label;
+        body_inst.result_id = body_label;
+        fn_.body.push_back(std::move(body_inst));
+        for (const auto &child : statement.children) lower_statement(child);
+        emit_branch(cond_label);
+
+        IRInstruction cond_inst;
+        cond_inst.op = IROp::Label;
+        cond_inst.result_id = cond_label;
+        fn_.body.push_back(std::move(cond_inst));
+
+        const Value cond = lower_expr(statement.expr);
+        IRInstruction merge;
+        merge.op = IROp::SelectionMerge;
+        merge.operands = {merge_label};
+        fn_.body.push_back(std::move(merge));
+        emit_branch_conditional(cond.id, body_label, merge_label);
+
+        IRInstruction merge_inst;
+        merge_inst.op = IROp::Label;
+        merge_inst.result_id = merge_label;
+        fn_.body.push_back(std::move(merge_inst));
+    }
+
+    void lower_for(const Decl::BodyStatement &statement) {
+        const IRId head_label = builder_.fresh_id();
+        const IRId body_label = builder_.fresh_id();
+        const IRId continue_label = builder_.fresh_id();
+        const IRId merge_label = builder_.fresh_id();
+        emit_branch(head_label);
+
+        IRInstruction head_inst;
+        head_inst.op = IROp::Label;
+        head_inst.result_id = head_label;
+        fn_.body.push_back(std::move(head_inst));
+
+        IRInstruction merge;
+        merge.op = IROp::LoopMerge;
+        merge.operands = {merge_label, continue_label};
+        fn_.body.push_back(std::move(merge));
+        const Value cond = statement.expr.kind == Decl::Expr::Kind::unknown ? Value{builder_.fresh_id(), types_.find("bool")} : lower_expr(statement.expr);
+        emit_branch_conditional(cond.id, body_label, merge_label);
+
+        IRInstruction body_inst;
+        body_inst.op = IROp::Label;
+        body_inst.result_id = body_label;
+        fn_.body.push_back(std::move(body_inst));
+        for (const auto &child : statement.children) lower_statement(child);
+        emit_branch(continue_label);
+
+        IRInstruction continue_inst;
+        continue_inst.op = IROp::Label;
+        continue_inst.result_id = continue_label;
+        fn_.body.push_back(std::move(continue_inst));
+        emit_branch(head_label);
+
+        IRInstruction merge_inst;
+        merge_inst.op = IROp::Label;
+        merge_inst.result_id = merge_label;
+        fn_.body.push_back(std::move(merge_inst));
+    }
+
+    void lower_decl(const std::string &type_name, const std::string &local_name, const Decl::Expr &init) {
         const IRId type_id = types_.find(type_name);
         const IRId ptr_ty = types_.pointer_to(type_id, StorageClass::Function);
         IRInstruction var;
@@ -545,9 +671,8 @@ private:
         local.is_pointer = true;
         locals_[local_name] = local;
 
-        if (!init.empty()) {
-            ExprParser parser(*this, init);
-            const Value v = parser.parse_expression();
+        if (init.kind != Decl::Expr::Kind::unknown) {
+            const Value v = lower_expr(init);
             IRInstruction store;
             store.op = IROp::Store;
             store.operands = {local.id, v.id};
@@ -555,9 +680,8 @@ private:
         }
     }
 
-    void lower_assign(const std::string &lhs, const std::string &rhs) {
+    void lower_assign(const std::string &lhs, const Decl::Expr &rhs) {
         const std::string lhs_t = trim(lhs);
-        const std::string rhs_t = trim(rhs);
 
         // Stage-I/O write target (synthesized by the wrapper):
         //   __rt_write_output(N) = expr
@@ -566,8 +690,7 @@ private:
             const auto open = lhs_t.find('(');
             const auto close = lhs_t.rfind(')');
             const u32 location = static_cast<u32>(std::stoul(lhs_t.substr(open + 1, close - open - 1)));
-            ExprParser parser(*this, rhs_t);
-            const Value v = parser.parse_expression();
+            const Value v = lower_expr(rhs);
             IRInstruction inst;
             inst.op = IROp::WriteOutput;
             inst.operands = {v.id};
@@ -579,8 +702,7 @@ private:
             const auto first_q = lhs_t.find('"');
             const auto last_q = lhs_t.rfind('"');
             const std::string name = lhs_t.substr(first_q + 1, last_q - first_q - 1);
-            ExprParser parser(*this, rhs_t);
-            const Value v = parser.parse_expression();
+            const Value v = lower_expr(rhs);
             IRInstruction inst;
             inst.op = IROp::WriteBuiltin;
             inst.operands = {v.id};
@@ -591,8 +713,7 @@ private:
 
         // Plain assignment to a local or a member of a struct local.
         // We support: `name = expr` and `name.member = expr` and `this.member = expr`.
-        ExprParser rhs_parser(*this, rhs_t);
-        const Value v = rhs_parser.parse_expression();
+        const Value v = lower_expr(rhs);
 
         Lex lex(lhs_t);
         const Tok head = lex.next();
@@ -722,20 +843,71 @@ private:
         return {};
     }
 
-    void lower_return(const std::string &statement) {
-        if (statement == "return") {
+    void lower_return(const Decl::Expr &expr) {
+        if (expr.kind == Decl::Expr::Kind::unknown) {
             IRInstruction r;
             r.op = IROp::Return;
             fn_.body.push_back(std::move(r));
             return;
         }
-        const std::string expr = trim(statement.substr(std::string("return ").size()));
-        ExprParser parser(*this, expr);
-        const Value v = parser.parse_expression();
+        const Value v = lower_expr(expr);
         IRInstruction r;
         r.op = IROp::ReturnValue;
         r.operands = {v.id};
         fn_.body.push_back(std::move(r));
+    }
+
+    Value lower_expr(const Decl::Expr &expr) {
+        switch (expr.kind) {
+        case Decl::Expr::Kind::name:
+            return emit_name(expr.text);
+        case Decl::Expr::Kind::literal_int: {
+            Value v;
+            v.id = constant_int(std::stoi(expr.text));
+            v.type_id = types_.find("i32");
+            return v;
+        }
+        case Decl::Expr::Kind::literal_float: {
+            Value v;
+            v.id = constant_float(std::stof(expr.text));
+            v.type_id = types_.find("f32");
+            return v;
+        }
+        case Decl::Expr::Kind::unary:
+            if (!expr.children.empty()) {
+                const Value child = lower_expr(expr.children.front());
+                return expr.op == "-" ? emit_negate(child) : child;
+            }
+            return {};
+        case Decl::Expr::Kind::binary:
+            if (expr.children.size() == 2) {
+                const Value lhs = lower_expr(expr.children[0]);
+                const Value rhs = lower_expr(expr.children[1]);
+                if (expr.op == "+") return emit_binop(IROp::FAdd, lhs, rhs);
+                if (expr.op == "-") return emit_binop(IROp::FSub, lhs, rhs);
+                if (expr.op == "*") return emit_mul_like(TokKind::star, lhs, rhs);
+                if (expr.op == "/") return emit_mul_like(TokKind::slash, lhs, rhs);
+                if (expr.op == "%") return emit_mul_like(TokKind::percent, lhs, rhs);
+            }
+            return {};
+        case Decl::Expr::Kind::call:
+            if (!expr.children.empty()) {
+                std::vector<Value> args;
+                for (std::size_t i = 1; i < expr.children.size(); ++i) {
+                    args.push_back(lower_expr(expr.children[i]));
+                }
+                return emit_call(expr.children.front().text, args);
+            }
+            return {};
+        case Decl::Expr::Kind::member:
+            if (!expr.children.empty()) {
+                return emit_member_access(lower_expr(expr.children.front()), expr.text);
+            }
+            return {};
+        case Decl::Expr::Kind::unknown:
+            return {};
+        }
+        return {};
     }
 
     [[nodiscard]] static std::optional<u32> vector_component(const std::string &name) {
@@ -782,130 +954,6 @@ private:
         const IRId ty = types_.find("f32");
         return builder_.intern_constant(sig, IROp::ConstantFloat, ty, {}, {bits});
     }
-
-    // ------------------------------------------------------------------------
-    // ExprParser: Pratt-style expression parser. Emits SSA instructions into
-    // the surrounding function body and returns the result Value (id + type).
-    // ------------------------------------------------------------------------
-
-    class ExprParser {
-    public:
-        ExprParser(FunctionLowerer &owner, const std::string &source) : o(owner), lex_(source) {}
-
-        Value parse_expression() { return parse_add(); }
-
-    private:
-        Value parse_add() {
-            Value lhs = parse_mul();
-            while (true) {
-                const Tok t = lex_.peek();
-                if (t.kind != TokKind::plus && t.kind != TokKind::minus) break;
-                lex_.next();
-                Value rhs = parse_mul();
-                const IROp op = (t.kind == TokKind::plus) ? IROp::FAdd : IROp::FSub;
-                lhs = o.emit_binop(op, lhs, rhs);
-            }
-            return lhs;
-        }
-
-        Value parse_mul() {
-            Value lhs = parse_unary();
-            while (true) {
-                const Tok t = lex_.peek();
-                if (t.kind != TokKind::star && t.kind != TokKind::slash &&
-                    t.kind != TokKind::percent) break;
-                lex_.next();
-                Value rhs = parse_unary();
-                lhs = o.emit_mul_like(t.kind, lhs, rhs);
-            }
-            return lhs;
-        }
-
-        Value parse_unary() {
-            const Tok t = lex_.peek();
-            if (t.kind == TokKind::minus) {
-                lex_.next();
-                Value v = parse_postfix();
-                return o.emit_negate(v);
-            }
-            if (t.kind == TokKind::plus) {
-                lex_.next();
-                return parse_postfix();
-            }
-            return parse_postfix();
-        }
-
-        Value parse_postfix() {
-            Value v = parse_primary();
-            while (true) {
-                const Tok t = lex_.peek();
-                if (t.kind == TokKind::dot) {
-                    lex_.next();
-                    const Tok field = lex_.next();
-                    if (field.kind != TokKind::ident) break;
-                    v = o.emit_member_access(v, field.text);
-                } else if (t.kind == TokKind::scope) {
-                    // namespace `::` — resolved by uniform mangling before we
-                    // got here; if we see one now, treat it as a member access.
-                    lex_.next();
-                    const Tok name = lex_.next();
-                    if (name.kind != TokKind::ident) break;
-                    v = o.emit_member_access(v, name.text);
-                } else {
-                    break;
-                }
-            }
-            return v;
-        }
-
-        Value parse_primary() {
-            const Tok t = lex_.next();
-            if (t.kind == TokKind::number_int) {
-                const i32 n = static_cast<i32>(std::stoi(t.text));
-                Value v;
-                v.id = o.constant_int(n);
-                v.type_id = o.types_.find("i32");
-                return v;
-            }
-            if (t.kind == TokKind::number_float) {
-                const float f = std::stof(t.text);
-                Value v;
-                v.id = o.constant_float(f);
-                v.type_id = o.types_.find("f32");
-                return v;
-            }
-            if (t.kind == TokKind::lparen) {
-                Value v = parse_expression();
-                const Tok close = lex_.next();
-                (void)close; // expect rparen
-                return v;
-            }
-            if (t.kind == TokKind::ident) {
-                // Function call?
-                const Tok la = lex_.peek();
-                if (la.kind == TokKind::lparen) {
-                    lex_.next();
-                    std::vector<Value> args;
-                    if (lex_.peek().kind != TokKind::rparen) {
-                        while (true) {
-                            args.push_back(parse_expression());
-                            const Tok sep = lex_.peek();
-                            if (sep.kind == TokKind::comma) { lex_.next(); continue; }
-                            break;
-                        }
-                    }
-                    const Tok close = lex_.next();
-                    (void)close; // expect rparen
-                    return o.emit_call(t.text, args);
-                }
-                return o.emit_name(t.text);
-            }
-            return Value{};
-        }
-
-        FunctionLowerer &o;
-        Lex lex_;
-    };
 
     // Name lookup that handles locals, parameters, struct field names (when
     // shadowed by the implicit `this`), and global uniform variables.
@@ -1219,7 +1267,6 @@ private:
 StageKind detect_stage(std::string_view name) {
     if (name.starts_with("vert")) return StageKind::vertex;
     if (name.starts_with("frag")) return StageKind::fragment;
-    if (name.starts_with("comp")) return StageKind::compute;
     return StageKind::none;
 }
 
@@ -1227,7 +1274,6 @@ std::string globals_type_name(StageKind stage) {
     switch (stage) {
     case StageKind::vertex: return "vert_globals";
     case StageKind::fragment: return "frag_globals";
-    case StageKind::compute: return "comp_globals";
     case StageKind::none: return "globals";
     }
     return "globals";
@@ -1500,10 +1546,9 @@ IRModule lower_to_ir(const SemanticModule &module, DiagnosticEngine *diagnostics
         lowerer.begin_entry_block();
         lowerer.emit_function_parameters(parameters);
         for (const auto &statement : symbol.body_statements) {
-            // Pre-lower source-level uniform refs to mangled binding names so
-            // the expression parser only ever sees u_xxx in identifier slots.
-            const std::string lowered = lower_uniform_references(statement, ir.uniforms);
-            lowerer.lower_statement(lowered);
+            Decl::BodyStatement lowered_statement = statement;
+            lowered_statement.text = lower_uniform_references(statement.text, ir.uniforms);
+            lowerer.lower_statement(lowered_statement);
         }
         if (is_constructor) {
             lowerer.emit_constructor_return();
@@ -1583,9 +1628,6 @@ IRModule lower_to_ir(const SemanticModule &module, DiagnosticEngine *diagnostics
         case StageKind::fragment:
             require_varying(pending.input_type, "a fragment input");
             synth_from_struct(pending.output_type, StageRole::output);
-            break;
-        case StageKind::compute:
-            synth_from_struct(pending.input_type, StageRole::input);
             break;
         case StageKind::none:
             break;

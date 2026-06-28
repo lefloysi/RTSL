@@ -1,4 +1,4 @@
-#include "Link/Linker.h"
+#include "Link/Linker.hpp"
 
 #include <unordered_map>
 
@@ -296,7 +296,6 @@ Artifact extract_module_interface(const Artifact &source) {
 void Linker::validate_program_stages(const Artifact &program) {
     bool has_vertex = false;
     bool has_fragment = false;
-    bool has_compute = false;
     for (const auto &entry : program.entries) {
         if (entry.stage == StageKind::none) {
             continue;
@@ -304,7 +303,6 @@ void Linker::validate_program_stages(const Artifact &program) {
         switch (entry.stage) {
         case StageKind::vertex: has_vertex = true; break;
         case StageKind::fragment: has_fragment = true; break;
-        case StageKind::compute: has_compute = true; break;
         case StageKind::none: break;
         }
     }
@@ -312,14 +310,6 @@ void Linker::validate_program_stages(const Artifact &program) {
     const auto error = [&](std::string message) {
         diagnostics_.report(6003, DiagnosticSeverity::error, {}, "<link>", std::move(message));
     };
-
-    if (has_compute) {
-        // A compute program is standalone; it must not be mixed with graphics stages.
-        if (has_vertex || has_fragment) {
-            error("compute stage (comp) cannot be combined with graphics stages in one program");
-        }
-        return;
-    }
 
     // A program that declares any graphics stage is a graphics program and must
     // provide at least a vertex and a fragment stage.

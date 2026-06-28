@@ -6,7 +6,7 @@
 // docs/rtir.md for the full design. The old statement-string BodyOp model
 // has been removed.
 
-#include "Sema/Sema.h"
+#include "Sema/Sema.hpp"
 
 #include <cstdint>
 #include <string>
@@ -207,7 +207,7 @@ struct IRFunction {
     std::vector<IRInstruction> body;   // starts with Label, ends with terminator
 
     // Backend stage. User functions are StageKind::none; the compiler-generated
-    // backend wrappers (vert/frag/comp) carry the stage.
+    // backend wrappers (vert/frag) carry the stage.
     StageKind stage = StageKind::none;
 
     // True for compiler-synthesized ABI glue (the generated stage runtime).

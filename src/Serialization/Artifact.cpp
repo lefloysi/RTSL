@@ -1,6 +1,6 @@
-#include "Serialization/Artifact.h"
+#include "Serialization/Artifact.hpp"
 
-#include "AST/AST.h"
+#include "AST/AST.hpp"
 
 #include <cstring>
 #include <optional>
@@ -11,8 +11,8 @@ namespace rtsl {
 namespace {
 
 constexpr u32 Magic = 0x4c535452;
-constexpr u16 VersionMajor = 5;
-constexpr u16 VersionMinor = 0;
+constexpr u16 VersionMajor = 0;
+constexpr u16 VersionMinor = 1;
 constexpr u32 HeaderSize = 48;
 constexpr u32 SectionEntrySize = 32;
 

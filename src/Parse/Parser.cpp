@@ -1,6 +1,114 @@
-#include "Parse/Parser.h"
+#include "Parse/Parser.hpp"
 
 namespace rtsl {
+
+namespace {
+
+std::string trim(std::string_view text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+        text.remove_suffix(1);
+    }
+    return std::string(text);
+}
+
+struct ExprToken {
+    enum class Kind {
+        end,
+        ident,
+        integer,
+        floating,
+        lparen,
+        rparen,
+        comma,
+        dot,
+        scope,
+        plus,
+        minus,
+        star,
+        slash,
+        percent,
+    };
+
+    Kind kind = Kind::end;
+    std::string text;
+};
+
+class ExprLexer {
+public:
+    explicit ExprLexer(std::string_view text) : text_(text) {}
+
+    ExprToken peek() {
+        const auto save = pos_;
+        const auto tok = next();
+        pos_ = save;
+        return tok;
+    }
+
+    ExprToken next() {
+        skip_ws();
+        if (pos_ >= text_.size()) return {};
+        const char c = text_[pos_];
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') return ident();
+        if (std::isdigit(static_cast<unsigned char>(c))) return number();
+        if (c == '(') { ++pos_; return {ExprToken::Kind::lparen, "("}; }
+        if (c == ')') { ++pos_; return {ExprToken::Kind::rparen, ")"}; }
+        if (c == ',') { ++pos_; return {ExprToken::Kind::comma, ","}; }
+        if (c == '.') { ++pos_; return {ExprToken::Kind::dot, "."}; }
+        if (c == ':' && pos_ + 1 < text_.size() && text_[pos_ + 1] == ':') {
+            pos_ += 2;
+            return {ExprToken::Kind::scope, "::"};
+        }
+        if (c == '+') { ++pos_; return {ExprToken::Kind::plus, "+"}; }
+        if (c == '-') { ++pos_; return {ExprToken::Kind::minus, "-"}; }
+        if (c == '*') { ++pos_; return {ExprToken::Kind::star, "*"}; }
+        if (c == '/') { ++pos_; return {ExprToken::Kind::slash, "/"}; }
+        if (c == '%') { ++pos_; return {ExprToken::Kind::percent, "%"}; }
+        ++pos_;
+        return {};
+    }
+
+private:
+    void skip_ws() {
+        while (pos_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[pos_]))) {
+            ++pos_;
+        }
+    }
+
+    ExprToken ident() {
+        const auto start = pos_;
+        while (pos_ < text_.size() &&
+               (std::isalnum(static_cast<unsigned char>(text_[pos_])) || text_[pos_] == '_')) {
+            ++pos_;
+        }
+        return {ExprToken::Kind::ident, std::string(text_.substr(start, pos_ - start))};
+    }
+
+    ExprToken number() {
+        const auto start = pos_;
+        bool floating = false;
+        while (pos_ < text_.size()) {
+            const char c = text_[pos_];
+            if (std::isdigit(static_cast<unsigned char>(c))) {
+                ++pos_;
+            } else if (c == '.') {
+                floating = true;
+                ++pos_;
+            } else {
+                break;
+            }
+        }
+        return {floating ? ExprToken::Kind::floating : ExprToken::Kind::integer,
+                std::string(text_.substr(start, pos_ - start))};
+    }
+
+    std::string_view text_;
+    std::size_t pos_ = 0;
+};
+
+} // namespace
 
 Parser::Parser(SourceManager &sources, DiagnosticEngine &diagnostics, u32 file_id, std::span<const Token> tokens)
     : sources_(sources), diagnostics_(diagnostics), file_id_(file_id), tokens_(tokens) {}
@@ -376,45 +484,266 @@ void Parser::parse_function_body(Decl &decl) {
     if (!consume(TokenKind::left_brace)) {
         return;
     }
+    parse_function_body_into(decl, true);
+}
 
-    int brace_depth = 1;
-    int paren_depth = 0;
-    int bracket_depth = 0;
-    std::string statement;
+void Parser::parse_function_body_into(Decl &decl, bool stop_on_right_brace) {
+    parse_statement_list_into(decl.body_statements, stop_on_right_brace);
+}
 
-    while (!at_end() && brace_depth > 0) {
-        const Token token = peek();
-        ++cursor_;
-
-        if (token.kind == TokenKind::left_brace) {
-            ++brace_depth;
-            statement = append_token_text(std::move(statement), token);
-            continue;
+void Parser::parse_statement_list_into(std::vector<Decl::BodyStatement> &out, bool stop_on_right_brace) {
+    while (!at_end()) {
+        if (stop_on_right_brace && at(TokenKind::right_brace)) {
+            ++cursor_;
+            return;
         }
-        if (token.kind == TokenKind::right_brace) {
-            --brace_depth;
-            if (brace_depth == 0) {
+
+        std::vector<Token> stmt_tokens;
+        int paren_depth = 0;
+        int bracket_depth = 0;
+        int brace_depth = 0;
+        bool saw_tokens = false;
+        Token begin = peek();
+        Token end = begin;
+
+        while (!at_end()) {
+            const Token token = peek();
+            if (token.kind == TokenKind::left_brace && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
+                saw_tokens) {
                 break;
             }
-            statement = append_token_text(std::move(statement), token);
-            continue;
+            if (token.kind == TokenKind::semicolon && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                end = token;
+                stmt_tokens.push_back(token);
+                ++cursor_;
+                saw_tokens = true;
+                break;
+            }
+            if (token.kind == TokenKind::right_brace && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                if (stop_on_right_brace) {
+                    break;
+                }
+                ++cursor_;
+                continue;
+            }
+
+            end = token;
+            saw_tokens = true;
+            stmt_tokens.push_back(token);
+            ++cursor_;
+            if (token.kind == TokenKind::left_paren) ++paren_depth;
+            else if (token.kind == TokenKind::right_paren && paren_depth > 0) --paren_depth;
+            else if (token.kind == TokenKind::left_bracket) ++bracket_depth;
+            else if (token.kind == TokenKind::right_bracket && bracket_depth > 0) --bracket_depth;
+            else if (token.kind == TokenKind::left_brace) ++brace_depth;
+            else if (token.kind == TokenKind::right_brace && brace_depth > 0) --brace_depth;
         }
 
-        if (token.kind == TokenKind::left_paren) ++paren_depth;
-        else if (token.kind == TokenKind::right_paren && paren_depth > 0) --paren_depth;
-        else if (token.kind == TokenKind::left_bracket) ++bracket_depth;
-        else if (token.kind == TokenKind::right_bracket && bracket_depth > 0) --bracket_depth;
+        if (!saw_tokens) {
+            break;
+        }
 
-        statement = append_token_text(std::move(statement), token);
-        if (brace_depth == 1 && paren_depth == 0 && bracket_depth == 0 && token.kind == TokenKind::semicolon) {
-            decl.body_statements.push_back(std::move(statement));
-            statement.clear();
+        auto body = parse_statement_from_tokens(stmt_tokens);
+        if (body.kind == Decl::BodyStatementKind::if_stmt) {
+            if (at(TokenKind::left_brace)) {
+                ++cursor_;
+                parse_statement_list_into(body.children, true);
+            }
+            if (at(TokenKind::kw_Else)) {
+                ++cursor_;
+                if (at(TokenKind::left_brace)) {
+                    ++cursor_;
+                    parse_statement_list_into(body.else_children, true);
+                }
+            }
+        } else if (body.kind == Decl::BodyStatementKind::while_stmt ||
+                   body.kind == Decl::BodyStatementKind::do_stmt ||
+                   body.kind == Decl::BodyStatementKind::for_stmt) {
+            if (at(TokenKind::left_brace)) {
+                ++cursor_;
+                parse_statement_list_into(body.children, true);
+            }
+        }
+        out.push_back(std::move(body));
+    }
+}
+
+Decl::BodyStatement Parser::parse_if_statement(const std::vector<Token> &tokens) const {
+    Decl::BodyStatement body{};
+    body.kind = Decl::BodyStatementKind::if_stmt;
+    if (!tokens.empty()) {
+        body.span.begin = tokens.front().span.begin;
+        body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
+    }
+    std::size_t open = std::string::npos;
+    std::size_t close = std::string::npos;
+    int depth = 0;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].kind == TokenKind::left_paren) {
+            if (depth++ == 0) open = i + 1;
+        } else if (tokens[i].kind == TokenKind::right_paren) {
+            if (depth == 0) break;
+            --depth;
+            if (depth == 0) {
+                close = i;
+                break;
+            }
         }
     }
-
-    if (!statement.empty()) {
-        decl.body_statements.push_back(std::move(statement));
+    if (open != std::string::npos && close != std::string::npos && close > open) {
+        body.condition = trim(tokens_to_text(std::span<const Token>(tokens.data() + open, close - open)));
+        body.expr = parse_expression(body.condition);
     }
+    return body;
+}
+
+Decl::BodyStatement Parser::parse_while_statement(const std::vector<Token> &tokens) const {
+    Decl::BodyStatement body{};
+    body.kind = Decl::BodyStatementKind::while_stmt;
+    if (!tokens.empty()) {
+        body.span.begin = tokens.front().span.begin;
+        body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
+    }
+    std::size_t open = std::string::npos;
+    std::size_t close = std::string::npos;
+    int depth = 0;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].kind == TokenKind::left_paren) {
+            if (depth++ == 0) open = i + 1;
+        } else if (tokens[i].kind == TokenKind::right_paren) {
+            if (depth == 0) break;
+            --depth;
+            if (depth == 0) { close = i; break; }
+        }
+    }
+    if (open != std::string::npos && close != std::string::npos && close > open) {
+        body.condition = trim(tokens_to_text(std::span<const Token>(tokens.data() + open, close - open)));
+        body.expr = parse_expression(body.condition);
+    }
+    return body;
+}
+
+Decl::BodyStatement Parser::parse_do_statement(const std::vector<Token> &tokens) const {
+    Decl::BodyStatement body{};
+    body.kind = Decl::BodyStatementKind::do_stmt;
+    if (!tokens.empty()) {
+        body.span.begin = tokens.front().span.begin;
+        body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
+    }
+    return body;
+}
+
+Decl::BodyStatement Parser::parse_for_statement(const std::vector<Token> &tokens) const {
+    Decl::BodyStatement body{};
+    body.kind = Decl::BodyStatementKind::for_stmt;
+    if (!tokens.empty()) {
+        body.span.begin = tokens.front().span.begin;
+        body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
+    }
+    std::size_t open = std::string::npos;
+    std::size_t close = std::string::npos;
+    int depth = 0;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].kind == TokenKind::left_paren) {
+            if (depth++ == 0) open = i + 1;
+        } else if (tokens[i].kind == TokenKind::right_paren) {
+            if (depth == 0) break;
+            --depth;
+            if (depth == 0) { close = i; break; }
+        }
+    }
+    if (open == std::string::npos || close == std::string::npos || close <= open) {
+        return body;
+    }
+    const auto header = std::span<const Token>(tokens.data() + open, close - open);
+    std::size_t first = header.size();
+    std::size_t second = header.size();
+    int split_depth = 0;
+    for (std::size_t i = 0; i < header.size(); ++i) {
+        const auto kind = header[i].kind;
+        if (kind == TokenKind::left_paren || kind == TokenKind::left_bracket || kind == TokenKind::left_brace) {
+            ++split_depth;
+        } else if ((kind == TokenKind::right_paren || kind == TokenKind::right_bracket || kind == TokenKind::right_brace) && split_depth > 0) {
+            --split_depth;
+        } else if (kind == TokenKind::semicolon && split_depth == 0) {
+            if (first == header.size()) first = i;
+            else { second = i; break; }
+        }
+    }
+    if (first != header.size()) {
+        body.loop_init = trim(tokens_to_text(header.first(first)));
+        if (first + 1 < header.size()) {
+            if (second == header.size()) {
+                body.condition = trim(tokens_to_text(header.subspan(first + 1)));
+            } else {
+                body.condition = trim(tokens_to_text(header.subspan(first + 1, second - first - 1)));
+                if (second + 1 < header.size()) {
+                    body.loop_continue = trim(tokens_to_text(header.subspan(second + 1)));
+                }
+            }
+        }
+    }
+    return body;
+}
+
+Decl::BodyStatement Parser::parse_statement_from_tokens(const std::vector<Token> &tokens) const {
+    Decl::BodyStatement body{};
+    if (!tokens.empty()) {
+        body.span.begin = tokens.front().span.begin;
+        body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
+    }
+    if (tokens.empty()) {
+        body.kind = Decl::BodyStatementKind::unknown;
+        return body;
+    }
+    const Token first = tokens.front();
+    if (first.kind == TokenKind::kw_If) {
+        return parse_if_statement(tokens);
+    }
+    if (first.kind == TokenKind::kw_While) {
+        return parse_while_statement(tokens);
+    }
+    if (first.kind == TokenKind::kw_Do) {
+        return parse_do_statement(tokens);
+    }
+    if (first.kind == TokenKind::kw_For) {
+        return parse_for_statement(tokens);
+    }
+
+    if (first.kind == TokenKind::kw_Return) {
+        body.kind = Decl::BodyStatementKind::return_stmt;
+        if (tokens.size() > 1) {
+            body.rhs = trim(tokens_to_text(std::span<const Token>(tokens.data() + 1, tokens.size() - 1)));
+        }
+        body.expr = parse_expression(body.rhs);
+    } else {
+        const auto equals = std::find_if(tokens.begin(), tokens.end(), [](const Token &tok) { return tok.kind == TokenKind::equal; });
+        const auto first_ident = std::find_if(tokens.begin(), tokens.end(), [](const Token &tok) {
+            return tok.kind == TokenKind::identifier;
+        });
+        if (equals != tokens.end() && first_ident != tokens.end() && first_ident < equals) {
+            body.kind = Decl::BodyStatementKind::declaration;
+            body.type_name = std::string(tokens.front().text);
+            body.name = std::string(first_ident->text);
+            const auto eq_index = static_cast<std::size_t>(std::distance(tokens.begin(), equals));
+            body.initializer = eq_index + 1 < tokens.size()
+                ? trim(tokens_to_text(std::span<const Token>(tokens.data() + eq_index + 1, tokens.size() - eq_index - 1)))
+                : std::string{};
+            body.expr = parse_expression(body.initializer);
+        } else if (equals != tokens.end()) {
+            body.kind = Decl::BodyStatementKind::assignment;
+            const auto eq_index = static_cast<std::size_t>(std::distance(tokens.begin(), equals));
+            body.lhs = trim(tokens_to_text(std::span<const Token>(tokens.data(), eq_index)));
+            body.rhs = eq_index + 1 < tokens.size()
+                ? trim(tokens_to_text(std::span<const Token>(tokens.data() + eq_index + 1, tokens.size() - eq_index - 1)))
+                : std::string{};
+            body.expr = parse_expression(body.rhs);
+        } else {
+            body.kind = Decl::BodyStatementKind::expression;
+            body.expr = parse_expression(trim(tokens_to_text(std::span<const Token>(tokens.data(), tokens.size()))));
+        }
+    }
+    return body;
 }
 
 void Parser::parse_function_signature(Decl &decl) {
@@ -559,9 +888,149 @@ std::string Parser::append_token_text(std::string statement, const Token &token)
     return statement;
 }
 
+std::string Parser::tokens_to_text(std::span<const Token> tokens) const {
+    std::string statement;
+    for (const auto &token : tokens) {
+        statement = append_token_text(std::move(statement), token);
+    }
+    return statement;
+}
+
 void Parser::diagnose(const Token &token, std::string message) {
     diagnostics_.report(2001, DiagnosticSeverity::error, token.span.begin,
                         std::string(sources_.name(file_id_)), std::move(message));
+}
+
+SourceSpan Parser::statement_span(const Token &begin, const Token &end) const {
+    const auto start = begin.span.begin;
+    const auto finish = end.span.begin.offset + end.span.length;
+    SourceSpan span{};
+    span.begin = start;
+    span.length = finish >= start.offset ? finish - start.offset : 0;
+    return span;
+}
+
+Decl::Expr Parser::parse_expression(std::string_view text) const {
+    struct ParserImpl {
+        ExprLexer lex;
+        explicit ParserImpl(std::string_view text) : lex(text) {}
+
+        Decl::Expr parse() { return parse_add(); }
+
+        Decl::Expr parse_add() {
+            auto lhs = parse_mul();
+            while (true) {
+                const auto tok = lex.peek();
+                if (tok.kind != ExprToken::Kind::plus && tok.kind != ExprToken::Kind::minus) break;
+                lex.next();
+                auto rhs = parse_mul();
+                Decl::Expr expr;
+                expr.kind = Decl::Expr::Kind::binary;
+                expr.op = tok.text;
+                expr.children = {std::move(lhs), std::move(rhs)};
+                lhs = std::move(expr);
+            }
+            return lhs;
+        }
+
+        Decl::Expr parse_mul() {
+            auto lhs = parse_unary();
+            while (true) {
+                const auto tok = lex.peek();
+                if (tok.kind != ExprToken::Kind::star && tok.kind != ExprToken::Kind::slash &&
+                    tok.kind != ExprToken::Kind::percent) break;
+                lex.next();
+                auto rhs = parse_unary();
+                Decl::Expr expr;
+                expr.kind = Decl::Expr::Kind::binary;
+                expr.op = tok.text;
+                expr.children = {std::move(lhs), std::move(rhs)};
+                lhs = std::move(expr);
+            }
+            return lhs;
+        }
+
+        Decl::Expr parse_unary() {
+            const auto tok = lex.peek();
+            if (tok.kind == ExprToken::Kind::plus || tok.kind == ExprToken::Kind::minus) {
+                lex.next();
+                auto child = parse_unary();
+                Decl::Expr expr;
+                expr.kind = Decl::Expr::Kind::unary;
+                expr.op = tok.text;
+                expr.children = {std::move(child)};
+                return expr;
+            }
+            return parse_postfix();
+        }
+
+        Decl::Expr parse_postfix() {
+            auto base = parse_primary();
+            while (true) {
+                const auto tok = lex.peek();
+                if (tok.kind == ExprToken::Kind::dot || tok.kind == ExprToken::Kind::scope) {
+                    lex.next();
+                    const auto name = lex.next();
+                    Decl::Expr expr;
+                    expr.kind = Decl::Expr::Kind::member;
+                    expr.op = tok.text;
+                    expr.text = name.text;
+                    expr.children = {std::move(base)};
+                    base = std::move(expr);
+                    continue;
+                }
+                if (tok.kind == ExprToken::Kind::lparen) {
+                    lex.next();
+                    Decl::Expr expr;
+                    expr.kind = Decl::Expr::Kind::call;
+                    expr.children = {std::move(base)};
+                    if (lex.peek().kind != ExprToken::Kind::rparen) {
+                        while (true) {
+                            expr.children.push_back(parse());
+                            if (lex.peek().kind == ExprToken::Kind::comma) {
+                                lex.next();
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    (void)lex.next();
+                    base = std::move(expr);
+                    continue;
+                }
+                break;
+            }
+            return base;
+        }
+
+        Decl::Expr parse_primary() {
+            const auto tok = lex.next();
+            Decl::Expr expr;
+            switch (tok.kind) {
+            case ExprToken::Kind::ident:
+                expr.kind = Decl::Expr::Kind::name;
+                expr.text = tok.text;
+                return expr;
+            case ExprToken::Kind::integer:
+                expr.kind = Decl::Expr::Kind::literal_int;
+                expr.text = tok.text;
+                return expr;
+            case ExprToken::Kind::floating:
+                expr.kind = Decl::Expr::Kind::literal_float;
+                expr.text = tok.text;
+                return expr;
+            case ExprToken::Kind::lparen: {
+                auto inner = parse();
+                (void)lex.next();
+                return inner;
+            }
+            default:
+                return expr;
+            }
+        }
+    };
+
+    return ParserImpl(trim(text)).parse();
 }
 
 } // namespace rtsl

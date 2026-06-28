@@ -1,4 +1,4 @@
-#include "Sema/Sema.h"
+#include "Sema/Sema.hpp"
 
 #include <unordered_map>
 

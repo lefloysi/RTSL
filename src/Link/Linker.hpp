@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/Diagnostics.h"
-#include "Serialization/Artifact.h"
+#include "Basic/Diagnostics.hpp"
+#include "Serialization/Artifact.hpp"
 
 #include <vector>
 

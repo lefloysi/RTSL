@@ -1,4 +1,4 @@
-#include "Lex/Lexer.h"
+#include "Lex/Lexer.hpp"
 
 #include <array>
 #include <cctype>

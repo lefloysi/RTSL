@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rtsl LANGUAGES C CXX)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TARGET_TRIPLET STREQUAL "")
+    list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../vcpkg_installed/x64-windows")
+    list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../vcpkg_installed/x64-windows")
+endif()
+
 # RTSL is split into sub-libraries so each piece can be reasoned about and
 # linked independently. Source still lives under src/{Basic,Lex,Parse,...}
 # in the existing clang-style layout; only the CMake targets are split.
@@ -84,6 +92,8 @@ target_link_libraries(rtsl
 
 add_executable(rtslc ${_rtsl_src}/Driver/rtslc.cpp)
 target_link_libraries(rtslc PRIVATE rtsl)
+find_package(CLI11 CONFIG REQUIRED)
+target_link_libraries(rtslc PRIVATE CLI11::CLI11)
 target_compile_features(rtslc PRIVATE cxx_std_23)
 set_target_properties(rtslc PROPERTIES CXX_EXTENSIONS OFF)
 

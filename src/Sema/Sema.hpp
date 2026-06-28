@@ -1,7 +1,7 @@
 #pragma once
 
-#include "AST/AST.h"
-#include "Basic/Diagnostics.h"
+#include "AST/AST.hpp"
+#include "Basic/Diagnostics.hpp"
 
 #include <string>
 #include <vector>
@@ -13,7 +13,7 @@ struct SemanticSymbol {
     std::string name;
     std::vector<ParameterDecl> parameters;
     std::string return_type;
-    std::vector<std::string> body_statements;
+    std::vector<Decl::BodyStatement> body_statements;
     bool exported = false;
 };
 

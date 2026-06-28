@@ -1,8 +1,8 @@
-#include "Backend/GlslBackend.h"
+#include "Backend/GlslBackend.hpp"
 
-#include "IR/StageBuiltins.h"
-#include "IR/UniformLowering.h"
-#include "Mangle/Mangler.h"
+#include "IR/StageBuiltins.hpp"
+#include "IR/UniformLowering.hpp"
+#include "Mangle/Mangler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -192,7 +192,6 @@ const char *stage_extension(StageKind stage) {
     switch (stage) {
     case StageKind::vertex: return ".vert";
     case StageKind::fragment: return ".frag";
-    case StageKind::compute: return ".comp";
     case StageKind::none: return ".glsl";
     }
     return ".glsl";
@@ -214,9 +213,6 @@ constexpr std::array StageGlobalFields{
     StageGlobalField{StageKind::fragment, "vec4", "frag_coord", "gl_FragCoord", true, false},
     StageGlobalField{StageKind::fragment, "bool", "front_facing", "gl_FrontFacing", true, false},
     StageGlobalField{StageKind::fragment, "float", "frag_depth", "gl_FragDepth", false, true},
-    StageGlobalField{StageKind::compute, "uvec3", "global_id", "gl_GlobalInvocationID", true, false},
-    StageGlobalField{StageKind::compute, "uvec3", "local_id", "gl_LocalInvocationID", true, false},
-    StageGlobalField{StageKind::compute, "uvec3", "group_id", "gl_WorkGroupID", true, false},
 };
 
 // Resolve a builtin slot tag to its GLSL global.
@@ -456,7 +452,6 @@ std::string globals_type(StageKind stage) {
     switch (stage) {
     case StageKind::vertex: return "vert_globals";
     case StageKind::fragment: return "frag_globals";
-    case StageKind::compute: return "comp_globals";
     case StageKind::none: return "globals";
     }
     return "globals";
@@ -498,7 +493,7 @@ void emit_stage_globals(std::ostringstream &out, StageKind stage) {
 // in a file for a different stage. Only the active stage's struct gets the
 // real fields; the others are declared so the type name resolves.
 void emit_foreign_stage_globals(std::ostringstream &out, StageKind active) {
-    for (auto stage : {StageKind::vertex, StageKind::fragment, StageKind::compute}) {
+    for (auto stage : {StageKind::vertex, StageKind::fragment}) {
         if (stage == active) continue;
         out << "struct " << globals_type(stage) << " {\n";
         for (const auto& field : StageGlobalFields) {

@@ -1,6 +1,6 @@
-#include "IR/UniformLowering.h"
+#include "IR/UniformLowering.hpp"
 
-#include "Basic/Types.h"
+#include "Basic/Types.hpp"
 
 #include <string>
 
@@ -81,7 +81,7 @@ std::string replace_symbol(std::string text, std::string_view from, std::string_
 } // namespace
 
 bool is_resource_uniform_type(std::string_view type) {
-    return type == "Sampler2D" || type.starts_with("Buffer<");
+    return type == "Sampler2D";
 }
 
 std::string uniform_binding_name(const UniformBinding &uniform) {

@@ -4,6 +4,10 @@ RTSL artifacts are binary files using one sectioned container family. Textual
 RTIR exists for disassembly, assembly, tests, and inspection, but the canonical
 toolchain interchange format is binary.
 
+For v0.1, the artifact family is graphics-only: the compiler and linker support
+the object, module/interface, library, and program forms needed by the current
+vertex/fragment pipeline.
+
 ## Artifact Kinds
 
 `rtslo` is a compiled object file for one source file. It contains implementation
@@ -36,6 +40,10 @@ section_table_off  u64
 file_size          u64
 content_hash       u128
 ```
+
+The current implementation uses the same layout but still treats the format as
+release-0.1 data. Future incompatible changes must bump the version fields and
+be called out in release notes.
 
 All offsets are from the start of the file. The initial format uses little
 endian encoding. Unknown required flags make the artifact unreadable. Unknown

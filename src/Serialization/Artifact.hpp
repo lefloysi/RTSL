@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/Diagnostics.h"
-#include "IR/IR.h"
+#include "Basic/Diagnostics.hpp"
+#include "IR/IR.hpp"
 
 #include <cstddef>
 #include <cstdint>

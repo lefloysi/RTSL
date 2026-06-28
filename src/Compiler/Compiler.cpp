@@ -1,9 +1,9 @@
-#include "Compiler/Compiler.h"
+#include "Compiler/Compiler.hpp"
 
-#include "IR/IR.h"
-#include "Lex/Lexer.h"
-#include "Parse/Parser.h"
-#include "Sema/Sema.h"
+#include "IR/IR.hpp"
+#include "Lex/Lexer.hpp"
+#include "Parse/Parser.hpp"
+#include "Sema/Sema.hpp"
 
 namespace rtsl {
 
