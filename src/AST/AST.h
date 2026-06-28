@@ -98,6 +98,13 @@ struct UniformBinding {
     std::string access;
     u32 set = 0;
     u32 binding = 0;
+    // Anonymous `uniform { ... }` blocks have no source-visible scope name.
+    // Each anonymous block is its own descriptor set; only named scopes can be
+    // reopened across multiple blocks. The parser assigns each anonymous block
+    // a unique anonymous_block_id; Sema uses it to keep their sets distinct
+    // without leaking compiler-generated names into the C API or mangling.
+    bool is_anonymous = false;
+    u32 anonymous_block_id = 0;
 };
 
 struct TranslationUnit {

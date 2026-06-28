@@ -87,13 +87,10 @@ struct rtsl_module_t {
             }
         }
 
-        for (const auto &function : artifact.functions) {
-            if (function.stage == rtsl::StageKind::none) {
-                continue;
-            }
+        for (const auto &entry : artifact.entries) {
             entry_views.push_back(rtsl_entry_info{
-                .name = function.name.c_str(),
-                .stage = to_c_stage(function.stage),
+                .name = entry.name.c_str(),
+                .stage = to_c_stage(entry.stage),
             });
         }
     }

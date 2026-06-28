@@ -30,11 +30,23 @@ void CompilerInstance::compile_source_to(Artifact& artifact, std::string_view so
 
     if (!diagnostics_.has_error() && verify_ir(ir)) {
         artifact.bytes = write_artifact(ArtifactKind::object, ir);
+        artifact.module = ir;
         artifact.strings.clear();
         artifact.structs = ir.structs;
         artifact.uniforms = ir.uniforms;
         artifact.stage_interfaces = ir.stage_interfaces;
-        artifact.functions = ir.functions;
+        artifact.entries.clear();
+        for (const auto &function : ir.functions) {
+            if (function.stage == StageKind::none) {
+                continue;
+            }
+            artifact.entries.push_back(Artifact::EntryPoint{
+                .name = std::string(stage_entry_name(function.stage)),
+                .mangled_name = std::string(stage_entry_name(function.stage)),
+                .stage = function.stage,
+                .function_id = function.result_id,
+            });
+        }
         artifact.debug_bytes = write_debug_artifact(ir);
     }
 }

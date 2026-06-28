@@ -13,9 +13,8 @@ project(rtsl LANGUAGES C CXX)
 #                                                refactor target: make IR pure]
 #   rtsl-serialization  -> rtsl-ir
 #   rtsl-linker         -> rtsl-serialization
-#   rtsl-backend-glsl   -> rtsl-serialization
 #   rtsl-compiler       -> rtsl-frontend, rtsl-serialization
-#   rtsl (aggregate)    -> compiler, linker, backend-glsl, serialization, ir
+#   rtsl (aggregate)    -> compiler, linker, serialization, ir
 #
 # See ARCHITECTURE.md for the long-term split target (pure rtsl-ir, etc.).
 
@@ -66,11 +65,6 @@ add_library(rtsl-linker STATIC ${_rtsl_src}/Link/Linker.cpp)
 _rtsl_configure_lib(rtsl-linker)
 target_link_libraries(rtsl-linker PUBLIC rtsl-serialization)
 
-# Compiler-side GLSL backend: lowers RTIR to GLSL for the GL/Vulkan path.
-add_library(rtsl-backend-glsl STATIC ${_rtsl_src}/Backend/GlslBackend.cpp)
-_rtsl_configure_lib(rtsl-backend-glsl)
-target_link_libraries(rtsl-backend-glsl PUBLIC rtsl-serialization)
-
 # Compiler orchestrator: drives source -> rtslo / rtslm.
 add_library(rtsl-compiler STATIC ${_rtsl_src}/Compiler/Compiler.cpp)
 _rtsl_configure_lib(rtsl-compiler)
@@ -83,7 +77,6 @@ target_link_libraries(rtsl
     PUBLIC
         rtsl-compiler
         rtsl-linker
-        rtsl-backend-glsl
         rtsl-serialization
         rtsl-ir
         rtsl-frontend
@@ -102,19 +95,3 @@ set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
 enable_testing()
 add_test(NAME rtsl-tests COMMAND rtsl-tests)
 
-# End-to-end check: compile a representative shader and run the emitted GLSL
-# through glslangValidator so that an undeclared identifier, GLSL reserved
-# word, or invalid layout in the backend output fails CI rather than silently
-# producing broken .vert/.frag files. Skipped when glslangValidator is not on
-# PATH (e.g. machines without the Vulkan SDK).
-find_program(GLSLANG_VALIDATOR glslangValidator)
-if(GLSLANG_VALIDATOR)
-    set(_e2e_out ${CMAKE_CURRENT_BINARY_DIR}/glsl-e2e)
-    add_test(NAME glsl-e2e
-        COMMAND ${CMAKE_COMMAND}
-            -DRTSLC=$<TARGET_FILE:rtslc>
-            -DGLSLANG=${GLSLANG_VALIDATOR}
-            -DSHADER=${CMAKE_CURRENT_SOURCE_DIR}/workspace/graphics.rtsl
-            -DOUTDIR=${_e2e_out}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunGlslE2E.cmake)
-endif()

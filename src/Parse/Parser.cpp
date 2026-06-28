@@ -199,6 +199,14 @@ void Parser::parse_uniform_scope(const Decl &decl) {
         return;
     }
 
+    // Anonymous `uniform { ... }` blocks cannot be reopened: each one becomes
+    // its own descriptor set. Allocate one block id per anonymous block here
+    // so every uniform inside this brace shares the same id, and different
+    // anonymous blocks get different ids. Named scopes pass through unchanged
+    // and remain reopen-able via shared scope_name.
+    const bool is_anonymous = decl.name.empty();
+    const u32 anonymous_block_id = is_anonymous ? next_anonymous_block_id_++ : 0;
+
     while (!at_end() && !at(TokenKind::right_brace)) {
         std::string access;
         if (consume(TokenKind::kw_ReadOnly)) {
@@ -208,7 +216,12 @@ void Parser::parse_uniform_scope(const Decl &decl) {
         }
 
         if (consume(TokenKind::kw_Struct) && consume(TokenKind::left_brace)) {
-            UniformBinding binding{.scope_name = decl.name, .access = std::move(access)};
+            UniformBinding binding{
+                .scope_name = decl.name,
+                .access = std::move(access),
+                .is_anonymous = is_anonymous,
+                .anonymous_block_id = anonymous_block_id,
+            };
             while (!at_end() && !at(TokenKind::right_brace)) {
                 auto field = parse_field_declaration();
                 if (!field.type.empty() && !field.name.empty()) {
@@ -237,6 +250,8 @@ void Parser::parse_uniform_scope(const Decl &decl) {
                 .name = std::move(field.name),
                 .type = std::move(field.type),
                 .access = std::move(access),
+                .is_anonymous = is_anonymous,
+                .anonymous_block_id = anonymous_block_id,
             });
             continue;
         }

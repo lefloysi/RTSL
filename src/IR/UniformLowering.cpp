@@ -86,7 +86,7 @@ bool is_resource_uniform_type(std::string_view type) {
 
 std::string uniform_binding_name(const UniformBinding &uniform) {
     std::string name = "u_";
-    if (!uniform.scope_name.empty()) {
+    if (!uniform.is_anonymous && !uniform.scope_name.empty()) {
         append_mangled_part(name, uniform.scope_name);
         name += "_";
     }
@@ -97,7 +97,7 @@ std::string uniform_binding_name(const UniformBinding &uniform) {
 
 std::string uniform_block_name(const UniformBinding &uniform) {
     std::string name = "ub_";
-    if (!uniform.scope_name.empty()) {
+    if (!uniform.is_anonymous && !uniform.scope_name.empty()) {
         append_mangled_part(name, uniform.scope_name);
         name += "_";
     }
@@ -108,8 +108,11 @@ std::string uniform_block_name(const UniformBinding &uniform) {
 
 std::string lower_uniform_references(std::string statement, const std::vector<UniformBinding> &uniforms) {
     for (const auto &uniform : uniforms) {
-        if (uniform.scope_name.empty()) {
-            statement = replace_symbol(std::move(statement), uniform.name, uniform_binding_name(uniform) + ".value");
+        if (uniform.is_anonymous || uniform.scope_name.empty()) {
+            const auto lowered_name = is_resource_uniform_type(uniform.type)
+                                          ? uniform_binding_name(uniform)
+                                          : uniform_binding_name(uniform) + ".value";
+            statement = replace_symbol(std::move(statement), uniform.name, lowered_name);
             continue;
         }
         const auto source_name = uniform.scope_name + "::" + uniform.name;

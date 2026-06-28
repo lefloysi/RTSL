@@ -42,6 +42,7 @@ private:
     u32 file_id_ = 0;
     std::span<const Token> tokens_;
     std::size_t cursor_ = 0;
+    u32 next_anonymous_block_id_ = 0;
 };
 
 } // namespace rtsl

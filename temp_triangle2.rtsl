@@ -1,0 +1,26 @@
+struct VertexIn {
+    vec2 position;
+    vec3 color;
+}
+
+struct VertexOut {
+    vec4 position;
+    vec3 color;
+}
+
+varying VertexOut {
+    clip position;
+    smooth color;
+};
+
+struct FragmentOut {
+    vec4 color;
+}
+
+fn vert_main(vert_globals g, VertexIn v) -> VertexOut {
+    return VertexOut(vec4(v.position, 0.0, 1.0), v.color);
+}
+
+fn frag_main(frag_globals g, VertexOut v) -> FragmentOut {
+    return FragmentOut(vec4(v.color, 1.0));
+}

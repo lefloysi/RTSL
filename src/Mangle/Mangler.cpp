@@ -27,32 +27,6 @@ std::string sanitize_identifier(std::string_view text) {
     return out;
 }
 
-std::uint32_t hash_arguments(const IRFunction &function) {
-    std::uint32_t hash = 2166136261u;
-    for (const auto &parameter : function.parameters) {
-        for (const char c : parameter.type) {
-            hash ^= static_cast<unsigned char>(c);
-            hash *= 16777619u;
-        }
-        hash ^= 0xffu;
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-char hex_digit(unsigned value) {
-    return static_cast<char>(value < 10 ? '0' + value : 'a' + value - 10);
-}
-
-std::string hex_hash(std::uint32_t value) {
-    std::string out(8, '0');
-    for (int i = 7; i >= 0; --i) {
-        out[static_cast<std::size_t>(i)] = hex_digit(value & 0xfu);
-        value >>= 4;
-    }
-    return out;
-}
-
 } // namespace
 
 std::vector<std::string_view> split_qualified_name(std::string_view name) {
@@ -99,13 +73,13 @@ std::string Mangler::mangle_glsl_from_rtsl(std::string_view rtsl_mangled_name) c
     return out;
 }
 
-std::string Mangler::mangle_rtsl(const IRFunction &function) const {
-    if (function.stage != StageKind::none) {
-        return function.name;
+std::string Mangler::mangle_rtsl(const MangleInput &input) const {
+    if (input.stage != StageKind::none) {
+        return std::string(input.name);
     }
 
     std::string out = "_Z";
-    const auto parts = split_qualified_name(function.name);
+    const auto parts = split_qualified_name(input.name);
     if (parts.size() > 1) {
         out += "N";
         for (const auto part : parts) {
@@ -113,24 +87,24 @@ std::string Mangler::mangle_rtsl(const IRFunction &function) const {
         }
         out += "E";
     } else {
-        out += encode_name_part(function.name);
+        out += encode_name_part(input.name);
     }
 
-    if (function.parameters.empty()) {
+    if (input.parameter_types.empty()) {
         out += "v";
     } else {
-        for (const auto &parameter : function.parameters) {
-            out += encode_type(parameter.type);
+        for (const auto &parameter_type : input.parameter_types) {
+            out += encode_type(parameter_type);
         }
     }
     return out;
 }
 
-std::string Mangler::mangle_for_glsl(const IRFunction &function) const {
-    if (function.stage != StageKind::none) {
-        return sanitize_identifier(function.name);
+std::string Mangler::mangle_for_glsl(const MangleInput &input) const {
+    if (input.stage != StageKind::none) {
+        return sanitize_identifier(input.name);
     }
-    return mangle_glsl_from_rtsl(mangle_rtsl(function));
+    return mangle_glsl_from_rtsl(mangle_rtsl(input));
 }
 
 } // namespace rtsl
