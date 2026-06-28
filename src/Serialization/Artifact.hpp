@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/Diagnostics.h"
-#include "IR/IR.h"
+#include "Basic/Diagnostics.hpp"
+#include "IR/IR.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,10 +21,17 @@ enum class ArtifactKind : u16 {
 struct Artifact {
     ArtifactKind kind = ArtifactKind::object;
     std::vector<std::string> strings;
+    IRModule module;
     std::vector<StructDecl> structs;
     std::vector<UniformBinding> uniforms;
     std::vector<StageInterface> stage_interfaces;
-    std::vector<IRFunction> functions;
+    struct EntryPoint {
+        std::string name;
+        std::string mangled_name;
+        StageKind stage = StageKind::none;
+        IRId function_id = IRId_None;
+    };
+    std::vector<EntryPoint> entries;
     std::vector<u8> bytes;
     std::vector<u8> debug_bytes;
 };

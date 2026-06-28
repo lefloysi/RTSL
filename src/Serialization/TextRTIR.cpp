@@ -1,12 +1,6 @@
-#include "Serialization/TextRTIR.h"
+#include "Serialization/TextRTIR.hpp"
 
-#include "IR/IR.h"
-#include "IR/UniformLowering.h"
-#include "Mangle/Mangler.h"
-
-#include <cctype>
 #include <sstream>
-#include <string>
 
 namespace rtsl {
 
@@ -22,407 +16,139 @@ std::string_view kind_name(ArtifactKind kind) {
     return "unknown";
 }
 
-bool parse_kind(std::string_view text, ArtifactKind &kind) {
-    if (text == "rtslo") {
-        kind = ArtifactKind::object;
-        return true;
+const char *op_name(IROp op) {
+    switch (op) {
+    case IROp::Nop: return "OpNop";
+    case IROp::TypeVoid: return "OpTypeVoid";
+    case IROp::TypeBool: return "OpTypeBool";
+    case IROp::TypeInt: return "OpTypeInt";
+    case IROp::TypeUInt: return "OpTypeUInt";
+    case IROp::TypeFloat: return "OpTypeFloat";
+    case IROp::TypeVector: return "OpTypeVector";
+    case IROp::TypeMatrix: return "OpTypeMatrix";
+    case IROp::TypeStruct: return "OpTypeStruct";
+    case IROp::TypePointer: return "OpTypePointer";
+    case IROp::TypeArray: return "OpTypeArray";
+    case IROp::TypeFunction: return "OpTypeFunction";
+    case IROp::TypeImage: return "OpTypeImage";
+    case IROp::TypeSampler: return "OpTypeSampler";
+    case IROp::TypeSampledImage: return "OpTypeSampledImage";
+    case IROp::ConstantBool: return "OpConstantTrueFalse";
+    case IROp::ConstantInt: return "OpConstant";
+    case IROp::ConstantUInt: return "OpConstant";
+    case IROp::ConstantFloat: return "OpConstant";
+    case IROp::ConstantComposite: return "OpConstantComposite";
+    case IROp::Variable: return "OpVariable";
+    case IROp::Load: return "OpLoad";
+    case IROp::Store: return "OpStore";
+    case IROp::AccessChain: return "OpAccessChain";
+    case IROp::CompositeConstruct: return "OpCompositeConstruct";
+    case IROp::CompositeExtract: return "OpCompositeExtract";
+    case IROp::CompositeInsert: return "OpCompositeInsert";
+    case IROp::VectorShuffle: return "OpVectorShuffle";
+    case IROp::FAdd: return "OpFAdd";
+    case IROp::FSub: return "OpFSub";
+    case IROp::FMul: return "OpFMul";
+    case IROp::FDiv: return "OpFDiv";
+    case IROp::FMod: return "OpFRem";
+    case IROp::FNegate: return "OpFNegate";
+    case IROp::IAdd: return "OpIAdd";
+    case IROp::ISub: return "OpISub";
+    case IROp::IMul: return "OpIMul";
+    case IROp::SDiv: return "OpSDiv";
+    case IROp::UDiv: return "OpUDiv";
+    case IROp::SMod: return "OpSMod";
+    case IROp::UMod: return "OpUMod";
+    case IROp::VectorTimesScalar: return "OpVectorTimesScalar";
+    case IROp::MatrixTimesScalar: return "OpMatrixTimesScalar";
+    case IROp::MatrixTimesVector: return "OpMatrixTimesVector";
+    case IROp::MatrixTimesMatrix: return "OpMatrixTimesMatrix";
+    case IROp::Dot: return "OpDot";
+    case IROp::Cross: return "OpExtInstCross";
+    case IROp::FOrdEqual: return "OpFOrdEqual";
+    case IROp::FOrdNotEqual: return "OpFOrdNotEqual";
+    case IROp::FOrdLess: return "OpFOrdLessThan";
+    case IROp::FOrdLessEqual: return "OpFOrdLessThanEqual";
+    case IROp::FOrdGreater: return "OpFOrdGreaterThan";
+    case IROp::FOrdGreaterEqual: return "OpFOrdGreaterThanEqual";
+    case IROp::IEqual: return "OpIEqual";
+    case IROp::INotEqual: return "OpINotEqual";
+    case IROp::SLess: return "OpSLessThan";
+    case IROp::SLessEqual: return "OpSLessThanEqual";
+    case IROp::SGreater: return "OpSGreaterThan";
+    case IROp::SGreaterEqual: return "OpSGreaterThanEqual";
+    case IROp::ULess: return "OpULessThan";
+    case IROp::ULessEqual: return "OpULessThanEqual";
+    case IROp::UGreater: return "OpUGreaterThan";
+    case IROp::UGreaterEqual: return "OpUGreaterThanEqual";
+    case IROp::LogicalAnd: return "OpLogicalAnd";
+    case IROp::LogicalOr: return "OpLogicalOr";
+    case IROp::LogicalNot: return "OpLogicalNot";
+    case IROp::ConvertFToU: return "OpConvertFToU";
+    case IROp::ConvertFToS: return "OpConvertFToS";
+    case IROp::ConvertSToF: return "OpConvertSToF";
+    case IROp::ConvertUToF: return "OpConvertUToF";
+    case IROp::Bitcast: return "OpBitcast";
+    case IROp::Label: return "OpLabel";
+    case IROp::Branch: return "OpBranch";
+    case IROp::BranchConditional: return "OpBranchConditional";
+    case IROp::SelectionMerge: return "OpSelectionMerge";
+    case IROp::LoopMerge: return "OpLoopMerge";
+    case IROp::Return: return "OpReturn";
+    case IROp::ReturnValue: return "OpReturnValue";
+    case IROp::FunctionParameter: return "OpFunctionParameter";
+    case IROp::FunctionCall: return "OpFunctionCall";
+    case IROp::SampledImage: return "OpSampledImage";
+    case IROp::ImageSampleImplicitLod: return "OpImageSampleImplicitLod";
+    case IROp::ImageSampleExplicitLod: return "OpImageSampleExplicitLod";
+    case IROp::ImageRead: return "OpImageRead";
+    case IROp::ImageWrite: return "OpImageWrite";
+    case IROp::ReadInput: return "OpRTReadInput";
+    case IROp::WriteOutput: return "OpRTWriteOutput";
+    case IROp::ReadBuiltin: return "OpRTReadBuiltin";
+    case IROp::WriteBuiltin: return "OpRTWriteBuiltin";
+    case IROp::ExtInst: return "OpExtInst";
     }
-    if (text == "rtslm") {
-        kind = ArtifactKind::module;
-        return true;
-    }
-    if (text == "rtsll") {
-        kind = ArtifactKind::library;
-        return true;
-    }
-    if (text == "rtslp") {
-        kind = ArtifactKind::program;
-        return true;
-    }
-    return false;
+    return "OpUnknown";
 }
 
-std::string unquote(std::string_view text) {
-    if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
-        text.remove_prefix(1);
-        text.remove_suffix(1);
+void append_instruction(std::ostringstream &out, const IRInstruction &inst) {
+    if (inst.result_id != IRId_None) {
+        out << "%" << inst.result_id << " = ";
     }
-
-    std::string result;
-    result.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '\\' && i + 1 < text.size()) {
-            ++i;
-        }
-        result.push_back(text[i]);
-    }
-    return result;
-}
-
-std::string quote(std::string_view text) {
-    std::string result = "\"";
-    for (const char c : text) {
-        if (c == '"' || c == '\\') {
-            result.push_back('\\');
-        }
-        result.push_back(c);
-    }
-    result.push_back('"');
-    return result;
-}
-
-std::string trim(std::string_view text) {
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t' || text.front() == '\r')) {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r')) {
-        text.remove_suffix(1);
-    }
-    return std::string(text);
-}
-
-void report(DiagnosticEngine *diagnostics, std::string message) {
-    if (diagnostics) {
-        diagnostics->report(7001, DiagnosticSeverity::error, {}, "<rtir>", std::move(message));
-    }
-}
-
-std::string lower_function_name(std::string_view name) {
-    std::string lowered;
-    lowered.reserve(name.size());
-    for (std::size_t i = 0; i < name.size(); ++i) {
-        if (name[i] == ':' && i + 1 < name.size() && name[i + 1] == ':') {
-            lowered += "__";
-            ++i;
-        } else {
-            lowered.push_back(name[i]);
-        }
-    }
-    return lowered;
-}
-
-bool is_identifier_char(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-}
-
-std::string lower_uniform_type(std::string_view type) {
-    if (type == "Sampler2D") {
-        return "sampler2D";
-    }
-    return std::string(type);
-}
-
-std::string member_owner(std::string_view name) {
-    const auto scope = name.find("::");
-    if (scope == std::string_view::npos) {
-        return {};
-    }
-    return std::string(name.substr(0, scope));
-}
-
-bool is_constructor(const IRFunction &function) {
-    const auto owner = member_owner(function.name);
-    if (owner.empty()) {
-        return false;
-    }
-    const auto scope = function.name.find("::");
-    return scope != std::string::npos && function.name.substr(scope + 2) == owner;
-}
-
-std::string lower_member_statement(std::string_view statement, std::string_view owner) {
-    if (owner.empty() || statement.empty() || !((statement.front() >= 'a' && statement.front() <= 'z') ||
-                                                (statement.front() >= 'A' && statement.front() <= 'Z') ||
-                                                statement.front() == '_')) {
-        return std::string(statement);
-    }
-
-    std::size_t ident_end = 1;
-    while (ident_end < statement.size() && is_identifier_char(statement[ident_end])) {
-        ++ident_end;
-    }
-
-    const auto rest = statement.substr(ident_end);
-    if (rest.starts_with("=") || rest.starts_with("+=") || rest.starts_with("-=") ||
-        rest.starts_with("*=") || rest.starts_with("/=") || rest.starts_with("%=")) {
-        std::string lowered = "this.";
-        lowered += statement;
-        return lowered;
-    }
-    return std::string(statement);
-}
-
-std::string format_statement(std::string_view statement) {
-    std::string out;
-    out.reserve(statement.size() + 8);
-    int angle_depth = 0;
-    for (std::size_t i = 0; i < statement.size(); ++i) {
-        const char c = statement[i];
-        if (c == '<') {
-            ++angle_depth;
-        } else if (c == '>' && angle_depth > 0) {
-            --angle_depth;
-        }
-
-        if (c == ',' && angle_depth > 0) {
-            out += ", ";
-            continue;
-        }
-
-        if (c == '>' && i + 1 < statement.size()) {
-            const char next = statement[i + 1];
-            out.push_back(c);
-            if ((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '_') {
-                out.push_back(' ');
-            }
-            continue;
-        }
-
-        out.push_back(c);
-    }
-    return out;
-}
-
-const IRFunction *find_constructor(std::string_view type_name, const std::vector<IRFunction> &functions) {
-    const std::string constructor_name = std::string(type_name) + "::" + std::string(type_name);
-    for (const auto &function : functions) {
-        if (function.name == constructor_name) {
-            return &function;
-        }
-    }
-    return nullptr;
-}
-
-std::string render_body_op(const IRFunction::BodyOp &op, const std::vector<IRFunction> &functions, const Mangler &mangler) {
-    switch (op.kind) {
-    case IRFunction::BodyOpKind::ret:
-        return "return " + op.value + ";";
-    case IRFunction::BodyOpKind::assign:
-        return op.name + " = " + op.value + ";";
-    case IRFunction::BodyOpKind::compound_assign:
-        return op.name + " " + op.op + "= " + op.value + ";"; // e.g. "color *= tint;"
-    case IRFunction::BodyOpKind::call: {
-        const auto *constructor = find_constructor(op.callee, functions);
-        std::string callee = constructor ? lower_function_name(mangler.mangle_rtsl(*constructor)) : op.callee;
-        std::string out = callee + "(";
-        for (std::size_t i = 0; i < op.args.size(); ++i) {
-            if (i) out += ", ";
-            out += op.args[i];
-        }
-        out += ");";
-        return out;
-    }
-    default:
-        return op.value + ";";
-    }
+    out << op_name(inst.op);
+    if (inst.type_id != IRId_None) out << " %" << inst.type_id;
+    for (IRId operand : inst.operands) out << " %" << operand;
+    for (u32 literal : inst.literals) out << " " << literal;
+    out << "\n";
 }
 
 } // namespace
 
 std::string disassemble_artifact(const Artifact &artifact) {
     std::ostringstream out;
-    out << "artifact " << kind_name(artifact.kind) << " 1.0\n\n";
-
-    out << "source " << quote(artifact.strings.empty() ? "<unknown>" : artifact.strings.front()) << "\n\n";
-    for (const auto &struct_decl : artifact.structs) {
-        out << "struct " << struct_decl.name << " {\n";
-        for (const auto &field : struct_decl.fields) {
-            out << "  " << field.type << " " << field.name << ";\n";
-        }
-        out << "};\n\n";
-    }
-    for (const auto &uniform : artifact.uniforms) {
-        const auto binding_name = uniform_binding_name(uniform);
-        out << "layout(set = " << uniform.set << ", binding = " << uniform.binding << ") ";
-        if (is_resource_uniform_type(uniform.type)) {
-            if (!uniform.access.empty()) {
-                out << uniform.access << " ";
-            }
-            out << "uniform " << lower_uniform_type(uniform.type) << " " << binding_name << ";\n\n";
-        } else {
-            out << "uniform " << uniform_block_name(uniform) << " {\n";
-            if (!uniform.inline_fields.empty()) {
-                for (const auto &field : uniform.inline_fields) {
-                    out << "  " << field.type << " " << field.name << ";\n";
-                }
-            } else {
-                out << "  " << uniform.type << " value;\n";
-            }
-            out << "} " << binding_name << ";\n\n";
-        }
-    }
-    for (const auto &interface : artifact.stage_interfaces) {
-        const std::string_view role = interface.role == StageRole::input    ? "input"
-                                      : interface.role == StageRole::output ? "output"
-                                                                            : "varying";
-        out << role << " " << interface.type_name << " {\n";
-        for (const auto &field : interface.fields) {
-            out << "  ";
-            if (!field.interpolation.empty()) {
-                out << field.interpolation << " ";
-            }
-            // 'clip' already implies the built-in position slot, so don't repeat it.
-            if (!field.builtin.empty() && field.interpolation != "clip") {
-                out << "builtin(" << field.builtin << ") ";
-            } else if (field.builtin.empty() && field.has_location) {
-                out << "location(" << field.location << ") ";
-            }
-            out << field.name << ";\n";
-        }
-        out << "};\n\n";
-    }
-    if (!artifact.functions.empty()) {
-        const Mangler mangler;
-        for (std::size_t function_index = 0; function_index < artifact.functions.size(); ++function_index) {
-            const auto &function = artifact.functions[function_index];
-            const auto disassembly_name = lower_function_name(mangler.mangle_rtsl(function));
-            const auto owner = member_owner(function.name);
-            const bool constructor = is_constructor(function);
-            if (function.stage != StageKind::none) {
-                out << "// " << (function.generated ? "compiler-generated " : "")
-                    << "stage entry: " << stage_entry_name(function.stage) << "\n";
-            }
-            out << (constructor ? owner : (function.return_type.empty() ? "void" : function.return_type)) << " "
-                << disassembly_name << "(";
-            bool needs_comma = false;
-            if (!owner.empty() && !constructor) {
-                out << "inout " << owner << " this";
-                needs_comma = true;
-            }
-            for (std::size_t i = 0; i < function.parameters.size(); ++i) {
-                if (needs_comma || i != 0) {
-                    out << ", ";
-                }
-                out << function.parameters[i].type;
-                const std::string parameter_name = function.parameters[i].name;
-                if (!parameter_name.empty()) {
-                    out << " " << parameter_name;
-                } else {
-                    out << " p" << i;
-                }
-                needs_comma = true;
-            }
-            if (function.body_ops.empty()) {
-                out << ");\n";
-            } else {
-                out << ") {\n";
-                if (constructor) {
-                    out << "  " << owner << " this;\n";
-                }
-                for (const auto &op : function.body_ops) {
-                    auto rendered = render_body_op(op, artifact.functions, mangler);
-                    out << "  " << lower_uniform_references(std::move(rendered), artifact.uniforms) << "\n";
-                }
-                if (constructor) {
-                    out << "  return this;\n";
-                }
-                out << "}\n";
-            }
-        }
-    } else {
-        out << "// no functions\n";
+    out << "artifact " << kind_name(artifact.kind) << " 2.0\n";
+    out << "source \"" << artifact.module.source_name << "\"\n\n";
+    out << "; type_constant_pool\n";
+    for (const auto &inst : artifact.module.type_constant_pool) append_instruction(out, inst);
+    out << "\n; global_variables\n";
+    for (const auto &inst : artifact.module.global_variables) append_instruction(out, inst);
+    for (const auto &fn : artifact.module.functions) {
+        out << "\n; function %" << fn.result_id;
+        if (fn.stage != StageKind::none) out << " stage=" << stage_entry_name(fn.stage);
+        if (fn.generated) out << " generated";
+        out << "\n";
+        for (const auto &inst : fn.body) append_instruction(out, inst);
     }
     return out.str();
 }
 
-bool assemble_text_rtir(std::string_view text, Artifact &artifact, DiagnosticEngine *diagnostics) {
-    std::istringstream input{std::string(text)};
-    std::string line;
-    if (!std::getline(input, line)) {
-        report(diagnostics, "expected 'artifact <kind> 1.0'");
-        return false;
+bool assemble_text_rtir(std::string_view, Artifact &, DiagnosticEngine *diagnostics) {
+    if (diagnostics) {
+        diagnostics->report(7001, DiagnosticSeverity::error, {}, "<rtir>",
+                            "text RTIR assembly is not implemented for the SSA format");
     }
-
-    std::istringstream header(line);
-    std::string word;
-    std::string kind_word;
-    std::string version;
-    if (!(header >> word >> kind_word >> version) || word != "artifact" || version != "1.0") {
-        report(diagnostics, "expected 'artifact <kind> 1.0'");
-        return false;
-    }
-
-    ArtifactKind kind{};
-    if (!parse_kind(kind_word, kind)) {
-        report(diagnostics, "unknown artifact kind");
-        return false;
-    }
-
-    IRModule module;
-    while (std::getline(input, line)) {
-        auto trimmed = trim(line);
-        if (trimmed.empty() || trimmed.starts_with("//")) {
-            continue;
-        }
-
-        if (trimmed.starts_with("source ")) {
-            module.source_name = unquote(std::string_view(trimmed).substr(7));
-            continue;
-        }
-
-        std::string_view declaration = trimmed;
-        if (declaration.ends_with(";")) {
-            declaration.remove_suffix(1);
-            const auto first_space = declaration.find(' ');
-            if (first_space == std::string_view::npos) {
-                report(diagnostics, "expected GLSL-style function declaration");
-                return false;
-            }
-            std::string return_type = trim(declaration.substr(0, first_space));
-            declaration.remove_prefix(first_space + 1);
-            const auto open_paren = declaration.find('(');
-            const auto close_paren = declaration.find(')', open_paren == std::string_view::npos ? 0 : open_paren);
-            if (open_paren == std::string_view::npos || close_paren == std::string_view::npos) {
-                report(diagnostics, "expected function declaration");
-                return false;
-            }
-            auto name = trim(declaration.substr(0, open_paren));
-            auto params_text = declaration.substr(open_paren + 1, close_paren - open_paren - 1);
-            std::vector<ParameterDecl> parameters;
-            while (!params_text.empty()) {
-                const auto comma = params_text.find(',');
-                const auto part = comma == std::string_view::npos ? params_text : params_text.substr(0, comma);
-                auto param = trim(part);
-                if (!param.empty()) {
-                    const auto last_space = param.rfind(' ');
-                    if (last_space == std::string::npos) {
-                        parameters.push_back(ParameterDecl{.type = std::move(param)});
-                    } else {
-                        parameters.push_back(ParameterDecl{
-                            .type = param.substr(0, last_space),
-                            .name = param.substr(last_space + 1),
-                        });
-                    }
-                }
-                if (comma == std::string_view::npos) {
-                    break;
-                }
-                params_text.remove_prefix(comma + 1);
-            }
-            module.functions.push_back(IRFunction{
-                .name = std::move(name),
-                .symbol_name = {},
-                .parameters = std::move(parameters),
-                .return_type = std::move(return_type),
-            });
-            continue;
-        }
-
-        report(diagnostics, "expected source or function declaration");
-        return false;
-    }
-    if (module.source_name.empty()) {
-        module.source_name = "<assembled>";
-    }
-
-    artifact.kind = kind;
-    artifact.bytes = write_artifact(kind, module);
-    Artifact parsed;
-    if (!read_artifact(artifact.bytes, parsed, diagnostics)) {
-        return false;
-    }
-    parsed.bytes = std::move(artifact.bytes);
-    artifact = std::move(parsed);
-    return true;
+    return false;
 }
 
 } // namespace rtsl

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Basic/SourceManager.h"
+#include "Basic/SourceManager.hpp"
 
 #include <string>
 #include <string_view>
@@ -20,20 +20,18 @@ enum class DeclKind {
     namespace_decl,
 };
 
-// Backend shader stage. The 4-letter spellings (vert/frag/comp) are the names
+// Backend shader stage. The 4-letter spellings (vert/frag) are the names
 // of the compiler-generated backend entry points for each stage.
 enum class StageKind : u8 {
     none,
     vertex,
     fragment,
-    compute,
 };
 
 [[nodiscard]] inline std::string_view stage_entry_name(StageKind stage) {
     switch (stage) {
     case StageKind::vertex: return "vert";
     case StageKind::fragment: return "frag";
-    case StageKind::compute: return "comp";
     case StageKind::none: return "";
     }
     return "";
@@ -70,11 +68,60 @@ struct ParameterDecl {
 };
 
 struct Decl {
+    struct Expr {
+        enum class Kind {
+            unknown,
+            name,
+            literal_int,
+            literal_float,
+            call,
+            member,
+            unary,
+            binary,
+        };
+
+        Kind kind = Kind::unknown;
+        std::string text;
+        std::string op;
+        std::vector<Expr> children;
+        SourceSpan span{};
+    };
+
+    enum class BodyStatementKind {
+        unknown,
+        block,
+        if_stmt,
+        while_stmt,
+        do_stmt,
+        for_stmt,
+        declaration,
+        assignment,
+        return_stmt,
+        expression,
+    };
+
+    struct BodyStatement {
+        BodyStatementKind kind = BodyStatementKind::unknown;
+        std::string text;
+        std::string type_name;
+        std::string name;
+        std::string initializer;
+        std::string lhs;
+        std::string rhs;
+        std::string condition;
+        std::string loop_init;
+        std::string loop_continue;
+        Expr expr{};
+        std::vector<BodyStatement> children;
+        std::vector<BodyStatement> else_children;
+        SourceSpan span{};
+    };
+
     DeclKind kind = DeclKind::unknown;
     std::string name;
     std::vector<ParameterDecl> parameters;
     std::string return_type;
-    std::vector<std::string> body_statements;
+    std::vector<BodyStatement> body_statements;
     SourceSpan span{};
     bool exported = false;
 };
@@ -98,6 +145,13 @@ struct UniformBinding {
     std::string access;
     u32 set = 0;
     u32 binding = 0;
+    // Anonymous `uniform { ... }` blocks have no source-visible scope name.
+    // Each anonymous block is its own descriptor set; only named scopes can be
+    // reopened across multiple blocks. The parser assigns each anonymous block
+    // a unique anonymous_block_id; Sema uses it to keep their sets distinct
+    // without leaking compiler-generated names into the C API or mangling.
+    bool is_anonymous = false;
+    u32 anonymous_block_id = 0;
 };
 
 struct TranslationUnit {

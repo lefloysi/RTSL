@@ -1,4 +1,4 @@
-#include "Sema/Sema.h"
+#include "Sema/Sema.hpp"
 
 #include <unordered_map>
 
@@ -29,19 +29,24 @@ SemanticModule Sema::analyze(const TranslationUnit &unit) {
             field.has_location = true;
         }
     }
+    // Every distinct scope maps to a descriptor set. Named scopes can be
+    // reopened across multiple `uniform name { ... }` blocks (matched by
+    // scope_name). Anonymous blocks cannot be reopened: each one gets its own
+    // unique anonymous_block_id from the parser, so two `uniform { ... }`
+    // blocks end up on different sets. Within a single block, fields share a
+    // set and receive sequential bindings.
     std::unordered_map<std::string, u32> named_sets;
     u32 next_set = 0;
     std::unordered_map<u32, u32> binding_counts;
     for (auto &uniform : module.uniforms) {
-        if (uniform.scope_name.empty()) {
+        const std::string set_key = uniform.is_anonymous
+                                        ? "$anon$" + std::to_string(uniform.anonymous_block_id)
+                                        : uniform.scope_name;
+        auto [it, inserted] = named_sets.emplace(set_key, next_set);
+        if (inserted) {
             uniform.set = next_set++;
         } else {
-            auto [it, inserted] = named_sets.emplace(uniform.scope_name, next_set);
-            if (inserted) {
-                uniform.set = next_set++;
-            } else {
-                uniform.set = it->second;
-            }
+            uniform.set = it->second;
         }
         uniform.binding = binding_counts[uniform.set]++;
     }

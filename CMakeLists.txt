@@ -2,79 +2,94 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rtsl LANGUAGES C CXX)
 
-set(RTSL_LIBRARY_SOURCES
-    src/Basic/Diagnostics.cpp
-    src/Basic/SourceManager.cpp
-    src/Lex/Lexer.cpp
-    src/Parse/Parser.cpp
-    src/Sema/Sema.cpp
-    src/IR/IR.cpp
-    src/IR/UniformLowering.cpp
-    src/IR/StageBuiltins.cpp
-    src/Mangle/Mangler.cpp
-    src/Serialization/Artifact.cpp
-    src/Serialization/TextRTIR.cpp
-    src/Backend/GlslBackend.cpp
-    src/Compiler/Compiler.cpp
-    src/Link/Linker.cpp
-    src/rtsl.cpp
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(Rtsl)
+
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TARGET_TRIPLET STREQUAL "")
+    list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+endif()
+
+# RTSL is split into sub-libraries so each piece can be reasoned about and
+# linked independently.
+#
+#   rtsl-core         -> basic types, diagnostics, source management, AST,
+#                        semantics, IR, serialization helpers, mangling
+#   rtsl-compiler     -> source -> artifact compilation
+#   rtsl-linker       -> object/library -> program/library linking
+#   rtsl-emitter-spirv-> RTSLP -> SPIR-V emission
+#   rtsl-emitter-hlsl -> RTSLP -> HLSL emission
+#   rtsl              -> public C API façade over compiler/linker/core
+
+set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+function(_rtsl_configure_lib target)
+    target_compile_features(${target} PUBLIC cxx_std_23)
+    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+    target_include_directories(${target}
+        PUBLIC
+            "${_rtsl_src}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
+    )
+endfunction()
+
+add_library(rtsl-core STATIC
+    ${_rtsl_src}/Basic/Diagnostics.cpp
+    ${_rtsl_src}/Basic/SourceManager.cpp
+    ${_rtsl_src}/Lex/Lexer.cpp
+    ${_rtsl_src}/Parse/Parser.cpp
+    ${_rtsl_src}/Sema/Sema.cpp
+    ${_rtsl_src}/IR/IR.cpp
+    ${_rtsl_src}/IR/UniformLowering.cpp
+    ${_rtsl_src}/IR/StageBuiltins.cpp
+    ${_rtsl_src}/Mangle/Mangler.cpp
+    ${_rtsl_src}/Serialization/Artifact.cpp
+    ${_rtsl_src}/Serialization/TextRTIR.cpp
 )
+_rtsl_configure_lib(rtsl-core)
 
-add_library(rtsl STATIC ${RTSL_LIBRARY_SOURCES})
+add_library(rtsl-emitter-spirv STATIC
+    ${_rtsl_src}/Emit/SpirvEmitter.cpp
+)
+_rtsl_configure_lib(rtsl-emitter-spirv)
+target_include_directories(rtsl-emitter-spirv PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/../runtime/backend-tools/include" "${CMAKE_CURRENT_SOURCE_DIR}/../bindings/c/include")
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TARGET_TRIPLET STREQUAL "")
+    target_include_directories(rtsl-emitter-spirv PRIVATE "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
+endif()
+target_link_libraries(rtsl-emitter-spirv PUBLIC rtsl-core)
 
-target_compile_features(rtsl PUBLIC cxx_std_23)
+# Linker: combines compiled objects/libraries into rtsll or rtslp.
+add_library(rtsl-linker STATIC ${_rtsl_src}/Link/Linker.cpp)
+_rtsl_configure_lib(rtsl-linker)
+target_link_libraries(rtsl-linker PUBLIC rtsl-core)
 
-target_include_directories(rtsl
+# Compiler orchestrator: drives source -> rtslo / rtslm.
+add_library(rtsl-compiler STATIC ${_rtsl_src}/Compiler/Compiler.cpp)
+_rtsl_configure_lib(rtsl-compiler)
+target_link_libraries(rtsl-compiler PUBLIC rtsl-core)
+
+# Aggregate library that re-exports everything via the public rtsl.h API.
+add_library(rtsl STATIC ${_rtsl_src}/rtsl.cpp)
+_rtsl_configure_lib(rtsl)
+target_link_libraries(rtsl
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        rtsl-compiler
+        rtsl-linker
+        rtsl-core
+        rtsl-emitter-spirv
 )
 
-set_target_properties(rtsl PROPERTIES
-    CXX_EXTENSIONS OFF
-)
-
-add_executable(rtslc src/Driver/rtslc.cpp)
-
+add_executable(rtslc ${_rtsl_src}/Driver/rtslc.cpp)
 target_link_libraries(rtslc PRIVATE rtsl)
-
+find_package(CLI11 CONFIG REQUIRED)
+target_link_libraries(rtslc PRIVATE CLI11::CLI11)
 target_compile_features(rtslc PRIVATE cxx_std_23)
-
-target_include_directories(rtslc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-set_target_properties(rtslc PROPERTIES
-    CXX_EXTENSIONS OFF
-)
+set_target_properties(rtslc PROPERTIES CXX_EXTENSIONS OFF)
 
 add_executable(rtsl-tests tests/rtsl_tests.cpp)
-
 target_link_libraries(rtsl-tests PRIVATE rtsl)
-
 target_compile_features(rtsl-tests PRIVATE cxx_std_23)
-
-target_include_directories(rtsl-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-set_target_properties(rtsl-tests PROPERTIES
-    CXX_EXTENSIONS OFF
-)
+set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
 
 enable_testing()
 add_test(NAME rtsl-tests COMMAND rtsl-tests)
 
-# End-to-end check: compile a representative shader and run the emitted GLSL
-# through glslangValidator so that an undeclared identifier, GLSL reserved
-# word, or invalid layout in the backend output fails CI rather than silently
-# producing broken .vert/.frag files. Skipped when glslangValidator is not on
-# PATH (e.g. machines without the Vulkan SDK).
-find_program(GLSLANG_VALIDATOR glslangValidator)
-if(GLSLANG_VALIDATOR)
-    set(_e2e_out ${CMAKE_CURRENT_BINARY_DIR}/glsl-e2e)
-    add_test(NAME glsl-e2e
-        COMMAND ${CMAKE_COMMAND}
-            -DRTSLC=$<TARGET_FILE:rtslc>
-            -DGLSLANG=${GLSLANG_VALIDATOR}
-            -DSHADER=${CMAKE_CURRENT_SOURCE_DIR}/workspace/graphics.rtsl
-            -DOUTDIR=${_e2e_out}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunGlslE2E.cmake)
-endif()

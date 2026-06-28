@@ -13,12 +13,9 @@ struct Point {
 };
 
 struct Vertex {
-    fn Vertex(Point p);
-
     vec4 position;
     vec2 uv;
     u32 material;
-
 }
 
 fn Vertex::Vertex(Point p) {
@@ -31,10 +28,8 @@ varying Vertex {
     clip position;
     smooth uv;
     flat material;
-};
+}
 struct Fragment {
-    fn Fragment(Vertex v);
-
     vec4 color;
 }
 

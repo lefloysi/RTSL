@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AST/AST.h"
+#include "AST/AST.hpp"
 
 #include <string>
 #include <string_view>

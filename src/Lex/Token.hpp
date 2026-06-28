@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/SourceManager.h"
-#include "Basic/Types.h"
+#include "Basic/SourceManager.hpp"
+#include "Basic/Types.hpp"
 
 #include <string_view>
 

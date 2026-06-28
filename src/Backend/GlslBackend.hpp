@@ -1,7 +1,7 @@
 #pragma once
 
-#include "AST/AST.h"
-#include "Serialization/Artifact.h"
+#include "AST/AST.hpp"
+#include "Serialization/Artifact.hpp"
 
 #include <string>
 #include <vector>
@@ -13,7 +13,7 @@ namespace rtsl {
 // artifact into one GlslStageFile per stage entry point.
 struct GlslStageFile {
     StageKind stage = StageKind::none;
-    std::string extension; // ".vert", ".frag", ".geom", ".comp"
+    std::string extension; // ".vert", ".frag", ".geom"
     std::string source;
 };
 

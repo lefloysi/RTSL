@@ -1,9 +1,9 @@
-#include "rtsl.h"
+#include "rtsl.hpp"
 
-#include "Compiler/Compiler.h"
-#include "IR/UniformLowering.h"
-#include "Link/Linker.h"
-#include "Serialization/Artifact.h"
+#include "Compiler/Compiler.hpp"
+#include "IR/UniformLowering.hpp"
+#include "Link/Linker.hpp"
+#include "Serialization/Artifact.hpp"
 
 #include <cstring>
 #include <exception>
@@ -18,7 +18,6 @@ rtsl_stage to_c_stage(rtsl::StageKind stage) {
     switch (stage) {
     case rtsl::StageKind::vertex: return RTSL_STAGE_VERTEX;
     case rtsl::StageKind::fragment: return RTSL_STAGE_FRAGMENT;
-    case rtsl::StageKind::compute: return RTSL_STAGE_COMPUTE;
     case rtsl::StageKind::none: return RTSL_STAGE_NONE;
     }
     return RTSL_STAGE_NONE;
@@ -87,13 +86,10 @@ struct rtsl_module_t {
             }
         }
 
-        for (const auto &function : artifact.functions) {
-            if (function.stage == rtsl::StageKind::none) {
-                continue;
-            }
+        for (const auto &entry : artifact.entries) {
             entry_views.push_back(rtsl_entry_info{
-                .name = function.name.c_str(),
-                .stage = to_c_stage(function.stage),
+                .name = entry.name.c_str(),
+                .stage = to_c_stage(entry.stage),
             });
         }
     }

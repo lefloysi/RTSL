@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/Diagnostics.h"
-#include "Lex/Token.h"
+#include "Basic/Diagnostics.hpp"
+#include "Lex/Token.hpp"
 
 #include <vector>
 
@@ -13,7 +13,7 @@ class Lexer {
 
 	[[nodiscard]] std::vector<Token> lex();
 
-  private:
+private:
 	[[nodiscard]] char peek(std::size_t lookahead = 0) const;
 	[[nodiscard]] bool at_end(std::size_t lookahead = 0) const;
 

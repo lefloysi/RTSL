@@ -86,13 +86,15 @@ backend-facing metadata.
 
 ## CLI Responsibilities
 
-The command line tool should support:
+For v0.1, the command line tool should support:
 
 - compiling source to `rtslo` and optional `rtslm`
-- resolving imports through module search paths
 - linking objects and libraries into `rtsll` or `rtslp`
 - disassembling binary artifacts into textual RTIR
 - assembling textual RTIR for testing and inspection
+
+Import search paths and multi-file dependency resolution remain planned
+follow-up work after the graphics-only release.
 
 Exact option names are allowed to evolve while the artifact and semantic model
 is still settling.
@@ -103,7 +105,6 @@ The C ABI should expose the same logical pipeline:
 
 - create and destroy compiler contexts
 - compile source buffers into artifact blobs
-- configure module/interface search paths or in-memory interfaces
 - create and destroy linker contexts
 - add object, library, or module blobs
 - link to library or program outputs
@@ -117,6 +118,10 @@ mangled backend binding name. Stage-interface queries report each input/varying/
 output field with its role, payload type, interpolation, built-in slot, and
 assigned location. Entry queries report the generated 4-letter stage entry
 names and their stages.
+
+For v0.1, this ABI is intentionally focused on compilation, linking, loading,
+and reflection. Search-path configuration and richer module dependency
+management are reserved for a later release.
 
 The ABI should not expose C++ types, STL containers, exceptions, or ownership
 that depends on C++ destructors in user code.

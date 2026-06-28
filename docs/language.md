@@ -1,8 +1,9 @@
 # RTSL Language Semantics
 
 This document defines the source language accepted by the RTSL compiler. RTSL is
-a C-style shader language for Rutile. A source file is always an implementation
-file; importable interfaces are produced by the compiler as `rtslm` artifacts.
+a graphics-first shader language for Rutile. For v0.1, source files compile to
+`rtslo` objects and optional `rtslm` interfaces, and linked programs target the
+vertex and fragment graphics stages.
 
 ## Lexical Model
 
@@ -50,6 +51,25 @@ Boolean literals: `true`, `false`
 
 Parameter and payload qualifiers may include `inout` for stages or APIs that
 require writable payload parameters.
+
+## v0.1 Scope
+
+The first release is intentionally narrow. Supported v0.1 features are:
+
+- source compilation to `rtslo`
+- optional `rtslm` interface emission
+- linked `rtsll` libraries and `rtslp` programs
+- uniform reflection
+- stage-interface reflection
+- vertex and fragment entry points
+- textual RTIR disassembly and assembly for inspection
+
+The following are documented goals, but not release guarantees for v0.1:
+
+- import search paths and full multi-file dependency resolution
+- backend-agnostic primitive expansion beyond the current graphics path
+- broader stage families beyond vertex and fragment
+- a stable long-term artifact ABI
 
 ## Translation Units
 
@@ -121,9 +141,9 @@ fn Vertex::Vertex(Point p) {
 ```
 
 Builtin scalar, vector, matrix, resource, and stage helper types are provided by
-the compiler and standard library. Examples include `f32`, `u32`, `vec2`,
-`vec3`, `vec4`, `mat4`, `Buffer<T>`, `Sampler2D`, `Triangle<T>`, `Patch<T>`,
-`Geometry<T, N>`, and `Mesh<V, P, T>`.
+the compiler and standard library. For v0.1, the supported surface is limited to
+plain scalar/vector/matrix types, `Sampler2D`, and the built-in graphics stage
+carriers.
 
 ## Functions And Statements
 
@@ -169,8 +189,8 @@ Resource declarations may use access qualifiers:
 
 ```rtsl
 uniform particles {
-    readonly Buffer<Particle> src;
-    writeonly Buffer<Particle> dst;
+    readonly Sampler2D texture;
+    vec4 tint;
 }
 ```
 
@@ -223,7 +243,6 @@ tag:
 |--------|----------|
 | `vert` | vertex   |
 | `frag` | fragment |
-| `comp` | compute  |
 
 ```rtsl
 fn vert_main(Point p) -> Vertex {
@@ -232,16 +251,16 @@ fn vert_main(Point p) -> Vertex {
 ```
 
 The compiler keeps the authored function as an ordinary function and generates a
-backend entry wrapper named for the stage (`vert`, `frag`, `comp`). This
-generated stage runtime reads the stage inputs into the source-level input
-payload, calls the authored function, and writes the result across the stage
-boundary using the resolved interface metadata. The authored name is preserved
-for reflection and debugging.
+backend entry wrapper named for the stage (`vert`, `frag`). This generated stage
+runtime reads the stage inputs into the source-level input payload, calls the
+authored function, and writes the result across the stage boundary using the
+resolved interface metadata. The authored name is preserved for reflection and
+debugging.
 
 ## Stage Builtins
 
 Stage built-ins (`gl_Position`, `gl_PointSize`, `gl_VertexIndex`, `gl_FragCoord`,
-`gl_FragDepth`, the compute invocation ids, …) are delivered through a
+`gl_FragDepth`, …) are delivered through a
 **builtin carrier struct passed by reference** as the entry's first parameter:
 
 ```rtsl
@@ -251,38 +270,21 @@ fn vert_main(RtVertex& b, Point p) -> Vertex {
 }
 ```
 
-Each stage has a carrier type — `RtVertex`, `RtFragment`, `RtCompute` — whose
-members map to the stage's built-ins. Output members (e.g. `position` →
-`gl_Position`) are written by the shader; input members (e.g. `vertex_index` →
-`gl_VertexIndex`) are read-only. The carrier is passed by reference (`&`), so the
-generated stage runtime copies the used inputs in before the call and the used
-outputs back to the real `gl_*` globals after it. Built-ins the entry never
-touches are not copied.
+Each stage has a carrier type — `RtVertex`, `RtFragment` — whose members map to
+the stage's built-ins. Output members (e.g. `position` → `gl_Position`) are
+written by the shader; input members (e.g. `vertex_index` → `gl_VertexIndex`)
+are read-only. The carrier is passed by reference (`&`), so the generated stage
+runtime copies the used inputs in before the call and the used outputs back to
+the real `gl_*` globals after it. Built-ins the entry never touches are not
+copied.
 
 A linked `rtslp` must contain the entry points required by its program family:
 
-- a **graphics** program must contain `vert` and `frag`;
-- a **compute** program must contain `comp` and no graphics stages.
+- a **graphics** program must contain `vert` and `frag`.
 
-The linker reports a diagnostic when a program is missing a required stage or
-mixes compute with graphics stages.
-
-## Compute And Advanced Stages
-
-The compiler provides a `Compute` input shape for compute-like stages:
-
-```rtsl
-struct Compute {
-    vec3 group;
-    vec3 local;
-    vec3 global;
-    u32 local_index;
-};
-```
-
-The language model also allows future stage families such as tessellation, mesh,
-and ray tracing through typed function signatures and stage helper types. These
-features must lower through the same RTIR and artifact model.
+The linker reports a diagnostic when a graphics program is missing a required
+stage. Compute and advanced stage families are out of scope for v0.1 and are
+rejected with a clear diagnostic if encountered.
 
 ## Standard Library And Primitives
 
@@ -291,5 +293,5 @@ The standard library should be written in RTSL where possible. Functions such as
 unless they need primitive backend behavior.
 
 Only operations that cannot be expressed in RTSL should use reserved primitives:
-texture sampling, barriers, derivatives, discard, subgroup operations, and ray
-tracing operations.
+texture sampling, barriers, derivatives, discard, and other backend-specific
+operations.
