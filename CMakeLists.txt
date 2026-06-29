@@ -57,6 +57,11 @@ add_library(rtsl-linker STATIC ${_rtsl_src}/Link/Linker.cpp)
 _rtsl_configure_lib(rtsl-linker)
 target_link_libraries(rtsl-linker PUBLIC rtsl-core)
 
+# rtslp package reader: the in-memory loader for RTSL's linker output.
+# Backends and runtimes link against this rather than reaching for the on-disk
+# format directly.
+add_subdirectory(package)
+
 # Backend emitters live under RTSL, not the runtime.
 add_subdirectory(backends)
 

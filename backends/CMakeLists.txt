@@ -17,10 +17,9 @@ function(_rtsl_backend target)
         PUBLIC
             "${CMAKE_CURRENT_SOURCE_DIR}/../src"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../bindings/c/include"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/backend-tools/include"
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
     )
-    target_link_libraries(${target} PUBLIC rtsl-core Rutile::backend-tools)
+    target_link_libraries(${target} PUBLIC rtsl-core rtsl-package)
 endfunction()
 
 add_library(rtsl-backend-spirv STATIC
