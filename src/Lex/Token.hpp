@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Basic/SourceManager.hpp"
-#include "Basic/Types.hpp"
+#include "basic_source_manager.hpp"
+#include "basic_types.hpp"
 
 #include <string_view>
 
@@ -67,6 +67,7 @@ enum class TokenKind : u16 {
     invalid,
     end_of_file,
     identifier,
+    string_literal,
     integer_literal,
     float_literal,
 
