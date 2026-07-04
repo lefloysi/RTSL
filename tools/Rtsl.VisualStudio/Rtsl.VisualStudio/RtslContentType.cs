@@ -1,20 +1,18 @@
+﻿using Microsoft.VisualStudio.Utilities;
 using System.ComponentModel.Composition;
-using Microsoft.VisualStudio.Utilities;
 
-namespace vs_rtsl_ext
+namespace Rtsl.VisualStudio
 {
     internal static class RtslContentType
     {
-        public const string Name = "rtsl";
-
         [Export]
-        [Name(Name)]
+        [Name("rtsl")]
         [BaseDefinition("code")]
         internal static ContentTypeDefinition ContentTypeDefinition;
 
         [Export]
         [FileExtension(".rtsl")]
-        [ContentType(Name)]
+        [ContentType("rtsl")]
         internal static FileExtensionToContentTypeDefinition FileExtensionDefinition;
     }
 }
