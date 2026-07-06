@@ -169,7 +169,7 @@ void add_common_options(CLI::App& app, bool& verbose) {
 
 int main(int argc, char** argv) {
 	CLI::App app{ "RTSL compiler driver" };
-	app.require_subcommand(0, 1);
+	app.require_subcommand(1, 1);
 
 	bool verbose = false;
 	add_common_options(app, verbose);
@@ -205,7 +205,16 @@ int main(int argc, char** argv) {
 	assemble->add_option("input", assemble_input, "Input .rtir file")->required();
 	assemble->add_option("-o,--output", assemble_output, "Output .rtslo file")->required();
 
-	CLI11_PARSE(app, argc, argv);
+	if (argc <= 1) {
+		std::cout << app.help() << '\n';
+		return 1;
+	}
+
+	try {
+		CLI11_PARSE(app, argc, argv);
+	} catch (const CLI::ParseError& e) {
+		return app.exit(e);
+	}
 
 	if (*compile)
 		return compile_mode(compile_input, compile_output, compile_include_dirs, verbose);
@@ -217,5 +226,6 @@ int main(int argc, char** argv) {
 		return dump_mode(dump_input);
 	if (*assemble)
 		return assemble_mode(assemble_input, assemble_output);
-	return 0;
+	std::cout << app.help() << '\n';
+	return 1;
 }

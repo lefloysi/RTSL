@@ -10,10 +10,8 @@ fn Vertex::Vertex(Point p) {
     position = vec4(p.position, 1.0);
 }
 
-using RasterVertex = Vertex : position(clip);
-
 @vertex
-fn main(Point p) -> RasterVertex {
+fn main(Point p) -> RasterVertex = Vertex : position(clip) {
     return Vertex(p);
 }
 

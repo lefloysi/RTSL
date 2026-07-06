@@ -38,7 +38,7 @@ target_compile_features(rtsl PUBLIC cxx_std_23)
 set_target_properties(rtsl PROPERTIES CXX_EXTENSIONS OFF)
 if(MSVC)
     set_target_properties(rtsl PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
     )
     target_compile_options(rtsl PRIVATE /FS)
 endif()
@@ -64,8 +64,15 @@ else()
     set_target_properties(rtslc PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
-add_executable(rtsl-tests tests/rtsl_tests.cpp)
+find_package(Catch2 CONFIG REQUIRED)
+
+add_executable(rtsl-tests
+    tests/basic.cpp
+    tests/compiler.cpp
+    tests/artifact.cpp
+)
 target_link_libraries(rtsl-tests PRIVATE rtsl)
+target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)
 target_compile_features(rtsl-tests PRIVATE cxx_std_23)
 set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
 # Smoke tests iterate tests/shaders/*.rtsl; the path is baked in at build
@@ -76,7 +83,7 @@ target_compile_definitions(rtsl-tests PRIVATE
 
 if(MSVC)
     set_target_properties(rtslc rtsl-tests PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
     )
 endif()
 

@@ -65,7 +65,7 @@ class Parser {
 	SourceSpan statement_span(const Token& begin, const Token& end) const;
 	Decl::Expr parse_expression(std::string_view text) const;
 	std::string collect_type_tokens_until_identifier();
-	void diagnose(const Token& token, std::string_view message);
+	void diagnose(const Token& token, std::string_view message) const;
 
 	TranslationUnit* unit_ = nullptr;
 

@@ -25,7 +25,7 @@ fn Vertex::Vertex(Point p) {
     uv = p.uv;
     material = 0;
 }
-
+s
 struct Fragment {
     vec4 color;
 }
@@ -39,9 +39,8 @@ fn Fragment::Fragment(Vertex v) {
 fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
     return Vertex(p);
 }
-
 @fragment
-fn main(frag_globals g, Vertex v) -> Fragment : color(color) {
+fn main(frag_globals g, Vertex v) -> Fragment {
     return Fragment(v);
 }
 

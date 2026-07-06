@@ -67,12 +67,6 @@ std::string encode_type(std::string_view type) {
 	return encode_source_name(type);
 }
 
-std::string Mangler::mangle_glsl_from_rtsl(std::string_view rtsl_mangled_name) const {
-	std::string out = "__";
-	out += sanitize_identifier(rtsl_mangled_name);
-	return out;
-}
-
 std::string Mangler::mangle_rtsl(const MangleInput& input) const {
 	if (input.stage != StageKind::none) {
 		// Stage entries used to be name-detected (`vert_*`/`frag_*`), so the
@@ -110,13 +104,6 @@ std::string Mangler::mangle_rtsl(const MangleInput& input) const {
 		}
 	}
 	return out;
-}
-
-std::string Mangler::mangle_for_glsl(const MangleInput& input) const {
-	if (input.stage != StageKind::none) {
-		return sanitize_identifier(input.name);
-	}
-	return mangle_glsl_from_rtsl(mangle_rtsl(input));
 }
 
 } // namespace rtsl

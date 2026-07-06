@@ -21,8 +21,6 @@ struct MangleInput {
 class Mangler {
   public:
 	[[nodiscard]] std::string mangle_rtsl(const MangleInput& input) const;
-	[[nodiscard]] std::string mangle_glsl_from_rtsl(std::string_view rtsl_mangled_name) const;
-	[[nodiscard]] std::string mangle_for_glsl(const MangleInput& input) const;
 };
 
 } // namespace rtsl

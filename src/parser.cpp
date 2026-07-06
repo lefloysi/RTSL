@@ -817,6 +817,14 @@ void Parser::parse_function_body_into(Decl& decl, bool stop_on_right_brace) {
 }
 
 void Parser::parse_statement_list_into(std::vector<Decl::BodyStatement>& out, bool stop_on_right_brace) {
+	auto is_declaration_starter = [](TokenKind kind) {
+		return kind == TokenKind::kw_Export || kind == TokenKind::kw_Import ||
+			kind == TokenKind::kw_Namespace || kind == TokenKind::kw_Struct ||
+			kind == TokenKind::kw_Using || kind == TokenKind::kw_Uniform ||
+			kind == TokenKind::kw_Input || kind == TokenKind::kw_Output ||
+			kind == TokenKind::kw_Layout || kind == TokenKind::kw_Function || kind == TokenKind::at;
+	};
+
 	while (!at_end()) {
 		if (stop_on_right_brace && at(TokenKind::right_brace)) {
 			++cursor_;
@@ -833,6 +841,11 @@ void Parser::parse_statement_list_into(std::vector<Decl::BodyStatement>& out, bo
 
 		while (!at_end()) {
 			const Token token = peek();
+			if (saw_tokens && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
+				is_declaration_starter(token.kind)) {
+				diagnose(token, "expected ';' before next declaration");
+				break;
+			}
 			if (token.kind == TokenKind::left_brace && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
 				saw_tokens) {
 				break;
@@ -875,6 +888,19 @@ void Parser::parse_statement_list_into(std::vector<Decl::BodyStatement>& out, bo
 		}
 
 		auto body = parse_statement_from_tokens(stmt_tokens);
+		if (body.kind == Decl::BodyStatementKind::unknown) {
+			while (!at_end() && !at(TokenKind::semicolon) && !at(TokenKind::right_brace)) {
+				++cursor_;
+			}
+			if (at(TokenKind::semicolon)) {
+				++cursor_;
+			}
+			if (at(TokenKind::right_brace) && stop_on_right_brace) {
+				++cursor_;
+				return;
+			}
+			continue;
+		}
 		if (body.kind == Decl::BodyStatementKind::if_stmt) {
 			if (at(TokenKind::left_brace)) {
 				++cursor_;
@@ -1088,7 +1114,14 @@ Decl::BodyStatement Parser::parse_statement_from_tokens(const std::vector<Token>
 		} else {
 			body.kind = Decl::BodyStatementKind::expression;
 			body.expr = parse_expression(trim(tokens_to_text(std::span<const Token>(tokens.data(), tokens.size()))));
+			if (body.expr.kind == Decl::Expr::Kind::name) {
+				diagnose(first, "expected a statement, not a bare identifier");
+				body.kind = Decl::BodyStatementKind::unknown;
+			}
 		}
+	}
+	if (body.kind == Decl::BodyStatementKind::unknown) {
+		diagnose(first, "unsupported statement");
 	}
 	return body;
 }
@@ -1272,7 +1305,7 @@ std::string Parser::tokens_to_text(std::span<const Token> tokens) const {
 	return statement;
 }
 
-void Parser::diagnose(const Token& token, std::string_view message) {
+void Parser::diagnose(const Token& token, std::string_view message) const {
 	diagnostics_.report(2001, DiagnosticSeverity::error, token.span.begin, sources_.name(file_id_), message);
 }
 
@@ -1288,9 +1321,19 @@ SourceSpan Parser::statement_span(const Token& begin, const Token& end) const {
 Decl::Expr Parser::parse_expression(std::string_view text) const {
 	struct ParserImpl {
 		ExprTokenizer lex;
+		bool error = false;
 		explicit ParserImpl(std::string_view text) : lex(text) {}
 
-		Decl::Expr parse() { return parse_add(); }
+		Decl::Expr parse() {
+			Decl::Expr expr = parse_add();
+			if (error) {
+				return {};
+			}
+			if (lex.peek().kind != ExprToken::Kind::end) {
+				return {};
+			}
+			return expr;
+		}
 
 		Decl::Expr parse_add() {
 			auto lhs = parse_mul();
@@ -1343,11 +1386,18 @@ Decl::Expr Parser::parse_expression(std::string_view text) const {
 
 		Decl::Expr parse_postfix() {
 			auto base = parse_primary();
+			if (error) {
+				return {};
+			}
 			while (true) {
 				const auto tok = lex.peek();
 				if (tok.kind == ExprToken::Kind::dot || tok.kind == ExprToken::Kind::scope) {
 					lex.next();
 					const auto name = lex.next();
+					if (name.kind != ExprToken::Kind::ident) {
+						error = true;
+						return {};
+					}
 					Decl::Expr expr;
 					expr.kind = Decl::Expr::Kind::member;
 					expr.op = tok.text;
@@ -1363,13 +1413,21 @@ Decl::Expr Parser::parse_expression(std::string_view text) const {
 					expr.children = { std::move(base) };
 					if (lex.peek().kind != ExprToken::Kind::rparen) {
 						while (true) {
-							expr.children.push_back(parse());
+							auto arg = parse();
+							if (error) {
+								return {};
+							}
+							expr.children.push_back(std::move(arg));
 							if (lex.peek().kind == ExprToken::Kind::comma) {
 								lex.next();
 								continue;
 							}
 							break;
 						}
+					}
+					if (lex.peek().kind != ExprToken::Kind::rparen) {
+						error = true;
+						return {};
 					}
 					(void)lex.next();
 					base = std::move(expr);
@@ -1398,10 +1456,15 @@ Decl::Expr Parser::parse_expression(std::string_view text) const {
 				return expr;
 			case ExprToken::Kind::lparen: {
 				auto inner = parse();
+				if (lex.peek().kind != ExprToken::Kind::rparen) {
+					error = true;
+					return {};
+				}
 				(void)lex.next();
 				return inner;
 			}
 			default:
+				error = true;
 				return expr;
 			}
 		}

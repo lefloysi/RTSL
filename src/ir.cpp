@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 // Lower the SemanticModule (which still carries statement strings from the
 // parser today) into the typed SSA IR described in docs/rtir.md.
@@ -32,7 +33,10 @@ namespace rtsl {
 
 class IRBuilder {
   public:
-	explicit IRBuilder(IRModule& module) : module_(module) {}
+	explicit IRBuilder(IRModule& module,
+		std::unordered_set<std::string> callable_names = {},
+		DiagnosticEngine* diagnostics = nullptr)
+		: module_(module), callable_names_(std::move(callable_names)), diagnostics_(diagnostics) {}
 
 	[[nodiscard]] IRId fresh_id() { return module_.next_id++; }
 
@@ -67,10 +71,18 @@ class IRBuilder {
 	void add_decoration(IRDecoration d) { module_.decorations.push_back(std::move(d)); }
 
 	IRModule& module() { return module_; }
+	bool is_known_callable(std::string_view name) const { return callable_names_.contains(std::string(name)); }
+	void diagnose(std::string_view message) const {
+		if (diagnostics_) {
+			diagnostics_->report(3201, DiagnosticSeverity::error, {}, module_.source_name, message);
+		}
+	}
 
   private:
 	IRModule& module_;
 	std::unordered_map<std::string, IRId> type_cache_;
+	std::unordered_set<std::string> callable_names_;
+	DiagnosticEngine* diagnostics_ = nullptr;
 };
 
 // ----------------------------------------------------------------------------
@@ -1304,6 +1316,10 @@ class FunctionLowerer {
 		// calls) rewrites operand[0] to the resolved function's result_id and
 		// ultimately inlines the body so the backend never sees a FunctionCall
 		// for a user function.
+		if (!builder_.is_known_callable(callee)) {
+			builder_.diagnose(std::format("unknown callable '{}'", callee));
+			return Value{};
+		}
 		IRInstruction call;
 		call.op = IROp::FunctionCall;
 		call.result_id = builder_.fresh_id();
@@ -1787,10 +1803,53 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	ir.uniforms = module.uniforms;
 	ir.stage_interfaces = module.stage_interfaces;
 
-	IRBuilder builder(ir);
+	std::unordered_set<std::string> callable_names;
+	for (const auto& symbol : module.symbols) {
+		if (symbol.kind == DeclKind::function) {
+			callable_names.insert(symbol.name);
+		}
+	}
+	for (const auto& export_symbol : module.imported_exports) {
+		if (export_symbol.kind == "function") {
+			callable_names.insert(export_symbol.name);
+		}
+	}
+
+	IRBuilder builder(ir, std::move(callable_names), diagnostics);
 	TypeRegistry types(builder);
 	for (const auto& decl : module.structs) {
 		types.register_struct(decl);
+	}
+	const auto report_unknown_type = [&](std::string_view where, std::string_view type) {
+		if (diagnostics && !type.empty()) {
+			diagnostics->report(3202, DiagnosticSeverity::error, {}, module.source_name,
+				std::format("unknown type '{}' in {}", type, where));
+		}
+	};
+	const auto check_type = [&](std::string_view where, std::string_view type) {
+		if (types.find(type) == IRId_None) {
+			report_unknown_type(where, type);
+		}
+	};
+	for (const auto& decl : module.structs) {
+		for (const auto& field : decl.fields) {
+			check_type(std::format("struct '{}'", decl.name), field.type);
+		}
+	}
+	for (const auto& symbol : module.symbols) {
+		for (const auto& param : symbol.parameters) {
+			check_type(std::format("parameter '{}' in '{}'", param.name, symbol.name), param.type);
+		}
+		if (!symbol.return_type.empty() && symbol.return_type != "void") {
+			check_type(std::format("return type of '{}'", symbol.name), symbol.return_type);
+		}
+	}
+	for (const auto& uniform : module.uniforms) {
+		if (uniform.type == "UniformBuffer" || uniform.type == "StorageBuffer" ||
+			uniform.type == "Sampler" || uniform.type == "Sampler2D" || uniform.type == "Image2D") {
+			continue;
+		}
+		check_type(std::format("uniform '{}'", uniform.name), uniform.type);
 	}
 
 	const auto is_uniform_buffer_type = [](std::string_view s) { return s == "UniformBuffer"; };
