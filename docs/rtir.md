@@ -350,7 +350,7 @@ OpDecorate %mvp Binding 0
 %mvp_ptr = OpTypePointer Uniform %mat4
 %mvp     = OpVariable %mvp_ptr Uniform
 
-; fn vert_main(...)
+; @vertex fn main(...)  -> mangled as vert_main
 %vert_main = OpFunction %Vertex None %vert_main_ty
 %p         = OpFunctionParameter %Point
 %entry     = OpLabel

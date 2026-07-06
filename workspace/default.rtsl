@@ -1,0 +1,49 @@
+
+uniform {
+    UniformBuffer mvp;
+}
+uniform albedo {
+    Sampler2D texture;
+    UniformBuffer tint;
+}
+layout mvp : mat4;
+layout albedo::tint : vec4;
+
+struct Point {
+    vec3 position;
+    vec2 uv;
+};
+
+struct Vertex {
+    vec4 position;
+    vec2 uv;
+    u32 material;
+}
+
+fn Vertex::Vertex(Point p) {
+    position = mvp * vec4(p.position, 1.0);
+    uv = p.uv;
+    material = 0;
+}
+
+struct Fragment {
+    vec4 color;
+}
+
+fn Fragment::Fragment(Vertex v) {
+    color = sample(albedo::texture, v.uv) * albedo::tint;
+}
+
+
+@vertex
+fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
+    return Vertex(p);
+}
+
+@fragment
+fn main(frag_globals g, Vertex v) -> Fragment : color(color) {
+    return Fragment(v);
+}
+
+
+

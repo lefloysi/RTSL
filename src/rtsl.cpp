@@ -239,7 +239,7 @@ rtsl_module rtslLoadModule(rtsl_context ctx, const uint8_t* data, size_t size) {
 	}
 	try {
 		rtsl::Artifact artifact;
-		if (!rtsl::read_artifact(std::span<const rtsl::u8>(data, size), artifact, &ctx->compiler.diagnostics())) {
+		if (!rtsl::read_artifact(std::span<const rtsl::u08>(data, size), artifact, &ctx->compiler.diagnostics())) {
 			set_result(ctx, RTSL_ERROR_INVALID_ARGUMENT, "failed to load artifact");
 			return nullptr;
 		}
@@ -261,7 +261,7 @@ rtsl_module rtslLoadModuleFromBytes(const uint8_t* data, size_t size) {
 	}
 	try {
 		rtsl::Artifact artifact;
-		if (!rtsl::read_artifact(std::span<const rtsl::u8>(data, size), artifact, nullptr)) {
+		if (!rtsl::read_artifact(std::span<const rtsl::u08>(data, size), artifact, nullptr)) {
 			return nullptr;
 		}
 		return new (std::nothrow) rtsl_module_t{ .artifact = std::move(artifact) };
@@ -373,7 +373,7 @@ int rtslLinkerAddBlob(rtsl_linker linker, const uint8_t* data, size_t size) {
 	if (!linker || (!data && size != 0)) {
 		return 0;
 	}
-	return linker->linker.add_artifact_bytes(std::span<const rtsl::u8>(data, size)) ? 1 : 0;
+	return linker->linker.add_artifact_bytes(std::span<const rtsl::u08>(data, size)) ? 1 : 0;
 }
 
 rtsl_module rtslLinkProgram(rtsl_linker linker) {

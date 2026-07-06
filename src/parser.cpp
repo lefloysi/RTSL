@@ -178,11 +178,36 @@ bool Parser::at_end() const {
 Decl Parser::parse_declaration() {
 	bool exported = consume(TokenKind::kw_Export);
 
+	// Optional stage attribute on a fn decl: `@vertex` / `@fragment` (later
+	// `@compute`, `@mesh`, ...). Only recognized before `fn`; the attribute
+	// name is a bare identifier looked up here, so no new keywords are burned.
+	StageKind stage_attr = StageKind::none;
+	if (consume(TokenKind::at)) {
+		if (!at(TokenKind::identifier)) {
+			diagnose(peek(), "expected attribute name after '@'");
+		} else {
+			const auto text = peek().text;
+			if (text == "vertex") {
+				stage_attr = StageKind::vertex;
+			} else if (text == "fragment") {
+				stage_attr = StageKind::fragment;
+			} else {
+				diagnose(peek(), "unknown attribute '@" + std::string(text) + "'");
+			}
+			++cursor_;
+		}
+		if (!at(TokenKind::kw_Function)) {
+			diagnose(peek(), "stage attribute must precede a fn declaration");
+		}
+	}
+
 	if (at(TokenKind::kw_Import)) {
 		return parse_import(exported);
 	}
 	if (at(TokenKind::kw_Function)) {
-		return parse_named_declaration(DeclKind::function, exported);
+		auto decl = parse_named_declaration(DeclKind::function, exported);
+		decl.stage = stage_attr;
+		return decl;
 	}
 	if (at(TokenKind::kw_Struct)) {
 		auto decl = parse_named_declaration(DeclKind::struct_decl, exported);
@@ -523,13 +548,46 @@ std::string Parser::resolve_alias(std::string_view name) const {
 void Parser::parse_return_boundary(std::string base_type) {
 	// Grammar (after the leading `:`):
 	//   entry (, entry)*  terminated by `{` or `;`
-	//   entry := INTRINSIC IDENT
+	//   entry := FIELD_NAME '(' TAG (, TAG)* ')'
 	//
-	// INTRINSIC is a compiler-known pipeline hook: clip, smooth, flat today;
-	// depth/coverage/target/viewport/cull_primitive/... as backends grow. The
-	// set is deliberately closed — users cannot add operations. Each entry
-	// attaches per-field metadata to `base_type`'s stage interface without
-	// changing its type identity.
+	// FIELD_NAME is a field of `base_type`; the parens carry a comma list of
+	// tags. Tags are bare identifiers looked up in a fixed table — no keyword
+	// per tag — so adding `noperspective` / `centroid` / etc. is a data change:
+	//   - interpolation modes: clip, smooth, flat
+	//   - pipeline slot bindings: position, depth, ...
+	// One entry attaches per-field metadata to `base_type`'s stage interface
+	// without changing its type identity. Multiple tags on one field stack
+	// (e.g. `pos(clip, smooth)`).
+	auto tag_text = [&]() -> std::string_view {
+		// Accept both bare identifiers and existing keyword tokens
+		// (clip/smooth/flat/builtin) so the tag namespace isn't a subset of
+		// what the lexer would tokenize as an identifier.
+		const auto& t = peek();
+		if (t.kind == TokenKind::identifier ||
+			t.kind == TokenKind::kw_Clip ||
+			t.kind == TokenKind::kw_Smooth ||
+			t.kind == TokenKind::kw_Flat ||
+			t.kind == TokenKind::kw_Builtin) {
+			return t.text;
+		}
+		return {};
+	};
+	auto apply_tag = [](StageIOField& field, std::string_view text) -> bool {
+		if (text == "clip") {
+			field.interpolation = InterpolationKind::clip;
+			if (field.builtin == BuiltinSlot::none)
+				field.builtin = BuiltinSlot::position;
+			return true;
+		}
+		if (text == "smooth") { field.interpolation = InterpolationKind::smooth; return true; }
+		if (text == "flat")   { field.interpolation = InterpolationKind::flat;   return true; }
+		if (const auto slot = parse_builtin_slot(text); slot != BuiltinSlot::none) {
+			field.builtin = slot;
+			return true;
+		}
+		return false;
+	};
+
 	StageInterface interface{ .role = StageRole::varying, .type_name = std::move(base_type) };
 	bool first = true;
 	while (!at_end() && !at(TokenKind::left_brace) && !at(TokenKind::semicolon)) {
@@ -540,27 +598,40 @@ void Parser::parse_return_boundary(std::string base_type) {
 			}
 		}
 		first = false;
-		StageIOField field;
-		if (consume(TokenKind::kw_Clip)) {
-			field.interpolation = InterpolationKind::clip;
-			field.builtin = BuiltinSlot::position;
-		} else if (consume(TokenKind::kw_Smooth)) {
-			field.interpolation = InterpolationKind::smooth;
-		} else if (consume(TokenKind::kw_Flat)) {
-			field.interpolation = InterpolationKind::flat;
-		} else if (at(TokenKind::identifier)) {
-			diagnose(peek(), "unknown pipeline intrinsic '" + std::string(peek().text) + "' in return boundary");
-			++cursor_;
-		} else {
-			diagnose(peek(), "expected a pipeline intrinsic in return boundary");
-			break;
-		}
 		if (!at(TokenKind::identifier)) {
-			diagnose(peek(), "expected field name after intrinsic");
+			diagnose(peek(), "expected field name in return boundary");
 			break;
 		}
+		StageIOField field;
 		field.name = std::string(peek().text);
 		++cursor_;
+		if (!consume(TokenKind::left_paren)) {
+			diagnose(peek(), "expected '(' after field name in return boundary");
+			break;
+		}
+		bool first_tag = true;
+		while (!at_end() && !at(TokenKind::right_paren)) {
+			if (!first_tag) {
+				if (!consume(TokenKind::comma)) {
+					diagnose(peek(), "expected ',' between tags");
+					break;
+				}
+			}
+			first_tag = false;
+			const auto text = tag_text();
+			if (text.empty()) {
+				diagnose(peek(), "expected pipeline tag identifier");
+				break;
+			}
+			if (!apply_tag(field, text)) {
+				diagnose(peek(), "unknown pipeline tag '" + std::string(text) + "'");
+			}
+			++cursor_;
+		}
+		if (!consume(TokenKind::right_paren)) {
+			diagnose(peek(), "expected ')' after tag list");
+			break;
+		}
 		interface.fields.push_back(std::move(field));
 	}
 	if (unit_ && !interface.type_name.empty()) {
@@ -735,8 +806,9 @@ std::string Parser::collect_type_tokens_until_identifier() {
 
 void Parser::parse_function_body(Decl& decl) {
 	if (!consume(TokenKind::left_brace)) {
-		return;
+		return; // no brace = forward decl; decl.has_body stays false
 	}
+	decl.has_body = true;
 	parse_function_body_into(decl, true);
 }
 

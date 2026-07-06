@@ -32,9 +32,9 @@ struct DebugLocation {
 	u32 column = 0;
 };
 
-// SPIR-V-like storage class for OpVariable / OpTypePointer. Encoded as a u8
+// SPIR-V-like storage class for OpVariable / OpTypePointer. Encoded as a u08
 // literal on those instructions.
-enum class StorageClass : u8 {
+enum class StorageClass : u08 {
 	Function = 0,
 	Input = 1,
 	Output = 2,
@@ -254,8 +254,8 @@ struct IRFunction {
 	// importers; non-exported functions are private to the implementation.
 	bool exported = false;
 
-	StringId display_name{}; // authored, e.g. "vert_main"
-	StringId mangled_name{}; // canonical identity, e.g. "_Z9vert_main..."
+	StringId display_name{}; // authored, e.g. "main" (for `@vertex fn main`)
+	StringId mangled_name{}; // canonical identity, e.g. "vert_main"
 
 	// Source-level identifier used by the inliner to match unresolved
 	// FunctionCall instructions to their target. The StringId-based pair above

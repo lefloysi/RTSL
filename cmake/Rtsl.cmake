@@ -19,17 +19,56 @@ function(rtsl_add_program target_name)
 
     file(MAKE_DIRECTORY "${RTSL_OUTPUT_DIR}")
 
+    # First pass: build a map of source basename -> .rtslm output path so we
+    # can resolve `import <name>;` lines to concrete build-tree paths. Every
+    # source contributes a candidate .rtslm sidecar even if it turns out to
+    # have no exports (rtslc skips writing in that case — CMake sees a
+    # missing file, but nothing will depend on it either).
+    set(_rtsl_module_paths)
+    foreach(source IN LISTS RTSL_SOURCES)
+        get_filename_component(source_name "${source}" NAME_WE)
+        set(_rtsl_module_${source_name} "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
+        list(APPEND _rtsl_module_paths "${_rtsl_module_${source_name}}")
+    endforeach()
+
     set(outputs)
     foreach(source IN LISTS RTSL_SOURCES)
         get_filename_component(source_name "${source}" NAME_WE)
         set(object_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslo")
+        set(module_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
         set(program_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslp")
 
+        # Scan the source for import lines so we can wire per-file dependency
+        # ordering. Matches `import <foo.rtsl>;` and `import "foo";`; extension
+        # is optional. Only imports that name a sibling source in this call
+        # become build-graph edges — external imports fall through to the -I
+        # search path at compile time and don't imply an ordering here.
+        set(import_deps)
+        if(EXISTS "${source}")
+            file(STRINGS "${source}" _rtsl_import_lines REGEX "^[ \t]*import[ \t]")
+            foreach(line IN LISTS _rtsl_import_lines)
+                if(line MATCHES "import[ \t]+[<\"]([^>\"]+)[>\"]")
+                    set(_imported "${CMAKE_MATCH_1}")
+                    get_filename_component(_imported_base "${_imported}" NAME_WE)
+                    if(DEFINED _rtsl_module_${_imported_base})
+                        list(APPEND import_deps "${_rtsl_module_${_imported_base}}")
+                    endif()
+                endif()
+            endforeach()
+        endif()
+
+        # The .rtslm sidecar is written by `rtslc compile` only when the source
+        # has exports — not every source produces one. Listing it in BYPRODUCTS
+        # (rather than OUTPUT) tells CMake "may or may not appear; don't fail
+        # if missing" while still letting downstream commands depend on it for
+        # ordering.
         add_custom_command(
             OUTPUT "${object_path}" "${program_path}"
+            BYPRODUCTS "${module_path}"
             COMMAND "$<TARGET_FILE:rtslc>" compile "${source}" -o "${object_path}"
+                -I "${RTSL_OUTPUT_DIR}"
             COMMAND "$<TARGET_FILE:rtslc>" link-program "${object_path}" -o "${program_path}"
-            DEPENDS "${source}" rtslc ${RTSL_DEPENDS}
+            DEPENDS "${source}" rtslc ${RTSL_DEPENDS} ${import_deps}
             VERBATIM
             COMMENT "RTSL ${source_name} -> ${target_name}"
         )

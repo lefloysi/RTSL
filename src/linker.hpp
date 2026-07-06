@@ -11,7 +11,7 @@ class Linker {
   public:
 	explicit Linker(DiagnosticEngine& diagnostics);
 
-	bool add_artifact_bytes(std::span<const u8> bytes);
+	bool add_artifact_bytes(std::span<const u08> bytes);
 	bool add_artifact(Artifact artifact);
 	// Produce a runnable program. Requires at least one stage entry point;
 	// the program is what Rutile backends actually load.

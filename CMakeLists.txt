@@ -27,7 +27,6 @@ set(RTSL_SOURCES
     ${_rtsl_src}/uniform_lowering.cpp
     ${_rtsl_src}/artifact.cpp
     ${_rtsl_src}/text_rtir.cpp
-    ${_rtsl_src}/package.cpp
     ${_rtsl_src}/compiler.cpp
     ${_rtsl_src}/language_service.cpp
     ${_rtsl_src}/linker.cpp
@@ -48,8 +47,11 @@ target_include_directories(rtsl
         "${_rtsl_src}"
         "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
 )
-# package.cpp pulls in rutile.h (from the runtime layout/IDs).
-target_link_libraries(rtsl PUBLIC rutile)
+# `src/package.hpp/cpp` is a helper for reading .rtslp programs at runtime;
+# it targets Rutile backends and depends on their `rutile.h`. Keeping it out
+# of the RTSL library build inverts the dependency correctly — RTSL knows
+# nothing about Rutile, and each backend compiles package.cpp itself when it
+# needs the reader.
 
 add_executable(rtslc ${_rtsl_src}/rtslc.cpp)
 find_package(CLI11 CONFIG QUIET)
@@ -66,6 +68,11 @@ add_executable(rtsl-tests tests/rtsl_tests.cpp)
 target_link_libraries(rtsl-tests PRIVATE rtsl)
 target_compile_features(rtsl-tests PRIVATE cxx_std_23)
 set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
+# Smoke tests iterate tests/shaders/*.rtsl; the path is baked in at build
+# time so the test binary works no matter where CTest launches it from.
+target_compile_definitions(rtsl-tests PRIVATE
+    RTSL_TEST_SHADERS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
+)
 
 if(MSVC)
     set_target_properties(rtslc rtsl-tests PROPERTIES

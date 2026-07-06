@@ -2,6 +2,7 @@
 
 #include "ir.hpp"
 #include "lexer.hpp"
+#include "linker.hpp"
 #include "parser.hpp"
 #include "sema.hpp"
 
@@ -136,6 +137,66 @@ std::filesystem::path resolve_import(const CompilerInvocation& invocation, std::
 	return {};
 }
 
+// Autobuild fallback: when the .rtslm sidecar isn't on disk, look for the
+// original `.rtsl` source next to any of the import search roots. If found,
+// the caller compiles it and extracts a module interface on the fly.
+std::filesystem::path resolve_import_source(const CompilerInvocation& invocation, std::string_view name) {
+	const auto roots = import_search_roots(invocation);
+	for (const auto& root : roots) {
+		const auto candidate = root / std::filesystem::path(std::string(name)).replace_extension(".rtsl");
+		if (std::filesystem::exists(candidate)) {
+			return candidate;
+		}
+	}
+	return {};
+}
+
+bool CompilerInstance::load_or_build_import(const CompilerInvocation& invocation, std::string_view name,
+	std::vector<u08>& bytes, std::unordered_set<std::string>& active_builds) {
+	bytes.clear();
+
+	// Prefer an existing .rtslm sidecar: it's already the interface form and
+	// carries no body work to redo.
+	if (const auto module_path = resolve_import(invocation, name); !module_path.empty()) {
+		std::ifstream input(module_path, std::ios::binary);
+		bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+		return !bytes.empty();
+	}
+
+	// Autobuild: compile the sibling .rtsl source in-memory and take its
+	// module interface. Diagnostics flow into this instance so nested errors
+	// surface at the top level. The active-build set catches cycles: if we're
+	// already partway through compiling this same source, bail out with an
+	// error rather than recursing forever.
+	const auto source_path = resolve_import_source(invocation, name);
+	if (source_path.empty()) {
+		return true; // nothing found — caller will diagnose
+	}
+	const auto canonical = std::filesystem::weakly_canonical(source_path).string();
+	if (!active_builds.insert(canonical).second) {
+		diagnostics_.report(2004, DiagnosticSeverity::error, {}, invocation.source_name,
+			std::format("import cycle detected while building '{}'", name));
+		return false;
+	}
+
+	const auto imported_source = read_text_file(source_path);
+	Artifact scratch;
+	CompilerInvocation child{
+		.source_name = source_path.string(),
+		.defines = invocation.defines,
+		.import_paths = invocation.import_paths,
+	};
+	compile_source_to_impl(scratch, imported_source, std::move(child), active_builds);
+	active_builds.erase(canonical);
+	if (diagnostics_.has_error()) {
+		return false;
+	}
+
+	const auto module_artifact = extract_module_interface(scratch);
+	bytes = module_artifact.bytes;
+	return true;
+}
+
 Artifact CompilerInstance::compile_source(std::string_view source, CompilerInvocation invocation) {
 	Artifact artifact;
 	compile_source_to(artifact, source, std::move(invocation));
@@ -143,10 +204,20 @@ Artifact CompilerInstance::compile_source(std::string_view source, CompilerInvoc
 }
 
 void CompilerInstance::compile_source_to(Artifact& artifact, std::string_view source, CompilerInvocation invocation) {
+	// Top-level entry: seed a fresh active-build set for cycle detection and
+	// clear diagnostics from prior compiles. Recursive autobuilds share the
+	// set through compile_source_to_impl but skip both those steps.
+	std::unordered_set<std::string> active_builds;
 	diagnostics_.clear();
+	compile_source_to_impl(artifact, source, std::move(invocation), active_builds);
+}
+
+void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_view source,
+	CompilerInvocation invocation, std::unordered_set<std::string>& active_builds) {
 	artifact = Artifact{ .kind = ArtifactKind::object };
 	const auto preprocessed = preprocess_source(source, invocation.defines);
-	const auto file_id = sources_.add_buffer(std::move(invocation.source_name), std::move(preprocessed));
+	const auto invocation_source_name = invocation.source_name;
+	const auto file_id = sources_.add_buffer(invocation_source_name, std::move(preprocessed));
 
 	Lexer lexer(sources_, diagnostics_, file_id);
 	const auto tokens = lexer.lex();
@@ -156,17 +227,21 @@ void CompilerInstance::compile_source_to(Artifact& artifact, std::string_view so
 
 	std::vector<Artifact> imported_modules;
 	for (const auto& import_name : ast.imports) {
-		const auto import_path = resolve_import(invocation, import_name);
-		if (import_path.empty()) {
-			diagnostics_.report(2002, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation.source_name,
+		std::vector<u08> bytes;
+		if (!load_or_build_import(invocation, import_name, bytes, active_builds)) {
+			// Hard failure (cycle or nested compile error) — diagnostic already
+			// emitted by load_or_build_import; move on so we can surface any
+			// other errors in the same pass.
+			continue;
+		}
+		if (bytes.empty()) {
+			diagnostics_.report(2002, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
 								std::format("failed to resolve import '{}'", import_name));
 			continue;
 		}
 		Artifact imported;
-		std::ifstream input(import_path, std::ios::binary);
-		std::vector<u8> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 		if (!read_artifact(bytes, imported, &diagnostics_)) {
-			diagnostics_.report(2003, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation.source_name,
+			diagnostics_.report(2003, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
 								std::format("failed to load import '{}'", import_name));
 			continue;
 		}
@@ -187,6 +262,7 @@ void CompilerInstance::compile_source_to(Artifact& artifact, std::string_view so
 		artifact.structs = ir.structs;
 		artifact.imports = ir.imports;
 		artifact.imported_exports = ir.imported_exports;
+		artifact.exports = ir.exports;
 		artifact.uniforms = ir.uniforms;
 		artifact.stage_interfaces = ir.stage_interfaces;
 		artifact.entries.clear();

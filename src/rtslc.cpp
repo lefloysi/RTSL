@@ -24,7 +24,7 @@ std::vector<std::uint8_t> read_file(const std::string& path) {
 	return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
 
-bool write_bytes(const std::string& path, const std::vector<rtsl::u8>& bytes) {
+bool write_bytes(const std::string& path, const std::vector<rtsl::u08>& bytes) {
 	std::ofstream output(path, std::ios::binary);
 	if (!output)
 		return false;
@@ -42,7 +42,7 @@ std::string with_extension(std::string_view path, std::string_view new_ext) {
 	return p.string();
 }
 
-int compile_mode(const std::string& input_path, const std::string& output, bool verbose) {
+int compile_mode(const std::string& input_path, const std::string& output, const std::vector<std::string>& include_dirs, bool verbose) {
 	const auto source = read_file(input_path);
 	if (source.empty()) {
 		std::cerr << "rtslc: failed to read " << input_path << '\n';
@@ -51,10 +51,13 @@ int compile_mode(const std::string& input_path, const std::string& output, bool 
 
 	if (verbose) {
 		std::cerr << "rtslc: compiling " << input_path << " -> " << output << '\n';
+		for (const auto& dir : include_dirs) {
+			std::cerr << "rtslc:   -I " << dir << '\n';
+		}
 	}
 
 	rtsl::CompilerInstance compiler;
-	rtsl::CompilerInvocation invocation{ .source_name = input_path };
+	rtsl::CompilerInvocation invocation{ .source_name = input_path, .import_paths = include_dirs };
 	rtsl::Artifact artifact;
 	compiler.compile_source_to(
 		artifact,
@@ -99,7 +102,7 @@ int link_mode(const std::vector<std::string>& inputs, const std::string& output,
 			std::cerr << "rtslc: failed to read " << input_path << '\n';
 			return 1;
 		}
-		if (!linker.add_artifact_bytes(std::span<const rtsl::u8>(bytes.data(), bytes.size()))) {
+		if (!linker.add_artifact_bytes(std::span<const rtsl::u08>(bytes.data(), bytes.size()))) {
 			print_engine_diagnostics(diagnostics);
 			return 1;
 		}
@@ -174,8 +177,11 @@ int main(int argc, char** argv) {
 	auto compile = app.add_subcommand("compile", "Compile source to an object");
 	std::string compile_input;
 	std::string compile_output;
+	std::vector<std::string> compile_include_dirs;
 	compile->add_option("input", compile_input, "Input .rtsl file")->required();
 	compile->add_option("-o,--output", compile_output, "Output .rtslo file")->required();
+	compile->add_option("-I,--include-dir", compile_include_dirs,
+		"Search directory for imported .rtslm module interfaces (repeatable)");
 
 	auto link_program = app.add_subcommand("link-program", "Link objects/libraries into a program");
 	std::vector<std::string> link_program_inputs;
@@ -202,7 +208,7 @@ int main(int argc, char** argv) {
 	CLI11_PARSE(app, argc, argv);
 
 	if (*compile)
-		return compile_mode(compile_input, compile_output, verbose);
+		return compile_mode(compile_input, compile_output, compile_include_dirs, verbose);
 	if (*link_program)
 		return link_mode(link_program_inputs, link_program_output, true, verbose);
 	if (*link_library)

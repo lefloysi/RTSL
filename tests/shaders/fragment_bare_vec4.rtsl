@@ -1,0 +1,23 @@
+struct Point {
+    vec3 position;
+}
+
+struct Vertex {
+    vec4 position;
+}
+
+fn Vertex::Vertex(Point p) {
+    position = vec4(p.position, 1.0);
+}
+
+using RasterVertex = Vertex : position(clip);
+
+@vertex
+fn main(Point p) -> RasterVertex {
+    return Vertex(p);
+}
+
+@fragment
+fn main(Vertex v) -> vec4 {
+    return vec4(1.0, 0.0, 0.0, 1.0);
+}

@@ -4,11 +4,10 @@
 #include "binary.hpp"
 
 #include <cstring>
-#include <optional>
+#include <span>
 #include <unordered_map>
 
 namespace rtsl {
-
 
 constexpr u32 Magic = 0x4c535452;
 constexpr u16 VersionMajor = 0;
@@ -32,21 +31,95 @@ enum class SectionKind : u32 {
 
 struct Section {
 	SectionKind kind;
-	std::vector<u8> bytes;
+	std::vector<u08> bytes;
 };
 
-// Heterogeneous hash + equal so `intern(std::string_view)` can probe the map
-// without materializing a std::string just to hash it. C++20 lookup on
-// unordered containers requires both the Hash and KeyEqual to declare
-// `is_transparent` and to compare against the query type directly.
+// ---- process() overloads for RTSL types ---------------------------------
+// These live in namespace rtsl so ADL from bin::process<T>() finds them.
+// Each type serializes with `stream(field("name", value), ...)`: named
+// fields drive diagnostic context, byte layout is preserved from the
+// hand-rolled version below.
+
+// Each process() overload deduces its target's cv-qualification through the
+// `bin::data<T, D>` concept: `T& value` binds both `D&` and `const D&`, so
+// a single overload handles read and write paths. Bodies never mutate on the
+// write path, so const flows through cleanly.
+
+template <bin::byte_stream Stream, bin::data<IRInstruction> Inst>
+bin::error process(Stream& stream, Inst& inst) {
+	return stream(
+		bin::field("op", inst.op),
+		bin::field("result_id", inst.result_id),
+		bin::field("type_id", inst.type_id),
+		bin::field("operands", inst.operands),
+		bin::field("literals", inst.literals),
+		bin::field("loc_file", inst.loc.file_id),
+		bin::field("loc_line", inst.loc.line),
+		bin::field("loc_column", inst.loc.column));
+}
+
+template <bin::byte_stream Stream, bin::data<IRDecoration> Dec>
+bin::error process(Stream& stream, Dec& dec) {
+	return stream(
+		bin::field("target", dec.target),
+		bin::field("kind", dec.kind),
+		bin::field("member_index", dec.member_index),
+		bin::field("literals", dec.literals));
+}
+
+template <bin::byte_stream Stream, bin::data<ExportSymbol> Sym>
+bin::error process(Stream& stream, Sym& sym) {
+	return stream(
+		bin::field("name", sym.name),
+		bin::field("kind", sym.kind),
+		bin::field("type", sym.type));
+}
+
+template <bin::byte_stream Stream, bin::data<StructField> Field>
+bin::error process(Stream& stream, Field& f) {
+	return stream(
+		bin::field("type", f.type),
+		bin::field("name", f.name));
+}
+
+template <bin::byte_stream Stream, bin::data<StructDecl> Decl>
+bin::error process(Stream& stream, Decl& decl) {
+	return stream(
+		bin::field("name", decl.name),
+		bin::field("fields", decl.fields));
+}
+
+template <bin::byte_stream Stream, bin::data<StageIOField> Field>
+bin::error process(Stream& stream, Field& f) {
+	return stream(
+		bin::field("name", f.name),
+		bin::field("interpolation", f.interpolation),
+		bin::field("builtin", f.builtin),
+		bin::field("location", f.location));
+}
+
+template <bin::byte_stream Stream, bin::data<StageInterface> Iface>
+bin::error process(Stream& stream, Iface& iface) {
+	return stream(
+		bin::field("role", iface.role),
+		bin::field("fields", iface.fields));
+}
+
+template <bin::byte_stream Stream, bin::data<Artifact::EntryPoint> Entry>
+bin::error process(Stream& stream, Entry& entry) {
+	return stream(
+		bin::field("name", entry.name),
+		bin::field("mangled_name", entry.mangled_name),
+		bin::field("stage", entry.stage),
+		bin::field("function_id", entry.function_id));
+}
+
+// ---- String pool --------------------------------------------------------
+
 struct StringPoolHash {
 	using is_transparent = void;
-	std::size_t operator()(std::string_view s) const noexcept {
-		return std::hash<std::string_view>{}(s);
-	}
-	std::size_t operator()(const std::string& s) const noexcept {
-		return std::hash<std::string_view>{}(s);
-	}
+	std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+	std::size_t operator()(const std::string& s) const noexcept { return std::hash<std::string_view>{}(s); }
 };
 
 struct StringPoolEqual {
@@ -60,9 +133,7 @@ struct StringPool {
 
 	u32 intern(std::string_view value) {
 		const auto it = ids.find(value);
-		if (it != ids.end()) {
-			return it->second;
-		}
+		if (it != ids.end()) return it->second;
 		const u32 id = static_cast<u32>(values.size());
 		values.emplace_back(value);
 		ids.emplace(values.back(), id);
@@ -73,39 +144,19 @@ struct StringPool {
 StringPool build_string_pool(const IRModule& module, std::span<const Artifact::EntryPoint> entries, bool linked_program) {
 	StringPool pool;
 	pool.intern(module.source_name);
-	// Reflection-visible names only: a host queries uniforms by scope/name and
-	// stage I/O by payload struct + field. Interpolation, builtin, access, and
-	// every type spelling are encoded as enums or type-pool ids — they do not
-	// appear in the string table.
 	for (const auto& uniform : module.uniforms) {
 		pool.intern(uniform.scope_name);
 		pool.intern(uniform.name);
-		for (const auto& field : uniform.inline_fields) {
-			pool.intern(field.name);
-		}
+		for (const auto& field : uniform.inline_fields) pool.intern(field.name);
 	}
-	for (const auto& interface : module.stage_interfaces) {
-		// Inputs (vertex buffer) and outputs (framebuffer attachments) are
-		// both host-visible. Varyings are pipeline-internal — the linker
-		// matches them by location, not by name. The carrier struct's name
-		// ("Point", "Vertex", "Fragment") is never reflected; queries are by
-		// field name only, against the single implicit input/output payload
-		// for the stage.
-		if (interface.role == StageRole::varying)
-			continue;
-		for (const auto& field : interface.fields) {
-			pool.intern(field.name);
-		}
+	for (const auto& iface : module.stage_interfaces) {
+		if (iface.role == StageRole::varying) continue;
+		for (const auto& field : iface.fields) pool.intern(field.name);
 	}
-	// Struct decls are part of cross-module link state; they only live in
-	// unlinked artifacts. A linked program drops them entirely — the runtime
-	// queries types via the IR pool, not by source-level struct names.
 	if (!linked_program) {
 		for (const auto& decl : module.structs) {
 			pool.intern(decl.name);
-			for (const auto& field : decl.fields) {
-				pool.intern(field.name);
-			}
+			for (const auto& field : decl.fields) pool.intern(field.name);
 		}
 	}
 	for (const auto& entry : entries) {
@@ -115,263 +166,175 @@ StringPool build_string_pool(const IRModule& module, std::span<const Artifact::E
 	return pool;
 }
 
+// ---- Section builders ---------------------------------------------------
+
 Section make_string_table(const StringPool& pool) {
 	Section section{ .kind = SectionKind::string_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(pool.values.size()));
-	for (const auto& value : pool.values)
-		w.write_string(value);
+	bin::write_stream stream;
+	(void)stream(bin::field("strings", pool.values));
+	section.bytes = stream.take_written();
 	return section;
-}
-
-void write_instruction(BinaryWriter& w, const IRInstruction& inst) {
-	w.write<u16>(static_cast<u16>(inst.op));
-	w.write<u32>(inst.result_id);
-	w.write<u32>(inst.type_id);
-	w.write<u32>(static_cast<u32>(inst.operands.size()));
-	w.write<u32>(static_cast<u32>(inst.literals.size()));
-	w.write<u32>(inst.loc.file_id);
-	w.write<u32>(inst.loc.line);
-	w.write<u32>(inst.loc.column);
-	for (IRId operand : inst.operands)
-		w.write<u32>(operand);
-	for (u32 literal : inst.literals)
-		w.write<u32>(literal);
-}
-
-std::optional<IRInstruction> read_instruction(BinaryReader& r) {
-	IRInstruction inst;
-	const auto op = r.read<u16>();
-	const auto result_id = r.read<u32>();
-	const auto type_id = r.read<u32>();
-	const auto operand_count = r.read<u32>();
-	const auto literal_count = r.read<u32>();
-	const auto file_id = r.read<u32>();
-	const auto line = r.read<u32>();
-	const auto column = r.read<u32>();
-	if (!op || !result_id || !type_id || !operand_count || !literal_count ||
-		!file_id || !line || !column)
-		return std::nullopt;
-	inst.op = static_cast<IROp>(*op);
-	inst.result_id = *result_id;
-	inst.type_id = *type_id;
-	inst.loc.file_id = *file_id;
-	inst.loc.line = *line;
-	inst.loc.column = *column;
-	inst.operands.reserve(*operand_count);
-	inst.literals.reserve(*literal_count);
-	for (u32 i = 0; i < *operand_count; ++i) {
-		const auto v = r.read<u32>();
-		if (!v)
-			return std::nullopt;
-		inst.operands.push_back(*v);
-	}
-	for (u32 i = 0; i < *literal_count; ++i) {
-		const auto v = r.read<u32>();
-		if (!v)
-			return std::nullopt;
-		inst.literals.push_back(*v);
-	}
-	return inst;
 }
 
 Section make_ir_module_section(const IRModule& module, bool linked_program) {
 	Section section{ .kind = SectionKind::ir_module };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(module.next_id);
-	w.write<u32>(static_cast<u32>(module.type_constant_pool.size()));
-	for (const auto& inst : module.type_constant_pool)
-		write_instruction(w, inst);
-	w.write<u32>(static_cast<u32>(module.global_variables.size()));
-	for (const auto& inst : module.global_variables)
-		write_instruction(w, inst);
-	// Constructors are dead post-inlining (every call site has been replaced
-	// by the inliner). Skip them on serialization to keep `Foo::Foo` strings
-	// out of the artifact.
-	u32 emit_count = 0;
+	bin::write_stream stream;
+
+	// Constructors are dead post-inlining. Skip them so `Foo::Foo` never lands
+	// in the artifact. Same reason source_name gets elided in linked programs
+	// (no relink means no cross-module call resolution needed).
+	std::vector<IRFunction> live_functions;
+	live_functions.reserve(module.functions.size());
 	for (const auto& fn : module.functions) {
-		if (!fn.is_constructor)
-			++emit_count;
+		if (!fn.is_constructor) live_functions.push_back(fn);
 	}
-	w.write<u32>(emit_count);
-	for (const auto& fn : module.functions) {
-		if (fn.is_constructor)
-			continue;
-		w.write<u32>(fn.result_id);
-		w.write<u32>(fn.function_type_id);
-		w.write<u32>(fn.return_type_id);
-		w.write<u8>(static_cast<u8>(fn.stage));
-		w.write<u8>(fn.generated ? 1 : 0);
-		w.write<u8>(fn.exported ? 1 : 0);
-		w.write<u32>(fn.display_name.value);
-		w.write<u32>(fn.mangled_name.value);
-		// Source-level identity used by the linker's cross-module call
-		// resolver. A linked program no longer relinks, so source_name is
-		// elided.
-		w.write_string(linked_program ? std::string_view{} : std::string_view{ fn.source_name });
-		w.write<u32>(static_cast<u32>(fn.parameter_ids.size()));
-		for (IRId id : fn.parameter_ids)
-			w.write<u32>(id);
-		w.write<u32>(static_cast<u32>(fn.body.size()));
-		for (const auto& inst : fn.body)
-			write_instruction(w, inst);
-	}
-	// Pending FunctionCall target names. Linked programs have none.
 	if (linked_program) {
-		w.write<u32>(0);
-	} else {
-		w.write<u32>(static_cast<u32>(module.call_target_names.size()));
-		for (const auto& name : module.call_target_names)
-			w.write_string(name);
+		for (auto& fn : live_functions) fn.source_name.clear();
 	}
-	w.write<u32>(static_cast<u32>(module.function_debug.size()));
+
+	(void)stream(
+		bin::field("next_id", module.next_id),
+		bin::field("type_constant_pool", module.type_constant_pool),
+		bin::field("global_variables", module.global_variables));
+
+	const u32 fn_count = static_cast<u32>(live_functions.size());
+	(void)stream(bin::field("function_count", fn_count));
+	for (auto& fn : live_functions) {
+		(void)stream(
+			bin::field("result_id", fn.result_id),
+			bin::field("function_type_id", fn.function_type_id),
+			bin::field("return_type_id", fn.return_type_id),
+			bin::field("stage", fn.stage));
+		const u08 generated = fn.generated ? 1 : 0;
+		const u08 exported = fn.exported ? 1 : 0;
+		(void)stream(
+			bin::field("generated", generated),
+			bin::field("exported", exported),
+			bin::field("display_name", fn.display_name.value),
+			bin::field("mangled_name", fn.mangled_name.value),
+			bin::field("source_name", fn.source_name),
+			bin::field("parameter_ids", fn.parameter_ids),
+			bin::field("body", fn.body));
+	}
+
+	// Pending FunctionCall target names. Linked programs carry none.
+	std::vector<std::string> target_names = linked_program ? std::vector<std::string>{} : module.call_target_names;
+	(void)stream(bin::field("call_target_names", target_names));
+
+	const u32 debug_count = static_cast<u32>(module.function_debug.size());
+	(void)stream(bin::field("debug_count", debug_count));
 	for (const auto& dbg : module.function_debug) {
-		w.write<u32>(dbg.display_name.value);
-		w.write<u32>(static_cast<u32>(dbg.parameter_names.size()));
-		for (const auto& name : dbg.parameter_names)
-			w.write<u32>(name.value);
+		(void)stream(bin::field("display_name", dbg.display_name.value));
+		const u32 param_count = static_cast<u32>(dbg.parameter_names.size());
+		(void)stream(bin::field("param_count", param_count));
+		for (const auto& name : dbg.parameter_names) {
+			(void)stream(bin::field("param_name", name.value));
+		}
 	}
+
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_import_section(const IRModule& module) {
 	Section section{ .kind = SectionKind::import_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.imports.size()));
-	for (const auto& name : module.imports)
-		w.write_string(name);
+	bin::write_stream stream;
+	(void)stream(bin::field("imports", module.imports));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_export_section(const IRModule& module) {
 	Section section{ .kind = SectionKind::export_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.exports.size()));
-	for (const auto& symbol : module.exports) {
-		w.write_string(symbol.name);
-		w.write_string(symbol.kind);
-		w.write_string(symbol.type);
-	}
+	bin::write_stream stream;
+	(void)stream(bin::field("exports", module.exports));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_imported_export_section(const IRModule& module) {
 	Section section{ .kind = SectionKind::imported_export_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.imported_exports.size()));
-	for (const auto& symbol : module.imported_exports) {
-		w.write_string(symbol.name);
-		w.write_string(symbol.kind);
-		w.write_string(symbol.type);
-	}
+	bin::write_stream stream;
+	(void)stream(bin::field("imported_exports", module.imported_exports));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_decoration_section(const IRModule& module) {
 	Section section{ .kind = SectionKind::decoration_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.decorations.size()));
-	for (const auto& dec : module.decorations) {
-		w.write<u32>(dec.target);
-		w.write<u16>(static_cast<u16>(dec.kind));
-		w.write<u32>(dec.member_index);
-		w.write<u32>(static_cast<u32>(dec.literals.size()));
-		for (u32 literal : dec.literals)
-			w.write<u32>(literal);
-	}
+	bin::write_stream stream;
+	(void)stream(bin::field("decorations", module.decorations));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_struct_section(const IRModule& module) {
-	// Struct table carries cross-module link metadata. Type spellings of fields
-	// stay (the linker still resolves by name across translation units); field
-	// *names* stay because they participate in reflection through uniforms and
-	// stage interfaces. Anything purely structural lives in the IR type pool.
 	Section section{ .kind = SectionKind::struct_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.structs.size()));
-	for (const auto& decl : module.structs) {
-		w.write_string(decl.name);
-		w.write<u32>(static_cast<u32>(decl.fields.size()));
-		for (const auto& field : decl.fields) {
-			w.write_string(field.type);
-			w.write_string(field.name);
-		}
-	}
+	bin::write_stream stream;
+	(void)stream(bin::field("structs", module.structs));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_resource_section(const IRModule& module) {
-	// Uniform reflection: numeric group/member, type_id into the IR pool, and
-	// an access kind as u8. No type spelling and no per-field type strings —
-	// the type pool answers "what's the byte layout" via TypeStruct + Offset
-	// decorations.
 	Section section{ .kind = SectionKind::resource_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(module.uniforms.size()));
-	for (const auto& uniform : module.uniforms) {
-		w.write_string(uniform.scope_name);
-		w.write_string(uniform.name);
-		w.write<u32>(uniform.type_id);
-		w.write<u8>(static_cast<u8>(uniform.access));
-		w.write<u32>(uniform.set);
-		w.write<u32>(uniform.member);
-		w.write<u8>(uniform.is_anonymous ? 1 : 0);
-		w.write<u32>(uniform.anonymous_block_id);
-		w.write<u32>(static_cast<u32>(uniform.inline_fields.size()));
-		for (const auto& field : uniform.inline_fields)
-			w.write_string(field.name);
+	bin::write_stream stream;
+	const u32 count = static_cast<u32>(module.uniforms.size());
+	(void)stream(bin::field("count", count));
+	for (const auto& u : module.uniforms) {
+		const u08 access = static_cast<u08>(u.access);
+		const u08 is_anonymous = u.is_anonymous ? 1 : 0;
+		const u32 field_count = static_cast<u32>(u.inline_fields.size());
+		(void)stream(
+			bin::field("scope_name", u.scope_name),
+			bin::field("name", u.name),
+			bin::field("type_id", u.type_id),
+			bin::field("access", access),
+			bin::field("set", u.set),
+			bin::field("member", u.member),
+			bin::field("is_anonymous", is_anonymous),
+			bin::field("anonymous_block_id", u.anonymous_block_id),
+			bin::field("field_count", field_count));
+		for (const auto& f : u.inline_fields) {
+			(void)stream(bin::field("field_name", f.name));
+		}
 	}
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_stage_interface_section(const IRModule& module) {
-	// Stage interface reflection covers only the host-visible boundaries:
-	// `input` (vertex buffer attributes) and `output` (framebuffer
-	// attachments). Varyings are entirely pipeline-internal — the linker
-	// matches them by location — so they are not serialized.
-	//
-	// A record carries only role + (interpolation, builtin, location) per
-	// field, plus the field name. The host queries by field name within the
-	// single implicit input/output payload for a stage; the carrier struct
-	// name is never written.
+	// Only host-visible boundaries (input, output) reach the artifact. Varyings
+	// are pipeline-internal — the linker matches them by location, so no
+	// reflection carries them.
 	Section section{ .kind = SectionKind::stage_interface_table };
-	BinaryWriter w{ section.bytes };
-	u32 emit_count = 0;
-	for (const auto& interface : module.stage_interfaces) {
-		if (interface.role != StageRole::varying)
-			++emit_count;
+	bin::write_stream stream;
+	std::vector<StageInterface> emit;
+	emit.reserve(module.stage_interfaces.size());
+	for (const auto& iface : module.stage_interfaces) {
+		if (iface.role == StageRole::varying) continue;
+		emit.push_back(iface);
 	}
-	w.write<u32>(emit_count);
-	for (const auto& interface : module.stage_interfaces) {
-		if (interface.role == StageRole::varying)
-			continue;
-		w.write<u8>(static_cast<u8>(interface.role));
-		w.write<u32>(static_cast<u32>(interface.fields.size()));
-		for (const auto& field : interface.fields) {
-			w.write_string(field.name);
-			w.write<u8>(static_cast<u8>(field.interpolation));
-			w.write<u8>(static_cast<u8>(field.builtin));
-			w.write<u32>(field.location);
-		}
-	}
+	(void)stream(bin::field("interfaces", emit));
+	section.bytes = stream.take_written();
 	return section;
 }
 
 Section make_entry_section(std::span<const Artifact::EntryPoint> entries) {
 	Section section{ .kind = SectionKind::entry_table };
-	BinaryWriter w{ section.bytes };
-	w.write<u32>(static_cast<u32>(entries.size()));
-	for (const auto& entry : entries) {
-		w.write_string(entry.name);
-		w.write_string(entry.mangled_name);
-		w.write<u8>(static_cast<u8>(entry.stage));
-		w.write<u32>(entry.function_id);
-	}
+	bin::write_stream stream;
+	// Cheap copy so the free-function process() overload's mutable requirement
+	// can bind. A dedicated const overload could avoid this but at the cost of
+	// duplicating every serializer.
+	std::vector<Artifact::EntryPoint> local(entries.begin(), entries.end());
+	(void)stream(bin::field("entries", local));
+	section.bytes = stream.take_written();
 	return section;
 }
 
-std::vector<u8> write_container(ArtifactKind kind, std::vector<Section> sections) {
+// ---- Container header + section table -----------------------------------
+
+std::vector<u08> write_container(ArtifactKind kind, std::vector<Section> sections) {
 	const u32 section_count = static_cast<u32>(sections.size());
 	const u64 section_table_offset = HeaderSize;
 	u64 data_offset = HeaderSize + static_cast<u64>(SectionEntrySize) * section_count;
@@ -382,29 +345,49 @@ std::vector<u8> write_container(ArtifactKind kind, std::vector<Section> sections
 		data_offset += section.bytes.size();
 	}
 
-	std::vector<u8> out;
-	BinaryWriter w{ out };
-	w.write<u32>(Magic);
-	w.write<u16>(VersionMajor);
-	w.write<u16>(VersionMinor);
-	w.write<u16>(static_cast<u16>(kind));
-	w.write<u8>(1);
-	w.write<u8>(0);
-	w.write<u32>(0);
-	w.write<u32>(HeaderSize);
-	w.write<u32>(section_count);
-	w.write<u64>(section_table_offset);
-	w.write<u64>(data_offset);
-	out.resize(HeaderSize, 0);
+	bin::write_stream stream;
+	const u16 kind_val = static_cast<u16>(kind);
+	const u08 endian = 1;
+	const u08 reserved8 = 0;
+	const u32 reserved32 = 0;
+	(void)stream(
+		bin::field("magic", Magic),
+		bin::field("version_major", VersionMajor),
+		bin::field("version_minor", VersionMinor),
+		bin::field("kind", kind_val),
+		bin::field("endian", endian),
+		bin::field("reserved_a", reserved8),
+		bin::field("reserved_b", reserved32),
+		bin::field("header_size", HeaderSize),
+		bin::field("section_count", section_count),
+		bin::field("section_table_offset", section_table_offset),
+		bin::field("file_size", data_offset));
 
+	auto out = stream.take_written();
+	// Header is fixed-size; pad any trailing bytes so the section table lands
+	// at HeaderSize regardless of how many fields the header actually spent.
+	out.resize(HeaderSize, u08{ 0 });
+
+	// Section table entries — 32 bytes each, fixed layout.
+	bin::write_stream table;
 	for (std::size_t i = 0; i < sections.size(); ++i) {
-		w.write<u32>(static_cast<u32>(sections[i].kind));
-		w.write<u32>(0);
-		w.write<u64>(offsets[i]);
-		w.write<u64>(static_cast<u64>(sections[i].bytes.size()));
-		w.write<u32>(1);
-		w.write<u32>(0);
+		const u32 skind = static_cast<u32>(sections[i].kind);
+		const u32 res32 = 0;
+		const u64 offset = offsets[i];
+		const u64 size = static_cast<u64>(sections[i].bytes.size());
+		const u32 flag = 1;
+		const u32 res_tail = 0;
+		(void)table(
+			bin::field("kind", skind),
+			bin::field("reserved", res32),
+			bin::field("offset", offset),
+			bin::field("size", size),
+			bin::field("flag", flag),
+			bin::field("reserved_tail", res_tail));
 	}
+	auto table_bytes = table.take_written();
+	out.insert(out.end(), table_bytes.begin(), table_bytes.end());
+
 	for (const auto& section : sections)
 		out.insert(out.end(), section.bytes.begin(), section.bytes.end());
 	return out;
@@ -418,8 +401,7 @@ void report_read_error(DiagnosticEngine* diagnostics, std::string message) {
 std::vector<Artifact::EntryPoint> default_entries_from_module(const IRModule& module) {
 	std::vector<Artifact::EntryPoint> entries;
 	for (const auto& fn : module.functions) {
-		if (fn.stage == StageKind::none)
-			continue;
+		if (fn.stage == StageKind::none) continue;
 		entries.push_back(Artifact::EntryPoint{
 			.name = std::string(stage_entry_name(fn.stage)),
 			.mangled_name = std::string(stage_entry_name(fn.stage)),
@@ -430,14 +412,10 @@ std::vector<Artifact::EntryPoint> default_entries_from_module(const IRModule& mo
 	return entries;
 }
 
-
-std::vector<u8> write_artifact(ArtifactKind kind, const IRModule& module) {
+std::vector<u08> write_artifact(ArtifactKind kind, const IRModule& module) {
 	const auto entries = default_entries_from_module(module);
-	// For a fully-linked program, drop link-only state: no cross-module call
-	// resolution will run again, so the struct_table (parser-level type
-	// spellings used by the linker) and the import/imported_export tables
-	// are dead weight. The IR type pool + decorations + reflection tables
-	// are everything a runtime needs.
+	// A linked program will never re-link: dropping the struct/import/export
+	// tables leaves just the reflection surface the runtime actually reads.
 	const bool linked_program = kind == ArtifactKind::program;
 	const auto strings = build_string_pool(module, entries, linked_program);
 	std::vector<Section> sections;
@@ -456,381 +434,222 @@ std::vector<u8> write_artifact(ArtifactKind kind, const IRModule& module) {
 	return write_container(kind, std::move(sections));
 }
 
-std::vector<u8> write_debug_artifact(const IRModule&) {
+std::vector<u08> write_debug_artifact(const IRModule&) {
 	return write_container(ArtifactKind::object, {});
 }
 
-std::vector<u8> write_linked_program(std::span<const Artifact> inputs) {
-	if (inputs.empty())
-		return {};
+std::vector<u08> write_linked_program(std::span<const Artifact> inputs) {
+	if (inputs.empty()) return {};
 	return write_artifact(ArtifactKind::program, inputs.front().module);
 }
 
-bool read_artifact(std::span<const u8> data, Artifact& artifact, DiagnosticEngine* diagnostics) {
+// ---- Reader -------------------------------------------------------------
+
+bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngine* diagnostics) {
 	if (data.size() < HeaderSize) {
 		report_read_error(diagnostics, "artifact is smaller than the header");
 		return false;
 	}
-	BinaryReader header{ data };
-	const auto magic = header.read<u32>();
-	if (!magic || *magic != Magic) {
+	bin::read_stream header(data);
+	u32 magic = 0;
+	u16 version_major = 0;
+	u16 version_minor = 0;
+	u16 kind_raw = 0;
+	u08 endian = 0;
+	u08 reserved8 = 0;
+	u32 reserved32 = 0;
+	u32 header_size = 0;
+	u32 section_count = 0;
+	u64 section_table_offset = 0;
+	u64 file_size = 0;
+	if (auto err = header(
+			bin::field("magic", magic),
+			bin::field("version_major", version_major),
+			bin::field("version_minor", version_minor),
+			bin::field("kind", kind_raw),
+			bin::field("endian", endian),
+			bin::field("reserved_a", reserved8),
+			bin::field("reserved_b", reserved32),
+			bin::field("header_size", header_size),
+			bin::field("section_count", section_count),
+			bin::field("section_table_offset", section_table_offset),
+			bin::field("file_size", file_size));
+		err) {
+		report_read_error(diagnostics, "invalid RTSL artifact header: " + err.message);
+		return false;
+	}
+	if (magic != Magic) {
 		report_read_error(diagnostics, "invalid RTSL artifact magic");
 		return false;
 	}
-	const auto version_major = header.read<u16>();
-	if (!version_major || *version_major != VersionMajor) {
+	if (version_major != VersionMajor) {
 		report_read_error(diagnostics, "unsupported RTSL artifact version");
 		return false;
 	}
-	(void)header.read<u16>(); // version_minor
-	const auto kind_raw = header.read<u16>();
-	const auto endian = header.read<u8>();
-	(void)header.read<u8>();  // reserved
-	(void)header.read<u32>(); // reserved
-	const auto header_size = header.read<u32>();
-	const auto section_count = header.read<u32>();
-	const auto section_table_offset = header.read<u64>();
-	const auto file_size = header.read<u64>();
-	if (!kind_raw || !endian || !header_size || !section_count ||
-		!section_table_offset || !file_size ||
-		*endian != 1 || *header_size != HeaderSize || *file_size != data.size()) {
+	if (endian != 1 || header_size != HeaderSize || file_size != data.size()) {
 		report_read_error(diagnostics, "invalid RTSL artifact header");
 		return false;
 	}
 	artifact = Artifact{};
-	artifact.kind = static_cast<ArtifactKind>(*kind_raw);
+	artifact.kind = static_cast<ArtifactKind>(kind_raw);
 	artifact.bytes.assign(data.begin(), data.end());
 
-	for (u32 i = 0; i < *section_count; ++i) {
-		BinaryReader entry_reader{ data };
-		entry_reader.seek(static_cast<std::size_t>(*section_table_offset + i * SectionEntrySize));
-		const auto section_kind_raw = entry_reader.read<u32>();
-		(void)entry_reader.read<u32>(); // reserved
-		const auto section_offset = entry_reader.read<u64>();
-		const auto section_size = entry_reader.read<u64>();
-		if (!section_kind_raw || !section_offset || !section_size ||
-			*section_offset + *section_size > data.size()) {
+	for (u32 i = 0; i < section_count; ++i) {
+		const auto entry_offset = static_cast<std::size_t>(section_table_offset + i * SectionEntrySize);
+		if (entry_offset + SectionEntrySize > data.size()) {
+			report_read_error(diagnostics, "section table entry out of bounds");
+			return false;
+		}
+		bin::read_stream entry(data.subspan(entry_offset, SectionEntrySize));
+		u32 section_kind_raw = 0;
+		u32 e_reserved = 0;
+		u64 section_offset = 0;
+		u64 section_size = 0;
+		u32 e_flag = 0;
+		u32 e_reserved_tail = 0;
+		if (auto err = entry(
+				bin::field("kind", section_kind_raw),
+				bin::field("reserved", e_reserved),
+				bin::field("offset", section_offset),
+				bin::field("size", section_size),
+				bin::field("flag", e_flag),
+				bin::field("reserved_tail", e_reserved_tail));
+			err) {
+			report_read_error(diagnostics, "section table entry: " + err.message);
+			return false;
+		}
+		if (section_offset + section_size > data.size()) {
 			report_read_error(diagnostics, "section payload is out of bounds");
 			return false;
 		}
-		const auto section_kind = static_cast<SectionKind>(*section_kind_raw);
-		auto section_bytes = data.subspan(static_cast<std::size_t>(*section_offset), static_cast<std::size_t>(*section_size));
-		BinaryReader r{ section_bytes };
+		const auto section_kind = static_cast<SectionKind>(section_kind_raw);
+		auto section_bytes = data.subspan(static_cast<std::size_t>(section_offset), static_cast<std::size_t>(section_size));
+		bin::read_stream r(section_bytes);
+		auto propagate = [&](bin::error err, const char* what) -> bool {
+			if (!err) return true;
+			report_read_error(diagnostics, std::string(what) + ": " + err.message);
+			return false;
+		};
+
 		switch (section_kind) {
 		case SectionKind::string_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.strings.reserve(*count);
-			for (u32 s = 0; s < *count; ++s) {
-				auto value = r.read_string();
-				if (!value)
-					return false;
-				artifact.strings.push_back(std::move(*value));
-			}
+			if (!propagate(r(bin::field("strings", artifact.strings)), "string_table")) return false;
 			if (!artifact.strings.empty())
 				artifact.module.source_name = artifact.strings.front();
 			break;
 		}
 		case SectionKind::ir_module: {
-			const auto next_id = r.read<u32>();
-			if (!next_id)
-				return false;
-			artifact.module.next_id = *next_id;
-
-			const auto type_count = r.read<u32>();
-			if (!type_count)
-				return false;
-			artifact.module.type_constant_pool.reserve(*type_count);
-			for (u32 idx = 0; idx < *type_count; ++idx) {
-				auto inst = read_instruction(r);
-				if (!inst)
-					return false;
-				artifact.module.type_constant_pool.push_back(std::move(*inst));
-			}
-			const auto global_count = r.read<u32>();
-			if (!global_count)
-				return false;
-			artifact.module.global_variables.reserve(*global_count);
-			for (u32 idx = 0; idx < *global_count; ++idx) {
-				auto inst = read_instruction(r);
-				if (!inst)
-					return false;
-				artifact.module.global_variables.push_back(std::move(*inst));
-			}
-			const auto fn_count = r.read<u32>();
-			if (!fn_count)
-				return false;
-			artifact.module.functions.reserve(*fn_count);
-			for (u32 idx = 0; idx < *fn_count; ++idx) {
+			if (!propagate(r(
+					bin::field("next_id", artifact.module.next_id),
+					bin::field("type_constant_pool", artifact.module.type_constant_pool),
+					bin::field("global_variables", artifact.module.global_variables)),
+				"ir_module.prefix")) return false;
+			u32 fn_count = 0;
+			if (!propagate(r(bin::field("function_count", fn_count)), "ir_module.function_count")) return false;
+			artifact.module.functions.reserve(fn_count);
+			for (u32 idx = 0; idx < fn_count; ++idx) {
 				IRFunction fn;
-				const auto result_id = r.read<u32>();
-				const auto function_type_id = r.read<u32>();
-				const auto return_type_id = r.read<u32>();
-				const auto stage = r.read<u8>();
-				const auto generated = r.read<u8>();
-				const auto exported = r.read<u8>();
-				const auto display_name = r.read<u32>();
-				const auto mangled_name = r.read<u32>();
-				if (!result_id || !function_type_id || !return_type_id || !stage ||
-					!generated || !exported || !display_name || !mangled_name)
-					return false;
-				fn.result_id = *result_id;
-				fn.function_type_id = *function_type_id;
-				fn.return_type_id = *return_type_id;
-				fn.stage = static_cast<StageKind>(*stage);
-				fn.generated = *generated != 0;
-				fn.exported = *exported != 0;
-				fn.display_name.value = *display_name;
-				fn.mangled_name.value = *mangled_name;
-				auto source_name = r.read_string();
-				if (!source_name)
-					return false;
-				fn.source_name = std::move(*source_name);
-				const auto param_count = r.read<u32>();
-				if (!param_count)
-					return false;
-				fn.parameter_ids.reserve(*param_count);
-				for (u32 p = 0; p < *param_count; ++p) {
-					const auto id = r.read<u32>();
-					if (!id)
-						return false;
-					fn.parameter_ids.push_back(*id);
-				}
-				const auto body_count = r.read<u32>();
-				if (!body_count)
-					return false;
-				fn.body.reserve(*body_count);
-				for (u32 b = 0; b < *body_count; ++b) {
-					auto inst = read_instruction(r);
-					if (!inst)
-						return false;
-					fn.body.push_back(std::move(*inst));
-				}
+				u08 generated = 0;
+				u08 exported = 0;
+				if (!propagate(r(
+						bin::field("result_id", fn.result_id),
+						bin::field("function_type_id", fn.function_type_id),
+						bin::field("return_type_id", fn.return_type_id),
+						bin::field("stage", fn.stage),
+						bin::field("generated", generated),
+						bin::field("exported", exported),
+						bin::field("display_name", fn.display_name.value),
+						bin::field("mangled_name", fn.mangled_name.value),
+						bin::field("source_name", fn.source_name),
+						bin::field("parameter_ids", fn.parameter_ids),
+						bin::field("body", fn.body)),
+					"ir_module.function")) return false;
+				fn.generated = generated != 0;
+				fn.exported = exported != 0;
 				artifact.module.functions.push_back(std::move(fn));
 			}
-			// Pending FunctionCall target names. See make_ir_module_section.
-			const auto target_name_count = r.read<u32>();
-			if (!target_name_count)
-				return false;
-			artifact.module.call_target_names.reserve(*target_name_count);
-			for (u32 t = 0; t < *target_name_count; ++t) {
-				auto name = r.read_string();
-				if (!name)
-					return false;
-				artifact.module.call_target_names.push_back(std::move(*name));
-			}
-			const auto debug_count = r.read<u32>();
-			if (!debug_count)
-				return false;
-			artifact.module.function_debug.reserve(*debug_count);
-			for (u32 idx = 0; idx < *debug_count; ++idx) {
+			if (!propagate(r(bin::field("call_target_names", artifact.module.call_target_names)),
+				"ir_module.call_target_names")) return false;
+			u32 debug_count = 0;
+			if (!propagate(r(bin::field("debug_count", debug_count)), "ir_module.debug_count")) return false;
+			artifact.module.function_debug.reserve(debug_count);
+			for (u32 idx = 0; idx < debug_count; ++idx) {
 				IRFunctionDebugInfo dbg;
-				const auto display_name = r.read<u32>();
-				const auto param_count = r.read<u32>();
-				if (!display_name || !param_count)
-					return false;
-				dbg.display_name.value = *display_name;
-				dbg.parameter_names.reserve(*param_count);
-				for (u32 p = 0; p < *param_count; ++p) {
-					const auto id = r.read<u32>();
-					if (!id)
-						return false;
-					dbg.parameter_names.push_back(StringId{ *id });
+				u32 param_count = 0;
+				if (!propagate(r(
+						bin::field("display_name", dbg.display_name.value),
+						bin::field("param_count", param_count)),
+					"function_debug.header")) return false;
+				dbg.parameter_names.reserve(param_count);
+				for (u32 p = 0; p < param_count; ++p) {
+					u32 id = 0;
+					if (!propagate(r(bin::field("param_name", id)), "function_debug.param")) return false;
+					dbg.parameter_names.push_back(StringId{ id });
 				}
 				artifact.module.function_debug.push_back(std::move(dbg));
 			}
 			break;
 		}
 		case SectionKind::import_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.imports.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto name = r.read_string();
-				if (!name)
-					return false;
-				artifact.module.imports.push_back(std::move(*name));
-			}
+			if (!propagate(r(bin::field("imports", artifact.module.imports)), "import_table")) return false;
 			artifact.imports = artifact.module.imports;
 			break;
 		}
 		case SectionKind::export_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.exports.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto name = r.read_string();
-				auto ekind = r.read_string();
-				auto type = r.read_string();
-				if (!name || !ekind || !type)
-					return false;
-				artifact.module.exports.push_back(ExportSymbol{ .name = std::move(*name), .kind = std::move(*ekind), .type = std::move(*type) });
-			}
+			if (!propagate(r(bin::field("exports", artifact.module.exports)), "export_table")) return false;
 			artifact.exports = artifact.module.exports;
 			break;
 		}
 		case SectionKind::imported_export_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.imported_exports.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto name = r.read_string();
-				auto ekind = r.read_string();
-				auto type = r.read_string();
-				if (!name || !ekind || !type)
-					return false;
-				artifact.module.imported_exports.push_back(ExportSymbol{ .name = std::move(*name), .kind = std::move(*ekind), .type = std::move(*type) });
-			}
+			if (!propagate(r(bin::field("imported_exports", artifact.module.imported_exports)), "imported_export_table")) return false;
 			artifact.imported_exports = artifact.module.imported_exports;
 			break;
 		}
 		case SectionKind::decoration_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.decorations.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				IRDecoration dec;
-				const auto target = r.read<u32>();
-				const auto dkind = r.read<u16>();
-				const auto member_index = r.read<u32>();
-				const auto literal_count = r.read<u32>();
-				if (!target || !dkind || !member_index || !literal_count)
-					return false;
-				dec.target = *target;
-				dec.kind = static_cast<IRDecorationKind>(*dkind);
-				dec.member_index = *member_index;
-				dec.literals.reserve(*literal_count);
-				for (u32 l = 0; l < *literal_count; ++l) {
-					const auto literal = r.read<u32>();
-					if (!literal)
-						return false;
-					dec.literals.push_back(*literal);
-				}
-				artifact.module.decorations.push_back(std::move(dec));
-			}
+			if (!propagate(r(bin::field("decorations", artifact.module.decorations)), "decoration_table")) return false;
 			break;
 		}
 		case SectionKind::struct_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.structs.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto name = r.read_string();
-				if (!name)
-					return false;
-				StructDecl decl{ .name = std::move(*name) };
-				const auto field_count = r.read<u32>();
-				if (!field_count)
-					return false;
-				for (u32 f = 0; f < *field_count; ++f) {
-					auto type = r.read_string();
-					auto field = r.read_string();
-					if (!type || !field)
-						return false;
-					decl.fields.push_back(StructField{ .type = std::move(*type), .name = std::move(*field) });
-				}
-				artifact.module.structs.push_back(std::move(decl));
-			}
+			if (!propagate(r(bin::field("structs", artifact.module.structs)), "struct_table")) return false;
 			break;
 		}
 		case SectionKind::resource_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.uniforms.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto scope = r.read_string();
-				auto name = r.read_string();
-				if (!scope || !name)
-					return false;
-				UniformBinding uniform;
-				uniform.scope_name = std::move(*scope);
-				uniform.name = std::move(*name);
-				const auto type_id = r.read<u32>();
-				const auto access = r.read<u8>();
-				const auto set = r.read<u32>();
-				const auto member = r.read<u32>();
-				const auto is_anonymous = r.read<u8>();
-				const auto anon_block_id = r.read<u32>();
-				const auto field_count = r.read<u32>();
-				if (!type_id || !access || !set || !member || !is_anonymous ||
-					!anon_block_id || !field_count)
-					return false;
-				uniform.type_id = *type_id;
-				uniform.access = static_cast<AccessKind>(*access);
-				uniform.set = *set;
-				uniform.member = *member;
-				uniform.is_anonymous = *is_anonymous != 0;
-				uniform.anonymous_block_id = *anon_block_id;
-				for (u32 f = 0; f < *field_count; ++f) {
-					auto field_name = r.read_string();
-					if (!field_name)
-						return false;
-					uniform.inline_fields.push_back(StructField{ .name = std::move(*field_name) });
+			u32 count = 0;
+			if (!propagate(r(bin::field("count", count)), "resource_table.count")) return false;
+			artifact.module.uniforms.reserve(count);
+			for (u32 idx = 0; idx < count; ++idx) {
+				UniformBinding u;
+				u08 access = 0;
+				u08 is_anonymous = 0;
+				u32 field_count = 0;
+				if (!propagate(r(
+						bin::field("scope_name", u.scope_name),
+						bin::field("name", u.name),
+						bin::field("type_id", u.type_id),
+						bin::field("access", access),
+						bin::field("set", u.set),
+						bin::field("member", u.member),
+						bin::field("is_anonymous", is_anonymous),
+						bin::field("anonymous_block_id", u.anonymous_block_id),
+						bin::field("field_count", field_count)),
+					"resource_table.uniform")) return false;
+				u.access = static_cast<AccessKind>(access);
+				u.is_anonymous = is_anonymous != 0;
+				for (u32 f = 0; f < field_count; ++f) {
+					std::string fname;
+					if (!propagate(r(bin::field("field_name", fname)), "resource_table.inline_field")) return false;
+					u.inline_fields.push_back(StructField{ .name = std::move(fname) });
 				}
-				artifact.module.uniforms.push_back(std::move(uniform));
+				artifact.module.uniforms.push_back(std::move(u));
 			}
 			break;
 		}
 		case SectionKind::stage_interface_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.module.stage_interfaces.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				StageInterface interface;
-				const auto role = r.read<u8>();
-				const auto field_count = r.read<u32>();
-				if (!role || !field_count)
-					return false;
-				interface.role = static_cast<StageRole>(*role);
-				for (u32 f = 0; f < *field_count; ++f) {
-					auto name = r.read_string();
-					if (!name)
-						return false;
-					StageIOField field;
-					field.name = std::move(*name);
-					const auto interp = r.read<u8>();
-					const auto builtin = r.read<u8>();
-					const auto location = r.read<u32>();
-					if (!interp || !builtin || !location)
-						return false;
-					field.interpolation = static_cast<InterpolationKind>(*interp);
-					field.builtin = static_cast<BuiltinSlot>(*builtin);
-					field.location = *location;
-					interface.fields.push_back(std::move(field));
-				}
-				artifact.module.stage_interfaces.push_back(std::move(interface));
-			}
+			if (!propagate(r(bin::field("interfaces", artifact.module.stage_interfaces)), "stage_interface_table")) return false;
 			break;
 		}
 		case SectionKind::entry_table: {
-			const auto count = r.read<u32>();
-			if (!count)
-				return false;
-			artifact.entries.reserve(*count);
-			for (u32 idx = 0; idx < *count; ++idx) {
-				auto name = r.read_string();
-				auto mangled = r.read_string();
-				if (!name || !mangled)
-					return false;
-				Artifact::EntryPoint entry_point;
-				entry_point.name = std::move(*name);
-				entry_point.mangled_name = std::move(*mangled);
-				const auto stage = r.read<u8>();
-				const auto function_id = r.read<u32>();
-				if (!stage || !function_id)
-					return false;
-				entry_point.stage = static_cast<StageKind>(*stage);
-				entry_point.function_id = *function_id;
-				artifact.entries.push_back(std::move(entry_point));
-			}
+			if (!propagate(r(bin::field("entries", artifact.entries)), "entry_table")) return false;
 			break;
 		}
 		case SectionKind::debug_table:
@@ -849,14 +668,10 @@ bool read_artifact(std::span<const u8> data, Artifact& artifact, DiagnosticEngin
 
 const char* artifact_extension(ArtifactKind kind) {
 	switch (kind) {
-	case ArtifactKind::object:
-		return ".rtslo";
-	case ArtifactKind::module:
-		return ".rtslm";
-	case ArtifactKind::library:
-		return ".rtsll";
-	case ArtifactKind::program:
-		return ".rtslp";
+	case ArtifactKind::object: return ".rtslo";
+	case ArtifactKind::module: return ".rtslm";
+	case ArtifactKind::library: return ".rtsll";
+	case ArtifactKind::program: return ".rtslp";
 	}
 	return ".rtslbin";
 }

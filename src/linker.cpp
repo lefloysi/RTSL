@@ -191,7 +191,7 @@ bool inline_one_module_pass(IRModule& ir) {
 
 Linker::Linker(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {}
 
-bool Linker::add_artifact_bytes(std::span<const u8> bytes) {
+bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
 	Artifact artifact;
 	if (!read_artifact(bytes, artifact, &diagnostics_)) {
 		return false;
@@ -320,7 +320,7 @@ Artifact extract_module_interface(const Artifact& source) {
 // Classification of a linked program based on which stages it declares.
 // Different program kinds have different completeness requirements — only
 // graphics programs need both vert + frag; a compute-only program is fine.
-enum class ProgramKind : u8 {
+enum class ProgramKind : u08 {
 	none,     // no entry points at all
 	graphics, // any of vertex/fragment/tess/geometry stages
 	// compute / raygen / mesh — to be added as the language grows

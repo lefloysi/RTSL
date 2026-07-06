@@ -22,7 +22,7 @@ enum class DeclKind {
 
 // Backend shader stage. The 4-letter spellings (vert/frag) are the names
 // of the compiler-generated backend entry points for each stage.
-enum class StageKind : u8 {
+enum class StageKind : u08 {
 	none,
 	vertex,
 	fragment,
@@ -40,16 +40,16 @@ enum class StageKind : u8 {
 	return "";
 }
 
-enum class StageRole : u8 {
+enum class StageRole : u08 {
 	input,
 	varying,
 	output,
 };
 
-// Interpolation kind for a stage interface field. Encoded as u8 in the
+// Interpolation kind for a stage interface field. Encoded as u08 in the
 // serialized stage_interface_table; the source spellings ("smooth", "flat",
 // "clip") never reach the binary.
-enum class InterpolationKind : u8 {
+enum class InterpolationKind : u08 {
 	none = 0,
 	smooth = 1,
 	flat = 2,
@@ -58,7 +58,7 @@ enum class InterpolationKind : u8 {
 
 // Builtin pipeline slot (subset of SPIR-V BuiltIn) carried by a stage I/O
 // field. `none` means the field has a user-assigned location instead.
-enum class BuiltinSlot : u8 {
+enum class BuiltinSlot : u08 {
 	none = 0,
 	position = 1,
 	point_size = 2,
@@ -75,7 +75,7 @@ enum class BuiltinSlot : u8 {
 };
 
 // Uniform access qualifier.
-enum class AccessKind : u8 {
+enum class AccessKind : u08 {
 	read_write = 0,
 	read_only = 1,
 	write_only = 2,
@@ -208,6 +208,15 @@ struct Decl {
 	std::vector<BodyStatement> body_statements;
 	SourceSpan span{};
 	bool exported = false;
+	// True when the parser consumed a `{ ... }` body for this decl (even an
+	// empty one). Forward declarations end in `;` and never open a brace, so
+	// they leave this false. Downstream distinguishes "empty body" (valid,
+	// zero statements) from "no body" (forward decl the linker resolves).
+	bool has_body = false;
+	// Set by `@vertex` / `@fragment` attribute on the fn decl. Drives
+	// backend entry-point selection instead of name-matching on
+	// vert_*/frag_*, which lets overloaded `main` work per stage.
+	StageKind stage = StageKind::none;
 };
 
 struct StructField {
@@ -252,7 +261,7 @@ struct UniformBinding {
 // `unset` means the binding kind's default applies (std140 for UniformBuffer,
 // std430 for StorageBuffer) — resolved during sema/IR lowering, never
 // present past that point.
-enum class LayoutRule : u8 {
+enum class LayoutRule : u08 {
 	unset = 0,
 	std140 = 1,
 	std430 = 2,

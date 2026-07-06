@@ -1,0 +1,7 @@
+uniform albedo {
+    Sampler2D texture;
+    UniformBuffer tint;
+}
+layout albedo::tint : vec4;
+
+export fn main() {}

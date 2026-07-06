@@ -9,11 +9,20 @@
 #include "rtsl.h"
 #include "text_rtir.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string_view>
+#include <vector>
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#include <stdlib.h>
+#endif
 
 using namespace rtsl;
 
@@ -197,12 +206,14 @@ input Point {
     location(0) position;
     location(1) uv;
 }
-using RasterVertex = Vertex : clip position, smooth uv, flat material;
+using RasterVertex = Vertex : position(clip), uv(smooth), material(flat);
 output Fragment {
     location(0) color;
 }
-export fn vert_main(Point p) -> RasterVertex { return Vertex(p); }
-export fn frag_main(Vertex v) -> Fragment { return Fragment(v); }
+@vertex
+export fn main(Point p) -> RasterVertex { return Vertex(p); }
+@fragment
+export fn main(Vertex v) -> Fragment { return Fragment(v); }
 )";
 
 void stage_interfaces_parse_and_assign_locations() {
@@ -241,8 +252,8 @@ void compiler_reports_missing_fragment_stage() {
 	CompilerInstance compiler;
 	auto object = compiler.compile_source(
 		"struct Point { vec3 p; }\nstruct Vertex { vec4 position; }\n"
-		"using RasterVertex = Vertex : clip position;\n"
-		"export fn vert_main(Point p) -> RasterVertex { return Vertex(p); }",
+		"using RasterVertex = Vertex : position(clip);\n"
+		"@vertex export fn main(Point p) -> RasterVertex { return Vertex(p); }",
 		CompilerInvocation{ .source_name = "vertonly.rtsl" }
 	);
 	Linker linker(compiler.diagnostics());
@@ -340,9 +351,173 @@ void layout_rule_qualifier_parses() {
 	assert(unit.layouts[2].rule == LayoutRule::scalar);
 }
 
+// End-to-end: compiling an `export fn` produces a `.rtslm` module sidecar,
+// and a separate module that `import`s it resolves the exported name against
+// that sidecar. Exercises the full loop: extract_module_interface -> write
+// bytes -> resolve_import -> Sema sees imported_exports.
+void export_import_roundtrip_through_module_sidecar() {
+	const std::filesystem::path tmp = std::filesystem::temp_directory_path() /
+		("rtsl_export_import_" + std::to_string(std::random_device{}()));
+	std::filesystem::create_directories(tmp);
+
+	// Producer: exports a fn. The compiler runs extract_module_interface for
+	// us implicitly (the driver does it), but at the API level we call it
+	// explicitly and write the bytes to the shared dir.
+	CompilerInstance producer;
+	const char* producer_src = "export fn shared_helper() -> void {}\n";
+	auto producer_artifact = producer.compile_source(producer_src,
+		CompilerInvocation{ .source_name = "helper.rtsl" });
+	assert(!producer.diagnostics().has_error());
+	assert(!producer_artifact.exports.empty());
+
+	const auto module_artifact = extract_module_interface(producer_artifact);
+	assert(!module_artifact.bytes.empty());
+	const auto module_path = tmp / "helper.rtslm";
+	{
+		std::ofstream out(module_path, std::ios::binary);
+		out.write(reinterpret_cast<const char*>(module_artifact.bytes.data()),
+			static_cast<std::streamsize>(module_artifact.bytes.size()));
+	}
+
+	// Consumer: imports the helper. Passing tmp via import_paths lets the
+	// resolver find helper.rtslm without the consumer sitting next to it.
+	CompilerInstance consumer;
+	const char* consumer_src =
+		"import <helper>;\n"
+		"export fn main() -> void { shared_helper(); }\n";
+	auto consumer_artifact = consumer.compile_source(consumer_src,
+		CompilerInvocation{
+			.source_name = "app.rtsl",
+			.import_paths = { tmp.string() },
+		});
+	assert(!consumer.diagnostics().has_error());
+	assert(!consumer_artifact.bytes.empty());
+	// The consumer's IR should have seen the exported symbol come in through
+	// imported_exports — that's what the linker later uses to resolve the
+	// unresolved FunctionCall to shared_helper().
+	bool saw_import = false;
+	for (const auto& e : consumer_artifact.imported_exports) {
+		if (e.name == "shared_helper") saw_import = true;
+	}
+	assert(saw_import);
+
+	std::filesystem::remove_all(tmp);
+}
+
+// Autobuild: an `import` that names a sibling .rtsl source with no pre-built
+// .rtslm sidecar should transparently compile the source to get the module
+// interface. Same shape as the previous test but with no manual sidecar step.
+void import_autobuilds_from_source_when_module_missing() {
+	const std::filesystem::path tmp = std::filesystem::temp_directory_path() /
+		("rtsl_autobuild_" + std::to_string(std::random_device{}()));
+	std::filesystem::create_directories(tmp);
+
+	const auto helper_path = tmp / "helper.rtsl";
+	{
+		std::ofstream out(helper_path);
+		out << "export fn shared_helper() -> void {}\n";
+	}
+
+	CompilerInstance consumer;
+	const char* consumer_src =
+		"import <helper>;\n"
+		"export fn main() -> void { shared_helper(); }\n";
+	auto artifact = consumer.compile_source(consumer_src,
+		CompilerInvocation{
+			.source_name = "app.rtsl",
+			.import_paths = { tmp.string() },
+		});
+	assert(!consumer.diagnostics().has_error());
+	assert(!artifact.bytes.empty());
+	bool saw_import = false;
+	for (const auto& e : artifact.imported_exports) {
+		if (e.name == "shared_helper") saw_import = true;
+	}
+	assert(saw_import);
+
+	std::filesystem::remove_all(tmp);
+}
+
+// A source that imports itself must be reported as a cycle, not silently loop
+// or stack-overflow. The active-build set in load_or_build_import catches it
+// the second time the same canonical path enters the resolver.
+void import_cycle_reports_diagnostic_instead_of_looping() {
+	const std::filesystem::path tmp = std::filesystem::temp_directory_path() /
+		("rtsl_cycle_" + std::to_string(std::random_device{}()));
+	std::filesystem::create_directories(tmp);
+
+	const auto a_path = tmp / "a.rtsl";
+	const auto b_path = tmp / "b.rtsl";
+	{
+		std::ofstream out(a_path);
+		out << "import <b>;\nexport fn a_fn() -> void {}\n";
+	}
+	{
+		std::ofstream out(b_path);
+		out << "import <a>;\nexport fn b_fn() -> void {}\n";
+	}
+
+	CompilerInstance consumer;
+	const char* consumer_src =
+		"import <a>;\n"
+		"export fn main() -> void {}\n";
+	(void)consumer.compile_source(consumer_src,
+		CompilerInvocation{
+			.source_name = "app.rtsl",
+			.import_paths = { tmp.string() },
+		});
+	assert(consumer.diagnostics().has_error());
+
+	std::filesystem::remove_all(tmp);
+}
+
+// Smoke suite: every `.rtsl` under RTSL_TEST_SHADERS_DIR must compile to a
+// non-empty object with no diagnostics. Adding a case is dropping a file in
+// that directory — no code changes needed. Tests that need to assert on IR
+// shape live above; this one is the "does the pipeline still turn source
+// into an artifact?" gate.
+void builds_various_shader_programs() {
+	const std::filesystem::path shaders_dir{ RTSL_TEST_SHADERS_DIR };
+	assert(std::filesystem::is_directory(shaders_dir));
+
+	std::vector<std::filesystem::path> shader_paths;
+	for (const auto& entry : std::filesystem::directory_iterator(shaders_dir)) {
+		if (entry.is_regular_file() && entry.path().extension() == ".rtsl") {
+			shader_paths.push_back(entry.path());
+		}
+	}
+	// Sort for deterministic run order — failures point at the same case
+	// name regardless of filesystem enumeration quirks.
+	std::sort(shader_paths.begin(), shader_paths.end());
+	assert(!shader_paths.empty());
+
+	for (const auto& path : shader_paths) {
+		std::ifstream input(path, std::ios::binary);
+		const std::string source{ std::istreambuf_iterator<char>(input),
+			std::istreambuf_iterator<char>() };
+
+		CompilerInstance compiler;
+		auto artifact = compiler.compile_source(source,
+			CompilerInvocation{ .source_name = path.filename().string() });
+		if (compiler.diagnostics().has_error()) {
+			std::cerr << "smoke case failed: " << path.filename().string() << "\n";
+			compiler.diagnostics().render(std::cerr);
+			assert(false);
+		}
+		assert(!artifact.bytes.empty());
+	}
+}
+
 } // namespace
 
 int main() {
+#ifdef _MSC_VER
+	// Kill the CRT's modal abort dialog so a failed assert() writes to stderr
+	// and returns instead of blocking the terminal on an OK/Retry/Ignore box.
+	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+	_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+	_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
 	source_locations_are_line_column_mapped();
 	diagnostics_render_with_caret();
 	lexer_tokenizes_keywords_and_punctuation();
@@ -352,6 +527,10 @@ int main() {
 	compiler_honors_basic_preprocessor_blocks();
 	lexer_recognizes_string_imports();
 	compiler_reports_missing_imports();
+	export_import_roundtrip_through_module_sidecar();
+	import_autobuilds_from_source_when_module_missing();
+	import_cycle_reports_diagnostic_instead_of_looping();
+	builds_various_shader_programs();
 	artifact_round_trips();
 	artifact_round_trips_imports();
 	text_rtir_round_trips_minimal_artifact();

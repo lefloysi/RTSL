@@ -141,14 +141,14 @@ struct struct_decl {
 	std::vector<struct_field> fields;
 };
 
-// Mirrors rtsl::AccessKind in the compiler. Carried as u8 in the artifact.
+// Mirrors rtsl::AccessKind in the compiler. Carried as u08 in the artifact.
 enum class access_kind : std::uint8_t {
 	read_write = 0,
 	read_only = 1,
 	write_only = 2,
 };
 
-// Mirrors rtsl::InterpolationKind. Encoded as u8.
+// Mirrors rtsl::InterpolationKind. Encoded as u08.
 enum class interpolation_kind : std::uint8_t {
 	none = 0,
 	smooth = 1,
@@ -156,7 +156,7 @@ enum class interpolation_kind : std::uint8_t {
 	clip = 3,
 };
 
-// Mirrors rtsl::BuiltinSlot. Encoded as u8.
+// Mirrors rtsl::BuiltinSlot. Encoded as u08.
 enum class builtin_slot : std::uint8_t {
 	none = 0,
 	position = 1,

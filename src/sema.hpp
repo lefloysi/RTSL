@@ -15,6 +15,11 @@ struct SemanticSymbol {
 	std::string return_type;
 	std::vector<Decl::BodyStatement> body_statements;
 	bool exported = false;
+	// Copied from the Decl's `@vertex`/`@fragment` attribute.
+	StageKind stage = StageKind::none;
+	// True when the source-level decl had a `{ ... }` body — as opposed to a
+	// `;`-terminated forward declaration.
+	bool has_body = false;
 };
 
 struct SemanticModule {

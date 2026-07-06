@@ -64,7 +64,8 @@ namespace rtsl {
 	X(comma, ',')                  \
 	X(semicolon, ';')              \
 	X(dot, '.')                    \
-	X(colon, ':')
+	X(colon, ':')                  \
+	X(at, '@')
 
 // Two-character punctuation. `first` and `second` are the raw chars; `name`
 // is a TokenKind enumerator (declared inline below). Lexer walks this table

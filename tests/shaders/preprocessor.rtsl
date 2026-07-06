@@ -1,0 +1,4 @@
+#define WITH_MAIN
+#ifdef WITH_MAIN
+export fn main() {}
+#endif

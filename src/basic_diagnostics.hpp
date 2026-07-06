@@ -9,7 +9,7 @@
 
 namespace rtsl {
 
-enum class DiagnosticSeverity : u8 {
+enum class DiagnosticSeverity : u08 {
 	ignored,
 	note,
 	warning,

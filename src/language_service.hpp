@@ -13,7 +13,7 @@
 
 namespace rtsl {
 
-enum class LanguageSymbolKind : u8 {
+enum class LanguageSymbolKind : u08 {
 	unknown,
 	import,
 	function,

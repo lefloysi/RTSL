@@ -75,7 +75,19 @@ std::string Mangler::mangle_glsl_from_rtsl(std::string_view rtsl_mangled_name) c
 
 std::string Mangler::mangle_rtsl(const MangleInput& input) const {
 	if (input.stage != StageKind::none) {
-		return std::string(input.name);
+		// Stage entries used to be name-detected (`vert_*`/`frag_*`), so the
+		// mangled form equalled the source name. With attribute-driven stages
+		// two overloads of `main` can differ only by stage — we prefix with the
+		// stage tag to keep mangled identity unique. Names that already carry
+		// the prefix pass through unchanged.
+		const auto prefix = stage_entry_name(input.stage);
+		if (input.name.starts_with(prefix)) {
+			return std::string(input.name);
+		}
+		std::string out(prefix);
+		out.push_back('_');
+		out.append(input.name);
+		return out;
 	}
 
 	std::string out = "_Z";

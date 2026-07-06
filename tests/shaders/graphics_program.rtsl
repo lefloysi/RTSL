@@ -1,0 +1,36 @@
+struct Point {
+    vec3 position;
+    vec2 uv;
+}
+
+struct Vertex {
+    vec4 position;
+    vec2 uv;
+    u32 material;
+}
+
+struct Fragment {
+    vec4 color;
+}
+
+fn Vertex::Vertex(Point p) {
+    position = vec4(p.position, 1.0);
+    uv = p.uv;
+    material = 0;
+}
+
+fn Fragment::Fragment(Vertex v) {
+    color = vec4(v.uv, 0.0, 1.0);
+}
+
+using RasterVertex = Vertex : position(clip), uv(smooth), material(flat);
+
+@vertex
+fn main(Point p) -> RasterVertex {
+    return Vertex(p);
+}
+
+@fragment
+fn main(Vertex v) -> Fragment {
+    return Fragment(v);
+}

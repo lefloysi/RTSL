@@ -1469,14 +1469,6 @@ class FunctionLowerer {
 // Helpers from the old IR.cpp that are still useful for stage-wrapper synthesis.
 // ----------------------------------------------------------------------------
 
-StageKind detect_stage(std::string_view name) {
-	if (name.starts_with("vert"))
-		return StageKind::vertex;
-	if (name.starts_with("frag"))
-		return StageKind::fragment;
-	return StageKind::none;
-}
-
 std::string globals_type_name(StageKind stage) {
 	switch (stage) {
 	case StageKind::vertex:
@@ -1669,7 +1661,7 @@ void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
 // vectors, and matrices. Anything else falls back to a conservative "unknown"
 // which the caller diagnoses.
 struct TypeShape {
-	enum class Kind : u8 { Unknown,
+	enum class Kind : u08 { Unknown,
 						   Scalar,
 						   Vector,
 						   Matrix } kind = Kind::Unknown;
@@ -2013,15 +2005,17 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind != DeclKind::function)
 			continue;
-		// A forward declaration (`fn name(...) -> T;` with no body) carries no
-		// statements to lower. Skip it entirely: it's there for source-level
-		// name lookup and for declaring symbols that the linker will resolve
-		// against another input. Emitting a body-less IRFunction would just
-		// confuse the inliner into picking the empty entry over the real def.
-		if (symbol.body_statements.empty())
+		// A forward declaration (`fn name(...) -> T;`) is there for source-level
+		// name lookup only; the linker resolves it against another input. Skip
+		// so the inliner doesn't pick a body-less entry over the real def.
+		// An *empty body* (`{}`) is a distinct case — a valid zero-statement
+		// function — and lowers normally.
+		if (!symbol.has_body)
 			continue;
 
-		const StageKind stage = detect_stage(symbol.name);
+		// Stage role is driven by the `@vertex` / `@fragment` attribute, set on
+		// the Decl at parse time and forwarded through Sema.
+		const StageKind stage = symbol.stage;
 		const bool is_stage_entry = stage != StageKind::none;
 		// Detect a struct member-init constructor: a function named
 		// "Type::Type" where Type is a known struct. The source declares no
@@ -2145,6 +2139,24 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 								std::format("stage payload '{}' is {} and requires a 'varying' declaration to define interpolation", type, context));
 		}
 	};
+	// Fragment sugar: `@fragment fn main(...) -> vec4` (bare vector, not a
+	// struct) means "single color output at location 0". Synthesize an output
+	// interface with one field so the wrapper has something to write to. If
+	// the user returns a struct, they must annotate its fields — no magic.
+	const auto synth_bare_color_output = [&](std::string_view type) {
+		if (type != "vec4")
+			return;
+		if (find_interface(ir.stage_interfaces, type))
+			return;
+		StageInterface derived;
+		derived.role = StageRole::output;
+		derived.type_name = std::string(type);
+		StageIOField f;
+		f.name = "color";
+		f.location = 0;
+		derived.fields.push_back(std::move(f));
+		ir.stage_interfaces.push_back(std::move(derived));
+	};
 	for (const auto& pending : pending_stages) {
 		switch (pending.stage) {
 		case StageKind::vertex:
@@ -2152,6 +2164,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			break;
 		case StageKind::fragment:
 			require_varying(pending.input_type, "a fragment input");
+			synth_bare_color_output(pending.output_type);
 			synth_from_struct(pending.output_type, StageRole::output);
 			break;
 		case StageKind::none:

@@ -210,45 +210,53 @@ input Point {
     location(0) position;
     location(1) uv;
 }
-varying Vertex {
-    clip position;
-    smooth uv;
-    flat material;
-}
+using RasterVertex = Vertex : position(clip), uv(smooth), material(flat);
 output Fragment {
     location(0) color;
 }
 ```
 
-Field qualifiers may appear in any order before the field name:
+Stage-boundary metadata is written the same way everywhere: `field(tag, tag, ...)`.
+Tags are bare identifiers looked up in a fixed table — none are reserved words —
+so adding a new one is a data change, not a grammar change.
 
-- `smooth` / `flat` control interpolation.
+- Interpolation tags: `smooth`, `flat`, `clip`.
+- Built-in slot tags: `position`, `depth`, `vertex_index`, … (see below).
 - `clip` marks the clip-space position; it is delivered through the rasterizer's
   built-in position slot and consumes no user location. It is a vertex output
   only and is not readable as an input on later stages.
-- `location(N)` assigns an explicit binding location. Fields without an explicit
-  location are numbered sequentially; built-in fields consume no location.
-- `builtin(name)` routes a field to a named built-in slot.
+
+For fields that instead need an explicit binding location, use `location(N)`
+inside an `input` or `output` block. Fields without an explicit location are
+numbered sequentially; fields bound to a built-in slot consume no location.
 
 Assigned locations are recorded in every artifact and are queryable through the
 reflection ABI so hosts can bind inputs and read outputs.
 
 ## Entry Points
 
-`fn` declarations whose names begin with the stage tag mark executable shader
-entry points. The stage is derived from the function name's leading 4-letter
-tag:
-
-| Tag    | Stage    |
-|--------|----------|
-| `vert` | vertex   |
-| `frag` | fragment |
+Executable shader entry points are marked with a stage attribute — `@vertex`,
+`@fragment` — placed immediately before the `fn`. Because the stage is carried
+by the attribute rather than the function's name, the same identifier (e.g.
+`main`) can be reused across stages via overloading:
 
 ```rtsl
-fn vert_main(Point p) -> Vertex {
+@vertex
+fn main(Point p) -> Vertex {
     return Vertex(p);
 }
+
+@fragment
+fn main(Vertex v) -> vec4 {
+    return sample(albedo, v.uv);
+}
 ```
+
+Fragment sugar: when a `@fragment` function returns a bare `vec4` (rather than
+a struct), the value is treated as a single color output at location 0 — no
+`output` block or per-field annotation required. Returning a struct still
+requires the fields to be annotated explicitly; no naming convention is
+implied.
 
 The compiler keeps the authored function as an ordinary function and generates a
 backend entry wrapper named for the stage (`vert`, `frag`). This generated stage
@@ -264,7 +272,8 @@ Stage built-ins (`gl_Position`, `gl_PointSize`, `gl_VertexIndex`, `gl_FragCoord`
 **builtin carrier struct passed by reference** as the entry's first parameter:
 
 ```rtsl
-fn vert_main(RtVertex& b, Point p) -> Vertex {
+@vertex
+fn main(RtVertex& b, Point p) -> Vertex {
     b.position = mvp * vec4(p.position, 1.0);  // routes to gl_Position
     return Vertex(p);
 }
