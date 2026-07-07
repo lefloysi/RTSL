@@ -5,9 +5,29 @@
 #include "token.hpp"
 
 #include <span>
+#include <string>
+#include <string_view>
 
 namespace rtsl {
 
+// Recursive-descent parser for RTSL.
+//
+// First principles the grammar is built on:
+//
+//   1. A type is a value of the grammar. `struct name? { fields }` is a type
+//      expression exactly like `mat4` is — anything that accepts a type
+//      accepts an inline struct. Anonymous struct types get compiler-generated
+//      names. `struct Foo` without a body is a reference to (or forward
+//      declaration of) that type.
+//   2. The top scope holds only a handful of declaration kinds: type
+//      declarations (`struct T {...};` / `using A = T;`), function
+//      declarations (`fn`), resource scopes (`uniform`), layout definitions
+//      (`layout`), stage interfaces (`input`/`output`), imports, and
+//      namespaces. Everything else is a diagnostic.
+//   3. A return boundary (`-> T : field(tag, ...)`) is part of the return
+//      type spec; tags are data-driven, not per-keyword grammar.
+//
+// See parser.cpp for the full grammar (EBNF).
 class Parser {
   public:
 	Parser(SourceManager& sources, DiagnosticEngine& diagnostics, u32 file_id, std::span<const Token> tokens);
@@ -15,57 +35,121 @@ class Parser {
 	[[nodiscard]] TranslationUnit parse_translation_unit();
 
   private:
+	// The result of parsing a type expression. `spelling` is the type's name:
+	// the declared name for named types, the source name for `struct Foo
+	// {...}`, or a compiler-generated `__anon_struct_N` for anonymous bodies.
+	struct ParsedType {
+		std::string spelling;
+		bool has_body = false;     // a `{ fields }` body was parsed
+		bool is_anonymous = false; // body without a source-level name
+		std::vector<StructField> fields;               // body fields (copy)
+		std::vector<StructMemberFunction> member_functions; // body `fn name(...)`
+		std::vector<ParameterDecl> constructor_parameters; // body `fn T(...)`
+		bool is_reference = false;
+		bool is_const = false;
+
+		[[nodiscard]] bool empty() const { return spelling.empty(); }
+	};
+
+	// Token stream navigation.
 	[[nodiscard]] const Token& peek(std::size_t lookahead = 0) const;
 	[[nodiscard]] bool at(TokenKind kind) const;
+	[[nodiscard]] bool at(TokenKind kind, std::size_t lookahead) const;
 	[[nodiscard]] bool consume(TokenKind kind);
+	bool expect(TokenKind kind, std::string_view what);
 	[[nodiscard]] bool at_end() const;
 
+	// Top-level.
 	Decl parse_declaration();
 	Decl parse_import(bool exported);
-	Decl parse_named_declaration(DeclKind kind, bool exported);
-	void parse_function_signature(Decl& decl);
-	void parse_function_body(Decl& decl);
-	void parse_function_body_into(Decl& decl, bool stop_on_right_brace);
-	void parse_statement_list_into(std::vector<Decl::BodyStatement>& out, bool stop_on_right_brace);
-	Decl::BodyStatement parse_statement_from_tokens(const std::vector<Token>& tokens) const;
-	Decl::BodyStatement parse_if_statement(const std::vector<Token>& tokens) const;
-	Decl::BodyStatement parse_while_statement(const std::vector<Token>& tokens) const;
-	Decl::BodyStatement parse_do_statement(const std::vector<Token>& tokens) const;
-	Decl::BodyStatement parse_for_statement(const std::vector<Token>& tokens) const;
-	std::string tokens_to_text(std::span<const Token> tokens) const;
-	void parse_uniform_scope(const Decl& decl);
-	// Read `A[::B[::C[::~D]]]` at the current cursor. Returns empty when the
-	// cursor isn't on an identifier. Diagnoses mid-name failures against the
-	// offending token.
-	std::string parse_scoped_name();
-	// Body-specific handlers for parse_named_declaration's post-name dispatch.
-	// Each expects `decl` to have its name populated and drives the rest.
-	void parse_function_decl(Decl& decl);
-	void parse_struct_decl(Decl& decl);
-	void parse_stage_interface(const Decl& decl);
+	Decl parse_namespace(bool exported);
+	Decl parse_function(bool exported, StageKind stage);
+	// `struct ...;` at top scope: a type expression used as a declaration.
+	Decl parse_type_declaration(bool exported);
+	Decl parse_invalid_global_declaration(bool exported);
+	Decl parse_uniform(bool exported);
+	Decl parse_stage_interface_decl(DeclKind kind, bool exported);
 	void parse_layout();
-	void parse_using_alias();
-	// Parse a comma-separated `intrinsic field` list forming a return-type
-	// boundary spec. The leading `:` must have been consumed by the caller.
-	// Terminates at `{` (function body) or `;` (forward decl). Only
-	// compiler-known pipeline intrinsics are accepted for the operation;
-	// unknown identifiers are diagnosed.
+	void parse_using(bool exported);
+
+	// `@vertex` / `@fragment` prefix; StageKind::none when absent.
+	StageKind parse_stage_attribute();
+
+	// The single type rule. Consumes:
+	//   'const'? ( struct_type | named_type ) ('&' | '*')?
+	//   struct_type := 'struct' scoped_name? ('{' struct_body '}')?
+	//   named_type  := (ident | 'void' | 'auto') ('::' ident)* ('<' ... '>')?
+	// A struct body registers the type in the translation unit (generated name
+	// when anonymous). Returns an empty ParsedType if the cursor isn't on a
+	// type-starting token (cursor untouched in that case unless a body or
+	// 'const' was already consumed).
+	ParsedType parse_type();
+
+	// Function pieces.
+	void parse_function_signature(Decl& decl);
+	void parse_parameter_list(std::vector<ParameterDecl>& out);
+	// Return boundary (post `-> T`, consumed `:`): `field(tag, ...) , ...`.
+	// Tags are looked up in a fixed data table (clip/smooth/flat + builtin
+	// slot names).
 	void parse_return_boundary(std::string base_type);
-	// If a `:` follows the return type, consume it and parse the boundary
-	// spec. Otherwise leaves the cursor untouched.
-	void maybe_parse_return_boundary(const std::string& base_type);
-	// Resolve `name` through recorded type aliases to its ultimate base type.
-	// Types the parser doesn't know as aliases pass through unchanged.
-	[[nodiscard]] std::string resolve_alias(std::string_view name) const;
+	void maybe_parse_return_boundary(std::string_view base_type);
+
+	// Struct body: fields + member function declarations.
+	void parse_struct_body(std::vector<StructField>& fields,
+						   std::vector<StructMemberFunction>& member_functions,
+						   std::vector<ParameterDecl>& constructor_parameters,
+						   std::string_view owner_name);
+	void parse_uniform_body(const Decl& decl);
+	void parse_stage_interface_body(StageRole role, std::string_view type_name);
+
+	// Statements.
+	Decl::BodyStatement parse_statement();
+	Decl::BodyStatement parse_block_statement();
+	Decl::BodyStatement parse_if_statement();
+	Decl::BodyStatement parse_while_statement();
+	Decl::BodyStatement parse_do_statement();
+	Decl::BodyStatement parse_for_statement();
+	Decl::BodyStatement parse_return_statement();
+	// Tries `type ident (= expr)? ;`. Restores the cursor and returns false
+	// when the shape doesn't fit (only when no struct body was committed).
+	bool try_parse_local_declaration(Decl::BodyStatement& out);
+	Decl::BodyStatement parse_expression_or_assignment_statement();
+
+	std::string parse_scoped_name();
+
+	// `type ident ;` via parse_type. Returns empty on failure without
+	// consuming (unless a struct body was already committed, which is
+	// diagnosed instead).
 	StructField parse_field_declaration();
-	std::string collect_type_until(TokenKind stop_a, TokenKind stop_b);
+
+	// Expression parser (precedence climbing).
+	Decl::Expr parse_expression();
+	Decl::Expr parse_assignment();
+	Decl::Expr parse_logical_or();
+	Decl::Expr parse_logical_and();
+	Decl::Expr parse_bitwise_or();
+	Decl::Expr parse_bitwise_xor();
+	Decl::Expr parse_bitwise_and();
+	Decl::Expr parse_equality();
+	Decl::Expr parse_relational();
+	Decl::Expr parse_additive();
+	Decl::Expr parse_multiplicative();
+	Decl::Expr parse_unary();
+	Decl::Expr parse_postfix();
+	Decl::Expr parse_primary();
+
+	// Raw source substring spanned by tokens [begin, end). Populates the
+	// BodyStatement text fields downstream IR still reads.
+	std::string source_between(std::size_t begin_cursor, std::size_t end_cursor) const;
+
+	[[nodiscard]] std::string resolve_alias(std::string_view name) const;
+
+	// Recovery.
 	void skip_to_declaration_boundary(bool consume_right_brace = false);
-	void skip_balanced_block();
-	std::string append_token_text(std::string statement, const Token& token) const;
-	SourceSpan statement_span(const Token& begin, const Token& end) const;
-	Decl::Expr parse_expression(std::string_view text) const;
-	std::string collect_type_tokens_until_identifier();
-	void diagnose(const Token& token, std::string_view message) const;
+	void skip_to_statement_boundary();
+
+	void diagnose(const Token& token, std::string_view message);
+	void diagnose_here(std::string_view message);
 
 	TranslationUnit* unit_ = nullptr;
 
@@ -75,6 +159,7 @@ class Parser {
 	std::span<const Token> tokens_;
 	std::size_t cursor_ = 0;
 	u32 next_anonymous_block_id_ = 0;
+	u32 next_anonymous_struct_id_ = 0;
 };
 
 } // namespace rtsl

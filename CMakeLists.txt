@@ -70,6 +70,8 @@ add_executable(rtsl-tests
     tests/basic.cpp
     tests/compiler.cpp
     tests/artifact.cpp
+    tests/parser_grammar.cpp
+    tests/parser_negative.cpp
 )
 target_link_libraries(rtsl-tests PRIVATE rtsl)
 target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)

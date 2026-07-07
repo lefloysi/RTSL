@@ -1,12 +1,13 @@
 struct Point {
     vec3 position;
     vec2 uv;
-}
+};
 
 struct Vertex {
     vec4 position;
     vec2 uv;
-}
+    fn Vertex(Point p);
+};
 
 fn Vertex::Vertex(Point p) {
     position = vec4(p.position, 1.0);

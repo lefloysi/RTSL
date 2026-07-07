@@ -203,7 +203,7 @@ Token Lexer::make_token(TokenKind kind, std::size_t begin, std::size_t end) cons
 }
 
 void Lexer::diagnose(std::size_t offset, std::string_view message) {
-	diagnostics_.report(1001, DiagnosticSeverity::error, sources_.location_at(file_id_, offset), sources_.name(file_id_), message);
+	diagnostics_.report(DiagnosticCode::lexer_invalid_character, DiagnosticSeverity::error, sources_.location_at(file_id_, offset), sources_.name(file_id_), message);
 }
 
 } // namespace rtsl

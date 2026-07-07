@@ -1,466 +1,665 @@
+// RTSL grammar checker / parser.
+//
+// Recursive descent, one function per nonterminal. Built on three first
+// principles instead of per-construct special cases:
+//
+//   1. `struct name? { fields }` is a TYPE EXPRESSION. It is the same grammar
+//      object as `mat4`. Every context that accepts a type — top-level
+//      declarations, uniform members, layout payloads, using-aliases,
+//      parameters, return types, struct fields, locals — accepts it through
+//      the single `type` rule below. Anonymous bodies get compiler-generated
+//      names. A bodyless `struct Foo` is a reference to / forward declaration
+//      of that type.
+//   2. The top scope holds exactly: type declarations (`struct T {...};`,
+//      `using A = T;`), function declarations (`fn`), resource scopes
+//      (`uniform`), layout definitions (`layout`), stage interfaces
+//      (`input`/`output`), imports, and namespaces.
+//   3. The return boundary `-> T : field(tag, ...)` belongs to the return
+//      type. Tags are data (a lookup table), not grammar.
+//
+// Grammar (EBNF):
+//
+//   translation_unit := decl*
+//   decl := 'export'? ( import | namespace | attribute? function
+//                     | type_decl | uniform | layout | using
+//                     | input | output )
+//   attribute   := '@' ident                 // '@vertex' | '@fragment'
+//   import      := 'import' ( '<' path '>' | string_literal ) ';'
+//   namespace   := 'namespace' scoped_name '{' balanced_body '}' ';'?
+//   function    := 'fn' scoped_name '(' params? ')'
+//                  ('->' type return_boundary?)? ( block | ';' )
+//   type_decl   := type ';'                  // `struct T {...};`, `struct T;`
+//   uniform     := 'uniform' scoped_name? '{' uniform_body '}' ';'?
+//   layout      := 'layout' scoped_name ':' layout_rule? type ';'
+//   using       := 'using' ('uniform' | 'namespace')? scoped_name ';'
+//                | 'using' ident '=' type return_boundary? ';'
+//   input       := 'input'  scoped_name '{' io_body '}' ';'?
+//   output      := 'output' scoped_name '{' io_body '}' ';'?
+//
+//   type        := 'const'? ( struct_type | named_type ) ('&' | '*')?
+//   struct_type := 'struct' scoped_name? ('{' struct_body '}')?
+//   named_type  := (ident | 'void' | 'auto') ('::' ident)* ('<' balanced '>')?
+//   scoped_name := ident ('::' ('~' ident | ident))*
+//
+//   struct_body      := ( constructor_decl | field )*
+//   constructor_decl := 'fn' ident '(' params? ')' ';'
+//   field            := type ident ';'
+//
+//   params := param (',' param)*
+//   param  := 'inout'? type ident?
+//
+//   return_boundary := ':' entry (',' entry)*
+//   entry           := ident '(' tag (',' tag)* ')'
+//   tag             := ident   // clip | smooth | flat | builtin slot names
+//
+//   uniform_body := ( access_qual? field )*      // field type may be inline
+//   access_qual  := 'readonly' | 'writeonly'
+//   io_body      := io_field*
+//   io_field     := io_qual* ident ';'
+//   io_qual      := 'smooth' | 'flat' | 'clip'
+//                 | 'location' '(' integer ')' | 'builtin' '(' ident ')'
+//
+//   statement := block | if | while | do | for | return | local_decl | expr_stmt
+//   block      := '{' statement* '}'
+//   if         := 'if' '(' expr ')' statement ( 'else' statement )?
+//   while      := 'while' '(' expr ')' statement
+//   do         := 'do' statement 'while' '(' expr ')' ';'
+//   for        := 'for' '(' for_init? ';' expr? ';' expr? ')' statement
+//   for_init   := local_decl_head | expr_or_assign
+//   return     := 'return' expr? ';'
+//   local_decl := type ident ( '=' expr )? ';'
+//   expr_stmt  := expr ( '=' expr )? ';'
+//
+//   expr          := assignment
+//   assignment    := logical_or ( '=' assignment )?     // right-assoc
+//   logical_or    := logical_and  ( '||' logical_and  )*
+//   logical_and   := bitwise_or   ( '&&' bitwise_or   )*
+//   bitwise_or    := bitwise_xor  ( '|'  bitwise_xor  )*
+//   bitwise_xor   := bitwise_and  ( '^'  bitwise_and  )*
+//   bitwise_and   := equality     ( '&'  equality     )*
+//   equality      := relational   ( ('==' | '!=') relational )*
+//   relational    := additive     ( ('<' | '<=' | '>' | '>=') additive )*
+//   additive      := multiplicative ( ('+' | '-') multiplicative )*
+//   multiplicative:= unary          ( ('*' | '/' | '%') unary )*
+//   unary         := ('+' | '-' | '!' | '~') unary | postfix
+//   postfix       := primary ( '.' ident | '::' ident
+//                            | '(' arglist? ')' | '[' expr ']' )*
+//   primary       := ident | integer | float | string
+//                   | 'true' | 'false' | '(' expr ')'
+//   arglist       := expr ( ',' expr )*
+
 #include "parser.hpp"
+
+#include <cctype>
+#include <utility>
 
 namespace rtsl {
 
+namespace {
 
-std::string trim(std::string_view text) {
-	while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
-		text.remove_prefix(1);
-	}
-	while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
-		text.remove_suffix(1);
-	}
-	return std::string(text);
+std::string join_source(std::string_view buffer, std::size_t start, std::size_t end) {
+	if (end <= start || end > buffer.size()) return {};
+	return std::string(buffer.substr(start, end - start));
 }
 
-struct ExprToken {
-	enum class Kind {
-		end,
-		ident,
-		integer,
-		floating,
-		lparen,
-		rparen,
-		comma,
-		dot,
-		scope,
-		plus,
-		minus,
-		star,
-		slash,
-		percent,
-	};
+Decl::Expr make_binary(std::string op, Decl::Expr lhs, Decl::Expr rhs) {
+	Decl::Expr expr;
+	expr.kind = Decl::Expr::Kind::binary;
+	expr.op = std::move(op);
+	expr.children = { std::move(lhs), std::move(rhs) };
+	return expr;
+}
 
-	Kind kind = Kind::end;
-	std::string text;
-};
+Decl::Expr make_unary(std::string op, Decl::Expr child) {
+	Decl::Expr expr;
+	expr.kind = Decl::Expr::Kind::unary;
+	expr.op = std::move(op);
+	expr.children = { std::move(child) };
+	return expr;
+}
 
-class ExprTokenizer {
-  public:
-	explicit ExprTokenizer(std::string_view text) : text_(text) {}
-
-	ExprToken peek() {
-		const auto save = pos_;
-		const auto tok = next();
-		pos_ = save;
-		return tok;
-	}
-
-	ExprToken next() {
-		skip_ws();
-		if (pos_ >= text_.size())
-			return {};
-		const char c = text_[pos_];
-		if (std::isalpha(static_cast<unsigned char>(c)) || c == '_')
-			return ident();
-		if (std::isdigit(static_cast<unsigned char>(c)))
-			return number();
-		if (c == '(') {
-			++pos_;
-			return { ExprToken::Kind::lparen, "(" };
-		}
-		if (c == ')') {
-			++pos_;
-			return { ExprToken::Kind::rparen, ")" };
-		}
-		if (c == ',') {
-			++pos_;
-			return { ExprToken::Kind::comma, "," };
-		}
-		if (c == '.') {
-			++pos_;
-			return { ExprToken::Kind::dot, "." };
-		}
-		if (c == ':' && pos_ + 1 < text_.size() && text_[pos_ + 1] == ':') {
-			pos_ += 2;
-			return { ExprToken::Kind::scope, "::" };
-		}
-		if (c == '+') {
-			++pos_;
-			return { ExprToken::Kind::plus, "+" };
-		}
-		if (c == '-') {
-			++pos_;
-			return { ExprToken::Kind::minus, "-" };
-		}
-		if (c == '*') {
-			++pos_;
-			return { ExprToken::Kind::star, "*" };
-		}
-		if (c == '/') {
-			++pos_;
-			return { ExprToken::Kind::slash, "/" };
-		}
-		if (c == '%') {
-			++pos_;
-			return { ExprToken::Kind::percent, "%" };
-		}
-		++pos_;
-		return {};
-	}
-
-  private:
-	void skip_ws() {
-		while (pos_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[pos_]))) {
-			++pos_;
-		}
-	}
-
-	ExprToken ident() {
-		const auto start = pos_;
-		while (pos_ < text_.size() &&
-			   (std::isalnum(static_cast<unsigned char>(text_[pos_])) || text_[pos_] == '_')) {
-			++pos_;
-		}
-		return { ExprToken::Kind::ident, std::string(text_.substr(start, pos_ - start)) };
-	}
-
-	ExprToken number() {
-		const auto start = pos_;
-		bool floating = false;
-		while (pos_ < text_.size()) {
-			const char c = text_[pos_];
-			if (std::isdigit(static_cast<unsigned char>(c))) {
-				++pos_;
-			} else if (c == '.') {
-				floating = true;
-				++pos_;
-			} else {
-				break;
-			}
-		}
-		return { floating ? ExprToken::Kind::floating : ExprToken::Kind::integer,
-				 std::string(text_.substr(start, pos_ - start)) };
-	}
-
-	std::string_view text_;
-	std::size_t pos_ = 0;
-};
-
+} // namespace
 
 Parser::Parser(SourceManager& sources, DiagnosticEngine& diagnostics, u32 file_id, std::span<const Token> tokens)
 	: sources_(sources), diagnostics_(diagnostics), file_id_(file_id), tokens_(tokens) {}
 
-TranslationUnit Parser::parse_translation_unit() {
-	TranslationUnit unit{ .file_id = file_id_ };
-	unit_ = &unit;
-	while (!at_end()) {
-		auto decl = parse_declaration();
-		if (decl.kind != DeclKind::unknown) {
-			unit.declarations.push_back(std::move(decl));
-		}
-	}
-	unit_ = nullptr;
-	return unit;
-}
+// ---------------------------------------------------------------------------
+// Token stream helpers
+// ---------------------------------------------------------------------------
 
 const Token& Parser::peek(std::size_t lookahead) const {
 	const auto index = cursor_ + lookahead;
 	return tokens_[index < tokens_.size() ? index : tokens_.size() - 1];
 }
 
-bool Parser::at(TokenKind kind) const {
-	return peek().kind == kind;
-}
+bool Parser::at(TokenKind kind) const { return peek().kind == kind; }
+bool Parser::at(TokenKind kind, std::size_t lookahead) const { return peek(lookahead).kind == kind; }
 
 bool Parser::consume(TokenKind kind) {
-	if (!at(kind)) {
-		return false;
-	}
+	if (!at(kind)) return false;
 	++cursor_;
 	return true;
 }
 
-bool Parser::at_end() const {
-	return at(TokenKind::end_of_file);
+bool Parser::expect(TokenKind kind, std::string_view what) {
+	if (consume(kind)) return true;
+	diagnose_here(what);
+	return false;
+}
+
+bool Parser::at_end() const { return at(TokenKind::end_of_file); }
+
+// ---------------------------------------------------------------------------
+// Diagnostics / recovery
+// ---------------------------------------------------------------------------
+
+void Parser::diagnose(const Token& token, std::string_view message) {
+	diagnostics_.report(DiagnosticCode::parser_syntax, DiagnosticSeverity::error, token.span.begin, sources_.name(file_id_), message);
+}
+
+void Parser::diagnose_here(std::string_view message) { diagnose(peek(), message); }
+
+void Parser::skip_to_declaration_boundary(bool consume_right_brace) {
+	int depth = 0;
+	while (!at_end()) {
+		const auto kind = peek().kind;
+		if (depth == 0 && (kind == TokenKind::semicolon || kind == TokenKind::right_brace)) break;
+		if (kind == TokenKind::left_brace) ++depth;
+		else if (kind == TokenKind::right_brace && depth > 0) --depth;
+		++cursor_;
+	}
+	if (at(TokenKind::semicolon) || (consume_right_brace && at(TokenKind::right_brace))) ++cursor_;
+}
+
+void Parser::skip_to_statement_boundary() {
+	int paren = 0, brack = 0, brace = 0;
+	while (!at_end()) {
+		const auto kind = peek().kind;
+		if (kind == TokenKind::semicolon && paren == 0 && brack == 0 && brace == 0) {
+			++cursor_;
+			return;
+		}
+		if (kind == TokenKind::right_brace && paren == 0 && brack == 0 && brace == 0) return;
+		if (kind == TokenKind::left_paren) ++paren;
+		else if (kind == TokenKind::right_paren && paren > 0) --paren;
+		else if (kind == TokenKind::left_bracket) ++brack;
+		else if (kind == TokenKind::right_bracket && brack > 0) --brack;
+		else if (kind == TokenKind::left_brace) ++brace;
+		else if (kind == TokenKind::right_brace && brace > 0) --brace;
+		++cursor_;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The type rule — the heart of the grammar
+// ---------------------------------------------------------------------------
+
+Parser::ParsedType Parser::parse_type() {
+	ParsedType type;
+	if (consume(TokenKind::kw_Const)) type.is_const = true;
+
+	if (consume(TokenKind::kw_Struct)) {
+		// struct_type := 'struct' scoped_name? ('{' struct_body '}')?
+		type.spelling = parse_scoped_name(); // may be empty (anonymous)
+
+		if (consume(TokenKind::left_brace)) {
+			type.has_body = true;
+			type.is_anonymous = type.spelling.empty();
+			if (type.is_anonymous) {
+				type.spelling = "__anon_struct_" + std::to_string(next_anonymous_struct_id_++);
+			}
+			parse_struct_body(type.fields, type.member_functions, type.constructor_parameters, type.spelling);
+			(void)consume(TokenKind::right_brace);
+
+			// A struct body defines a type: register it with the unit so the
+			// rest of the compiler sees it exactly like any named type.
+			if (unit_) {
+				unit_->structs.emplace_back(StructDecl{
+					.name = type.spelling,
+					.fields = type.fields,
+					.member_functions = type.member_functions,
+					.constructor_parameters = type.constructor_parameters,
+				});
+			}
+		} else if (type.spelling.empty()) {
+			diagnose_here("expected struct name or '{' after 'struct'");
+			return {};
+		}
+		// else: bodyless `struct Foo` — a reference / forward declaration.
+	} else if (consume(TokenKind::kw_Void)) {
+		type.spelling = "void";
+	} else if (consume(TokenKind::kw_Auto)) {
+		type.spelling = "auto";
+	} else if (at(TokenKind::identifier)) {
+		type.spelling = std::string(peek().text);
+		++cursor_;
+		while (consume(TokenKind::colon_colon)) {
+			if (!at(TokenKind::identifier)) {
+				diagnose_here("expected identifier after '::' in type");
+				break;
+			}
+			type.spelling += "::";
+			type.spelling += std::string(peek().text);
+			++cursor_;
+		}
+		if (consume(TokenKind::less)) {
+			type.spelling += "<";
+			int depth = 1;
+			while (!at_end() && depth > 0) {
+				if (consume(TokenKind::less))    { type.spelling += "<"; ++depth; continue; }
+				if (consume(TokenKind::greater)) { type.spelling += ">"; --depth; continue; }
+				type.spelling += std::string(peek().text);
+				++cursor_;
+			}
+		}
+	} else {
+		return {};
+	}
+
+	if (consume(TokenKind::amp)) type.is_reference = true;
+	else (void)consume(TokenKind::star); // pointer marker stripped from spelling
+
+	return type;
+}
+
+void Parser::parse_struct_body(std::vector<StructField>& fields,
+							   std::vector<StructMemberFunction>& member_functions,
+							   std::vector<ParameterDecl>& constructor_parameters,
+							   std::string_view owner_name) {
+	while (!at_end() && !at(TokenKind::right_brace)) {
+		// Member function declaration: `fn name(args) [-> Return];`
+		if (at(TokenKind::kw_Function)) {
+			++cursor_;
+			if (!at(TokenKind::identifier)) {
+				diagnose_here("expected member function name");
+				skip_to_declaration_boundary();
+				continue;
+			}
+			StructMemberFunction member;
+			member.name = std::string(peek().text);
+			++cursor_;
+			if (!expect(TokenKind::left_paren, "expected '(' after member function name")) {
+				skip_to_declaration_boundary();
+				continue;
+			}
+			parse_parameter_list(member.parameters);
+			if (!expect(TokenKind::right_paren, "expected ')' after member function parameters")) {
+				skip_to_declaration_boundary();
+				continue;
+			}
+			if (consume(TokenKind::arrow)) {
+				ParsedType ret = parse_type();
+				if (ret.empty()) {
+					diagnose_here("expected return type after '->'");
+					skip_to_declaration_boundary();
+					continue;
+				}
+				member.return_type = resolve_alias(ret.spelling);
+			}
+			if (!expect(TokenKind::semicolon, "expected ';' after member function declaration")) {
+				skip_to_declaration_boundary();
+				continue;
+			}
+			if (member.name == owner_name) {
+				constructor_parameters = member.parameters;
+			}
+			member_functions.push_back(std::move(member));
+			continue;
+		}
+
+		auto field = parse_field_declaration();
+		if (!field.type.empty() && !field.name.empty()) {
+			fields.emplace_back(std::move(field));
+			continue;
+		}
+		diagnose_here("expected struct field");
+		skip_to_declaration_boundary();
+	}
+}
+
+StructField Parser::parse_field_declaration() {
+	const auto save = cursor_;
+	ParsedType type = parse_type();
+	if (type.empty()) {
+		cursor_ = save;
+		return {};
+	}
+	if (!at(TokenKind::identifier)) {
+		if (type.has_body) {
+			// The struct body is committed — restoring would lose it silently.
+			diagnose_here("expected field name after struct type");
+			return {};
+		}
+		cursor_ = save;
+		return {};
+	}
+	std::string name(peek().text);
+	++cursor_;
+	if (!consume(TokenKind::semicolon)) {
+		if (type.has_body) {
+			diagnose_here("expected ';' after field");
+			return {};
+		}
+		cursor_ = save;
+		return {};
+	}
+	return StructField{ .type = std::move(type.spelling), .name = std::move(name) };
+}
+
+// ---------------------------------------------------------------------------
+// Top-level
+// ---------------------------------------------------------------------------
+
+TranslationUnit Parser::parse_translation_unit() {
+	TranslationUnit unit{ .file_id = file_id_ };
+	unit_ = &unit;
+	while (!at_end()) {
+		const auto before = cursor_;
+		auto decl = parse_declaration();
+		if (decl.kind != DeclKind::unknown) unit.declarations.push_back(std::move(decl));
+		if (cursor_ == before) ++cursor_; // forward-progress guard
+	}
+	unit_ = nullptr;
+	return unit;
+}
+
+StageKind Parser::parse_stage_attribute() {
+	if (!consume(TokenKind::at)) return StageKind::none;
+	if (!at(TokenKind::identifier)) {
+		diagnose_here("expected attribute name after '@'");
+		return StageKind::none;
+	}
+	const auto text = peek().text;
+	StageKind result = StageKind::none;
+	if (text == "vertex")        result = StageKind::vertex;
+	else if (text == "fragment") result = StageKind::fragment;
+	else diagnose_here(std::string("unknown attribute '@") + std::string(text) + "'");
+	++cursor_;
+	return result;
 }
 
 Decl Parser::parse_declaration() {
-	bool exported = consume(TokenKind::kw_Export);
+	const bool exported = consume(TokenKind::kw_Export);
+	const StageKind stage = parse_stage_attribute();
 
-	// Optional stage attribute on a fn decl: `@vertex` / `@fragment` (later
-	// `@compute`, `@mesh`, ...). Only recognized before `fn`; the attribute
-	// name is a bare identifier looked up here, so no new keywords are burned.
-	StageKind stage_attr = StageKind::none;
-	if (consume(TokenKind::at)) {
-		if (!at(TokenKind::identifier)) {
-			diagnose(peek(), "expected attribute name after '@'");
-		} else {
-			const auto text = peek().text;
-			if (text == "vertex") {
-				stage_attr = StageKind::vertex;
-			} else if (text == "fragment") {
-				stage_attr = StageKind::fragment;
-			} else {
-				diagnose(peek(), "unknown attribute '@" + std::string(text) + "'");
-			}
-			++cursor_;
-		}
-		if (!at(TokenKind::kw_Function)) {
-			diagnose(peek(), "stage attribute must precede a fn declaration");
-		}
+	if (stage != StageKind::none && !at(TokenKind::kw_Function)) {
+		diagnose_here("stage attribute must precede a fn declaration");
 	}
 
-	if (at(TokenKind::kw_Import)) {
-		return parse_import(exported);
+	switch (peek().kind) {
+	case TokenKind::kw_Import:    return parse_import(exported);
+	case TokenKind::kw_Namespace: return parse_namespace(exported);
+	case TokenKind::kw_Function:  return parse_function(exported, stage);
+	case TokenKind::kw_Uniform:   return parse_uniform(exported);
+	case TokenKind::kw_Input:     return parse_stage_interface_decl(DeclKind::input, exported);
+	case TokenKind::kw_Output:    return parse_stage_interface_decl(DeclKind::output, exported);
+	case TokenKind::kw_Layout:    parse_layout(); return {};
+	case TokenKind::kw_Using:     parse_using(exported); return {};
+	case TokenKind::kw_Struct: {
+		const auto save = cursor_;
+		const auto struct_count = unit_ ? unit_->structs.size() : 0;
+		ParsedType type = parse_type();
+		if (!type.empty() && at(TokenKind::identifier)) {
+			cursor_ = save;
+			if (unit_) unit_->structs.resize(struct_count);
+			return parse_invalid_global_declaration(exported);
+		}
+		cursor_ = save;
+		if (unit_) unit_->structs.resize(struct_count);
+		return parse_type_declaration(exported);
 	}
-	if (at(TokenKind::kw_Function)) {
-		auto decl = parse_named_declaration(DeclKind::function, exported);
-		decl.stage = stage_attr;
-		return decl;
+	default: break;
 	}
-	if (at(TokenKind::kw_Struct)) {
-		auto decl = parse_named_declaration(DeclKind::struct_decl, exported);
-		return decl;
+
+	if (at(TokenKind::identifier) || at(TokenKind::kw_Const) || at(TokenKind::kw_Void) || at(TokenKind::kw_Auto)) {
+		const auto save = cursor_;
+		ParsedType type = parse_type();
+		if (!type.empty() && at(TokenKind::identifier)) {
+			cursor_ = save;
+			return parse_invalid_global_declaration(exported);
+		}
+		cursor_ = save;
 	}
-	if (at(TokenKind::kw_Uniform)) {
-		return parse_named_declaration(DeclKind::uniform, exported);
-	}
-	if (at(TokenKind::kw_Layout)) {
-		parse_layout();
-		return {};
-	}
-	if (at(TokenKind::kw_Using)) {
-		parse_using_alias();
-		return {};
-	}
-	if (at(TokenKind::kw_Input)) {
-		return parse_named_declaration(DeclKind::input, exported);
-	}
-	if (at(TokenKind::kw_Output)) {
-		return parse_named_declaration(DeclKind::output, exported);
-	}
-	if (at(TokenKind::kw_Namespace)) {
-		return parse_named_declaration(DeclKind::namespace_decl, exported);
-	}
-	diagnose(peek(), "unsupported top-level declaration");
-	skip_to_declaration_boundary();
+
+	if (exported) diagnose_here("expected declaration after 'export'");
+	else diagnose_here("expected a top-level declaration: fn, struct, using, uniform, layout, input, output, import, or namespace");
+	skip_to_declaration_boundary(true);
 	return {};
 }
 
 Decl Parser::parse_import(bool exported) {
 	const Token start = peek();
-	const bool consumed_import = consume(TokenKind::kw_Import);
-	(void)consumed_import;
-	std::string name;
+	(void)consume(TokenKind::kw_Import);
 
+	std::string name;
 	if (consume(TokenKind::less)) {
 		while (!at_end() && !at(TokenKind::greater)) {
 			name += std::string(peek().text);
 			++cursor_;
 		}
-		if (!consume(TokenKind::greater)) {
-			diagnose(peek(), "unterminated import path");
+		if (!expect(TokenKind::greater, "unterminated import path")) {
+			skip_to_declaration_boundary();
+			return {};
 		}
 	} else if (at(TokenKind::string_literal)) {
-		name = std::string(peek().text.substr(1, peek().text.size() >= 2 ? peek().text.size() - 2 : 0));
+		const auto raw = peek().text;
+		name = std::string(raw.substr(1, raw.size() >= 2 ? raw.size() - 2 : 0));
 		++cursor_;
 	} else {
-		diagnose(peek(), "expected '<...>' or \"...\" after import");
+		diagnose_here("expected '<...>' or \"...\" after 'import'");
+		skip_to_declaration_boundary();
+		return {};
 	}
 
-	if (!consume(TokenKind::semicolon)) {
-		diagnose(peek(), "expected ';' after import");
+	if (!expect(TokenKind::semicolon, "expected ';' after import")) {
 		skip_to_declaration_boundary();
 	}
 
-	if (unit_) {
-		unit_->imports.push_back(name);
-	}
+	if (unit_) unit_->imports.push_back(name);
 	return Decl{ .kind = DeclKind::import, .name = std::move(name), .span = start.span, .exported = exported };
 }
 
-// `A[::B[::C[::~D]]]`. Each segment is an identifier; `~` may appear before
-// the final identifier to name a destructor. Empty result means the cursor
-// wasn't on an identifier.
-std::string Parser::parse_scoped_name() {
-	if (!at(TokenKind::identifier)) return {};
-	std::string name(peek().text);
-	++cursor_;
-	while (consume(TokenKind::colon_colon)) {
-		const bool destructor = consume(TokenKind::tilde);
-		if (!at(TokenKind::identifier)) {
-			diagnose(peek(), destructor ? "expected destructor name after '~'"
-										: "expected identifier after '::'");
-			return name;
-		}
-		name += destructor ? "::~" : "::";
-		name.append(peek().text);
-		++cursor_;
-		if (destructor) return name;
-	}
-	return name;
-}
-
-void Parser::parse_function_decl(Decl& decl) {
-	parse_function_signature(decl);
-	// Detect `Foo::Foo(...)`-shape constructors: owner segment equals member
-	// segment. Constructors can't declare a return type.
-	if (const auto scope = decl.name.find("::"); scope != std::string::npos) {
-		const auto owner = std::string_view(decl.name).substr(0, scope);
-		const auto member = std::string_view(decl.name).substr(scope + 2);
-		if (owner == member && decl.return_type != "void") {
-			diagnose(peek(), "constructors must not specify a return type");
-		}
-	}
-	parse_function_body(decl);
-}
-
-void Parser::parse_struct_decl(Decl& decl) {
-	StructDecl struct_decl{ .name = decl.name };
-	if (!consume(TokenKind::left_brace)) {
-		if (unit_) unit_->structs.emplace_back(std::move(struct_decl));
-		return;
-	}
-	while (!at_end() && !at(TokenKind::right_brace)) {
-		// Inline `fn Foo(args);` constructor declaration.
-		if (at(TokenKind::kw_Function)) {
-			++cursor_;
-			if (!at(TokenKind::identifier)) {
-				diagnose(peek(), "expected constructor name");
-				skip_to_declaration_boundary();
-				continue;
-			}
-			const auto ctor_name = std::string_view(peek().text);
-			++cursor_;
-			if (ctor_name != decl.name) {
-				diagnose(peek(), "expected constructor declaration");
-				skip_to_declaration_boundary();
-				continue;
-			}
-			Decl ctor{
-				.kind = DeclKind::function,
-				.name = decl.name + "::" + decl.name,
-				.span = decl.span,
-				.exported = decl.exported,
-			};
-			parse_function_signature(ctor);
-			if (ctor.return_type != "void") {
-				diagnose(peek(), "constructor declarations must not specify a return type");
-			}
-			if (!consume(TokenKind::semicolon)) {
-				diagnose(peek(), "expected ';' after constructor declaration");
-			}
-			struct_decl.constructor_parameters = std::move(ctor.parameters);
-			continue;
-		}
-		auto field = parse_field_declaration();
-		if (!field.type.empty() && !field.name.empty()) {
-			struct_decl.fields.emplace_back(std::move(field));
-			continue;
-		}
-		skip_to_declaration_boundary();
-	}
-	(void)consume(TokenKind::right_brace);
-	if (unit_) unit_->structs.emplace_back(std::move(struct_decl));
-}
-
-Decl Parser::parse_named_declaration(DeclKind kind, bool exported) {
+// Namespace body is not modeled in the v0.1 AST — parse a balanced brace body
+// so its contents don't leak into the outer declaration stream.
+Decl Parser::parse_namespace(bool exported) {
 	const Token start = peek();
-	++cursor_;
+	(void)consume(TokenKind::kw_Namespace);
+
+	const auto name = parse_scoped_name();
+	if (name.empty()) diagnose_here("expected namespace name");
+
+	if (!expect(TokenKind::left_brace, "expected '{' to open namespace")) {
+		skip_to_declaration_boundary(true);
+		return {};
+	}
+	int depth = 1;
+	while (!at_end() && depth > 0) {
+		if (consume(TokenKind::left_brace))  { ++depth; continue; }
+		if (consume(TokenKind::right_brace)) { --depth; continue; }
+		++cursor_;
+	}
+	(void)consume(TokenKind::semicolon);
+	return Decl{ .kind = DeclKind::namespace_decl, .name = name, .span = start.span, .exported = exported };
+}
+
+Decl Parser::parse_function(bool exported, StageKind stage) {
+	const Token start = peek();
+	(void)consume(TokenKind::kw_Function);
 
 	auto name = parse_scoped_name();
-	if (name.empty() && kind != DeclKind::uniform) {
-		diagnose(peek(), "expected declaration name");
+	if (name.empty()) {
+		diagnose_here("expected function name");
+		skip_to_declaration_boundary(true);
+		return {};
 	}
 
-	Decl decl{ .kind = kind, .name = std::move(name), .span = start.span, .exported = exported };
-	switch (kind) {
-	case DeclKind::function:    parse_function_decl(decl); break;
-	case DeclKind::struct_decl: parse_struct_decl(decl); break;
-	case DeclKind::uniform:     parse_uniform_scope(decl); break;
-	case DeclKind::input:
-	case DeclKind::output:      parse_stage_interface(decl); break;
-	default:                    skip_balanced_block(); break;
+	Decl decl{
+		.kind = DeclKind::function,
+		.name = std::move(name),
+		.span = start.span,
+		.exported = exported,
+		.stage = stage,
+	};
+
+	parse_function_signature(decl);
+
+	// Constructor recognition: `Foo::Foo(...)` — owner segment equals member.
+	if (const auto scope = decl.name.find("::"); scope != std::string::npos) {
+		const auto owner  = std::string_view(decl.name).substr(0, scope);
+		const auto member = std::string_view(decl.name).substr(scope + 2);
+		if (owner == member && decl.return_type != "void") {
+			diagnose_here("constructors must not specify a return type");
+		}
 	}
+
+	if (consume(TokenKind::semicolon)) return decl; // forward declaration
+	if (at(TokenKind::left_brace)) {
+		auto block = parse_block_statement();
+		decl.body_statements = std::move(block.children);
+		decl.has_body = true;
+	} else {
+		diagnose_here("expected function body '{' or ';'");
+		skip_to_declaration_boundary();
+	}
+	return decl;
+}
+
+// `struct ...;` at top scope. The type rule does all the work (body parsing,
+// registration, anonymous naming); this demands the terminating ';' and a
+// name — RTSL has no globals, so a type declaration must declare a type name.
+Decl Parser::parse_type_declaration(bool exported) {
+	const Token start = peek();
+	ParsedType type = parse_type();
+	if (type.empty()) {
+		skip_to_declaration_boundary(true);
+		return {};
+	}
+
+	if (type.is_anonymous) {
+		diagnose(start, "anonymous struct declaration declares nothing");
+	}
+
+	if (!expect(TokenKind::semicolon, type.has_body
+			? "expected ';' after struct definition"
+			: "expected ';' after struct declaration")) {
+		skip_to_declaration_boundary();
+	}
+
+	return Decl{
+		.kind = DeclKind::struct_decl,
+		.name = std::move(type.spelling),
+		.span = start.span,
+		.exported = exported,
+		.has_body = type.has_body,
+	};
+}
+
+Decl Parser::parse_invalid_global_declaration(bool exported) {
+	const Token start = peek();
+	const auto struct_count = unit_ ? unit_->structs.size() : 0;
+
+	ParsedType type = parse_type();
+	if (type.empty()) {
+		skip_to_declaration_boundary(true);
+		return {};
+	}
+
+	if (at(TokenKind::identifier)) {
+		++cursor_;
+	}
+
+	diagnose(start, exported
+		? "exported global variables are not supported"
+		: "global variables are not supported");
+
+	if (unit_) unit_->structs.resize(struct_count);
+
+	if (!expect(TokenKind::semicolon, "expected ';' after invalid global declaration")) {
+		skip_to_declaration_boundary();
+	}
+
+	return {};
+}
+
+Decl Parser::parse_uniform(bool exported) {
+	const Token start = peek();
+	(void)consume(TokenKind::kw_Uniform);
+
+	Decl decl{
+		.kind = DeclKind::uniform,
+		.name = parse_scoped_name(),
+		.span = start.span,
+		.exported = exported,
+	};
+
+	if (!expect(TokenKind::left_brace, "expected '{' to open uniform scope")) {
+		skip_to_declaration_boundary(true);
+		return decl;
+	}
+	parse_uniform_body(decl);
+	(void)consume(TokenKind::right_brace);
 	(void)consume(TokenKind::semicolon);
 	return decl;
 }
 
-void Parser::parse_uniform_scope(const Decl& decl) {
-	if (!consume(TokenKind::left_brace)) {
-		return;
-	}
-
-	// Anonymous `uniform { ... }` blocks cannot be reopened: each one becomes
-	// its own descriptor set. Allocate one block id per anonymous block here
-	// so every uniform inside this brace shares the same id, and different
-	// anonymous blocks get different ids. Named scopes pass through unchanged
-	// and remain reopen-able via shared scope_name.
+// Uniform members are ordinary `type name;` fields — the type rule covers
+// inline structs, so `struct { ... } params;` needs no special case.
+void Parser::parse_uniform_body(const Decl& decl) {
 	const bool is_anonymous = decl.name.empty();
 	const u32 anonymous_block_id = is_anonymous ? next_anonymous_block_id_++ : 0;
 
 	while (!at_end() && !at(TokenKind::right_brace)) {
 		AccessKind access = AccessKind::read_write;
-		if (consume(TokenKind::kw_ReadOnly)) {
-			access = AccessKind::read_only;
-		} else if (consume(TokenKind::kw_WriteOnly)) {
-			access = AccessKind::write_only;
+		if (consume(TokenKind::kw_ReadOnly))       access = AccessKind::read_only;
+		else if (consume(TokenKind::kw_WriteOnly)) access = AccessKind::write_only;
+
+		ParsedType type = parse_type();
+		if (type.empty()) {
+			diagnose_here("expected uniform binding type");
+			skip_to_declaration_boundary();
+			continue;
+		}
+		if (!at(TokenKind::identifier)) {
+			diagnose_here("expected uniform binding name");
+			skip_to_declaration_boundary();
+			continue;
+		}
+		std::string name(peek().text);
+		++cursor_;
+		if (!expect(TokenKind::semicolon, "expected ';' after uniform binding")) {
+			skip_to_declaration_boundary();
+			continue;
 		}
 
-		if (consume(TokenKind::kw_Struct) && consume(TokenKind::left_brace)) {
+		if (unit_) {
 			UniformBinding binding{
 				.scope_name = decl.name,
+				.name = std::move(name),
 				.access = access,
 				.is_anonymous = is_anonymous,
 				.anonymous_block_id = anonymous_block_id,
 			};
-			while (!at_end() && !at(TokenKind::right_brace)) {
-				auto field = parse_field_declaration();
-				if (!field.type.empty() && !field.name.empty()) {
-					binding.inline_fields.push_back(std::move(field));
-					continue;
-				}
-				skip_to_declaration_boundary();
+			if (type.has_body && type.is_anonymous) {
+				// Anonymous inline struct payload keeps its fields inline.
+				binding.type = "struct";
+				binding.inline_fields = std::move(type.fields);
+			} else {
+				binding.type = std::move(type.spelling);
 			}
-			const bool consumed_struct_end = consume(TokenKind::right_brace);
-			(void)consumed_struct_end;
-			if (at(TokenKind::identifier)) {
-				binding.name = std::string(peek().text);
-				++cursor_;
-			}
-			binding.type = "struct";
-			if (consume(TokenKind::semicolon) && unit_ && !binding.name.empty()) {
-				unit_->uniforms.push_back(std::move(binding));
-			}
-			continue;
+			unit_->uniforms.push_back(std::move(binding));
 		}
-
-		auto field = parse_field_declaration();
-		if (!field.type.empty() && !field.name.empty() && unit_) {
-			unit_->uniforms.push_back(UniformBinding{
-				.scope_name = decl.name,
-				.name = std::move(field.name),
-				.type = std::move(field.type),
-				.access = access,
-				.is_anonymous = is_anonymous,
-				.anonymous_block_id = anonymous_block_id,
-			});
-			continue;
-		}
-		skip_to_declaration_boundary();
 	}
-
-	const bool consumed_uniform_end = consume(TokenKind::right_brace);
-	(void)consumed_uniform_end;
 }
 
-// `layout PATH : TYPE;` — attaches a payload type to a UniformBuffer/StorageBuffer
-// binding. PATH is a `::`-separated identifier path (e.g. `mat::camera`). TYPE
-// is either a named type spelling (e.g. `mat4`, `Camera`) or an inline
-// `struct { ... }` body. Sema resolves the path against declared uniforms and
-// registers the layout's payload as the binding's actual value type.
 void Parser::parse_layout() {
 	const Token start = peek();
-	const bool consumed_layout = consume(TokenKind::kw_Layout);
-	(void)consumed_layout;
+	(void)consume(TokenKind::kw_Layout);
 
 	LayoutDecl layout;
 	layout.span = start.span;
 
-	// Parse the `::`-separated binding path.
 	if (!at(TokenKind::identifier)) {
-		diagnose(peek(), "expected identifier after 'layout'");
+		diagnose_here("expected identifier after 'layout'");
 		skip_to_declaration_boundary();
 		return;
 	}
@@ -468,7 +667,7 @@ void Parser::parse_layout() {
 	++cursor_;
 	while (consume(TokenKind::colon_colon)) {
 		if (!at(TokenKind::identifier)) {
-			diagnose(peek(), "expected identifier after '::' in layout path");
+			diagnose_here("expected identifier after '::' in layout path");
 			skip_to_declaration_boundary();
 			return;
 		}
@@ -476,107 +675,272 @@ void Parser::parse_layout() {
 		++cursor_;
 	}
 
-	if (!consume(TokenKind::colon)) {
-		diagnose(peek(), "expected ':' after layout binding path");
+	if (!expect(TokenKind::colon, "expected ':' after layout binding path")) {
 		skip_to_declaration_boundary();
 		return;
 	}
 
-	// Optional layout rule: `std140`, `std430`, or `scalar`. Sits between the
-	// `:` and the TYPE spelling. When omitted, the binding kind's default
-	// applies (std140 for UniformBuffer, std430 for StorageBuffer), resolved
-	// downstream — never at parse.
-	if (consume(TokenKind::kw_Std140)) {
-		layout.rule = LayoutRule::std140;
-	} else if (consume(TokenKind::kw_Std430)) {
-		layout.rule = LayoutRule::std430;
-	} else if (consume(TokenKind::kw_Scalar)) {
-		layout.rule = LayoutRule::scalar;
+	if (consume(TokenKind::kw_Std140))      layout.rule = LayoutRule::std140;
+	else if (consume(TokenKind::kw_Std430)) layout.rule = LayoutRule::std430;
+	else if (consume(TokenKind::kw_Scalar)) layout.rule = LayoutRule::scalar;
+
+	// The payload is a type; inline structs come through the type rule.
+	ParsedType type = parse_type();
+	if (type.empty()) {
+		diagnose_here("expected layout type");
+		skip_to_declaration_boundary();
+		return;
+	}
+	if (type.has_body && type.is_anonymous) {
+		layout.is_inline_struct = true;
+		layout.inline_fields = std::move(type.fields);
+	} else {
+		layout.type_spelling = std::move(type.spelling);
 	}
 
-	// TYPE: either an inline `struct { ... }` body or a named type spelling.
-	if (consume(TokenKind::kw_Struct)) {
-		layout.is_inline_struct = true;
-		if (!consume(TokenKind::left_brace)) {
-			diagnose(peek(), "expected '{' after 'struct' in layout type");
+	if (!expect(TokenKind::semicolon, "expected ';' after layout declaration")) {
+		skip_to_declaration_boundary();
+	}
+
+	if (unit_) unit_->layouts.push_back(std::move(layout));
+}
+
+void Parser::parse_using(bool exported) {
+	(void)consume(TokenKind::kw_Using);
+
+	UsingImport::Kind import_kind = UsingImport::Kind::symbol;
+	if (consume(TokenKind::kw_Uniform)) {
+		import_kind = UsingImport::Kind::uniform_scope;
+	} else if (consume(TokenKind::kw_Namespace)) {
+		import_kind = UsingImport::Kind::namespace_scope;
+	}
+
+	if (!at(TokenKind::identifier)) {
+		diagnose_here("expected name after 'using'");
+		skip_to_declaration_boundary();
+		return;
+	}
+	std::vector<std::string> path;
+	path.emplace_back(peek().text);
+	++cursor_;
+	while (consume(TokenKind::colon_colon)) {
+		if (!at(TokenKind::identifier)) {
+			diagnose_here("expected identifier after '::' in using declaration");
 			skip_to_declaration_boundary();
 			return;
 		}
-		while (!at_end() && !at(TokenKind::right_brace)) {
-			auto field = parse_field_declaration();
-			if (!field.type.empty() && !field.name.empty()) {
-				layout.inline_fields.push_back(std::move(field));
-				continue;
-			}
+		path.emplace_back(peek().text);
+		++cursor_;
+	}
+
+	if (!consume(TokenKind::equal)) {
+		if (!expect(TokenKind::semicolon, "expected ';' after using declaration")) {
 			skip_to_declaration_boundary();
+			return;
 		}
-		const bool consumed_struct_end = consume(TokenKind::right_brace);
-		(void)consumed_struct_end;
-	} else {
-		layout.type_spelling = collect_type_until(TokenKind::semicolon, TokenKind::end_of_file);
+		if (unit_) {
+			std::string imported_name = path.empty() ? std::string{} : path.back();
+			unit_->using_imports.push_back(UsingImport{
+				.kind = import_kind,
+				.path = std::move(path),
+				.imported_name = std::move(imported_name),
+				.exported = exported,
+			});
+		}
+		return;
 	}
 
-	if (!consume(TokenKind::semicolon)) {
-		diagnose(peek(), "expected ';' after layout declaration");
+	if (import_kind != UsingImport::Kind::symbol) {
+		diagnose_here("using alias cannot use an import kind");
+		skip_to_declaration_boundary();
+		return;
 	}
+	if (path.size() != 1) {
+		diagnose_here("using alias name must be unqualified");
+		skip_to_declaration_boundary();
+		return;
+	}
+	std::string alias_name = std::move(path.front());
 
-	if (unit_) {
-		unit_->layouts.push_back(std::move(layout));
+	// The alias base is a type; `using X = struct { ... };` works through the
+	// same rule as everything else.
+	ParsedType base = parse_type();
+	if (base.empty()) {
+		diagnose_here("expected base type in using declaration");
+		skip_to_declaration_boundary();
+		return;
+	}
+	const std::string resolved_base = resolve_alias(base.spelling);
+
+	if (unit_) unit_->type_aliases.push_back(TypeAlias{ .name = alias_name, .base = resolved_base });
+
+	if (consume(TokenKind::colon)) parse_return_boundary(resolved_base);
+	if (!expect(TokenKind::semicolon, "expected ';' after using declaration")) {
+		skip_to_declaration_boundary();
 	}
 }
 
-std::string Parser::resolve_alias(std::string_view name) const {
-	if (!unit_)
-		return std::string(name);
-	// Follow chained aliases; guard against pathological cycles.
-	std::string current(name);
-	for (int hops = 0; hops < 16; ++hops) {
-		bool advanced = false;
-		for (const auto& alias : unit_->type_aliases) {
-			if (alias.name == current) {
-				current = alias.base;
-				advanced = true;
+Decl Parser::parse_stage_interface_decl(DeclKind kind, bool exported) {
+	const Token start = peek();
+	++cursor_; // 'input' or 'output'
+
+	Decl decl{ .kind = kind, .name = parse_scoped_name(), .span = start.span, .exported = exported };
+	if (decl.name.empty()) diagnose_here("expected stage interface name");
+
+	if (!expect(TokenKind::left_brace, "expected '{' to open stage interface body")) {
+		skip_to_declaration_boundary(true);
+		return decl;
+	}
+
+	const StageRole role = kind == DeclKind::input ? StageRole::input
+					   : (kind == DeclKind::output ? StageRole::output : StageRole::varying);
+	parse_stage_interface_body(role, decl.name);
+	(void)consume(TokenKind::right_brace);
+	(void)consume(TokenKind::semicolon);
+	return decl;
+}
+
+void Parser::parse_stage_interface_body(StageRole role, std::string_view type_name) {
+	StageInterface interface{ .role = role, .type_name = std::string(type_name) };
+
+	while (!at_end() && !at(TokenKind::right_brace)) {
+		StageIOField field;
+
+		bool eating_qualifiers = true;
+		while (eating_qualifiers && !at_end()) {
+			if (consume(TokenKind::kw_Smooth)) {
+				field.interpolation = InterpolationKind::smooth;
+			} else if (consume(TokenKind::kw_Flat)) {
+				field.interpolation = InterpolationKind::flat;
+			} else if (consume(TokenKind::kw_Clip)) {
+				field.interpolation = InterpolationKind::clip;
+				if (field.builtin == BuiltinSlot::none) {
+					field.builtin = BuiltinSlot::position;
+				}
+			} else if (consume(TokenKind::kw_Location)) {
+				if (!expect(TokenKind::left_paren, "expected '(' after 'location'")) {
+					break;
+				}
+				if (!at(TokenKind::integer_literal)) {
+					diagnose_here("expected integer literal as location index");
+					break;
+				}
+				field.location = static_cast<u32>(std::stoul(std::string(peek().text)));
+				++cursor_;
+				if (!expect(TokenKind::right_paren, "expected ')' after location index")) {
+					break;
+				}
+			} else if (consume(TokenKind::kw_Builtin)) {
+				if (!expect(TokenKind::left_paren, "expected '(' after 'builtin'")) {
+					break;
+				}
+				if (!at(TokenKind::identifier)) {
+					diagnose_here("expected builtin slot name");
+					break;
+				}
+				field.builtin = parse_builtin_slot(peek().text);
+				++cursor_;
+				if (!expect(TokenKind::right_paren, "expected ')' after builtin name")) {
+					break;
+				}
+			} else {
+				eating_qualifiers = false;
+			}
+		}
+
+		if (!at(TokenKind::identifier)) {
+			diagnose_here("expected stage interface field name");
+			skip_to_declaration_boundary();
+			continue;
+		}
+		field.name = std::string(peek().text);
+		++cursor_;
+		if (!expect(TokenKind::semicolon, "expected ';' after stage interface field")) {
+			skip_to_declaration_boundary();
+			continue;
+		}
+		interface.fields.push_back(std::move(field));
+	}
+
+	if (unit_ && !interface.type_name.empty()) {
+		unit_->stage_interfaces.push_back(std::move(interface));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Function signature / parameters / return boundary
+// ---------------------------------------------------------------------------
+
+void Parser::parse_function_signature(Decl& decl) {
+	if (!expect(TokenKind::left_paren, "expected '(' after function name")) {
+		return;
+	}
+	parse_parameter_list(decl.parameters);
+	if (!expect(TokenKind::right_paren, "expected ')' after function parameters")) {
+		return;
+	}
+
+	if (consume(TokenKind::arrow)) {
+		ParsedType ret = parse_type();
+		if (ret.empty()) {
+			diagnose_here("expected return type after '->'");
+			decl.return_type = "void";
+			return;
+		}
+		decl.return_type = resolve_alias(ret.spelling);
+		// The boundary spec belongs to the return type: `-> T : field(tag),…`
+		maybe_parse_return_boundary(decl.return_type);
+	} else {
+		decl.return_type = "void";
+	}
+}
+
+void Parser::parse_parameter_list(std::vector<ParameterDecl>& out) {
+	if (at(TokenKind::right_paren)) {
+		return;
+	}
+	while (!at_end()) {
+		(void)consume(TokenKind::kw_InOut);
+
+		ParsedType type = parse_type();
+		if (type.empty()) {
+			diagnose_here("expected parameter type");
+			while (!at_end() && !at(TokenKind::comma) && !at(TokenKind::right_paren)) {
+				++cursor_;
+			}
+			if (!consume(TokenKind::comma)) {
 				break;
 			}
+			continue;
 		}
-		if (!advanced)
+
+		std::string param_name;
+		if (at(TokenKind::identifier)) {
+			param_name = std::string(peek().text);
+			++cursor_;
+		}
+
+		out.push_back(ParameterDecl{
+			.type = resolve_alias(type.spelling),
+			.name = std::move(param_name),
+			.is_const = type.is_const,
+			.is_reference = type.is_reference,
+		});
+
+		if (!consume(TokenKind::comma)) {
 			break;
+		}
 	}
-	return current;
 }
 
+// Return boundary: `field(tag, ...) (, field(tag, ...))*`
+// Tags are data, not grammar: interpolation modes (clip/smooth/flat) and
+// builtin slot names share one lookup. Growing the tag set is a table change.
 void Parser::parse_return_boundary(std::string base_type) {
-	// Grammar (after the leading `:`):
-	//   entry (, entry)*  terminated by `{` or `;`
-	//   entry := FIELD_NAME '(' TAG (, TAG)* ')'
-	//
-	// FIELD_NAME is a field of `base_type`; the parens carry a comma list of
-	// tags. Tags are bare identifiers looked up in a fixed table — no keyword
-	// per tag — so adding `noperspective` / `centroid` / etc. is a data change:
-	//   - interpolation modes: clip, smooth, flat
-	//   - pipeline slot bindings: position, depth, ...
-	// One entry attaches per-field metadata to `base_type`'s stage interface
-	// without changing its type identity. Multiple tags on one field stack
-	// (e.g. `pos(clip, smooth)`).
-	auto tag_text = [&]() -> std::string_view {
-		// Accept both bare identifiers and existing keyword tokens
-		// (clip/smooth/flat/builtin) so the tag namespace isn't a subset of
-		// what the lexer would tokenize as an identifier.
-		const auto& t = peek();
-		if (t.kind == TokenKind::identifier ||
-			t.kind == TokenKind::kw_Clip ||
-			t.kind == TokenKind::kw_Smooth ||
-			t.kind == TokenKind::kw_Flat ||
-			t.kind == TokenKind::kw_Builtin) {
-			return t.text;
-		}
-		return {};
-	};
 	auto apply_tag = [](StageIOField& field, std::string_view text) -> bool {
 		if (text == "clip") {
 			field.interpolation = InterpolationKind::clip;
-			if (field.builtin == BuiltinSlot::none)
-				field.builtin = BuiltinSlot::position;
+			if (field.builtin == BuiltinSlot::none) field.builtin = BuiltinSlot::position;
 			return true;
 		}
 		if (text == "smooth") { field.interpolation = InterpolationKind::smooth; return true; }
@@ -587,890 +951,549 @@ void Parser::parse_return_boundary(std::string base_type) {
 		}
 		return false;
 	};
+	auto tag_text = [&]() -> std::string_view {
+		const auto& t = peek();
+		if (t.kind == TokenKind::identifier ||
+			t.kind == TokenKind::kw_Clip || t.kind == TokenKind::kw_Smooth ||
+			t.kind == TokenKind::kw_Flat || t.kind == TokenKind::kw_Builtin) {
+			return t.text;
+		}
+		return {};
+	};
 
 	StageInterface interface{ .role = StageRole::varying, .type_name = std::move(base_type) };
 	bool first = true;
 	while (!at_end() && !at(TokenKind::left_brace) && !at(TokenKind::semicolon)) {
 		if (!first) {
-			if (!consume(TokenKind::comma)) {
-				diagnose(peek(), "expected ',' between boundary entries");
-				break;
-			}
+			if (!expect(TokenKind::comma, "expected ',' between boundary entries")) break;
 		}
 		first = false;
+
 		if (!at(TokenKind::identifier)) {
-			diagnose(peek(), "expected field name in return boundary");
+			diagnose_here("expected field name in return boundary");
 			break;
 		}
 		StageIOField field;
 		field.name = std::string(peek().text);
 		++cursor_;
-		if (!consume(TokenKind::left_paren)) {
-			diagnose(peek(), "expected '(' after field name in return boundary");
-			break;
-		}
+
+		if (!expect(TokenKind::left_paren, "expected '(' after field name in return boundary")) break;
+
 		bool first_tag = true;
 		while (!at_end() && !at(TokenKind::right_paren)) {
 			if (!first_tag) {
-				if (!consume(TokenKind::comma)) {
-					diagnose(peek(), "expected ',' between tags");
-					break;
-				}
+				if (!expect(TokenKind::comma, "expected ',' between tags")) break;
 			}
 			first_tag = false;
 			const auto text = tag_text();
 			if (text.empty()) {
-				diagnose(peek(), "expected pipeline tag identifier");
+				diagnose_here("expected pipeline tag identifier");
 				break;
 			}
 			if (!apply_tag(field, text)) {
-				diagnose(peek(), "unknown pipeline tag '" + std::string(text) + "'");
+				diagnose_here(std::string("unknown pipeline tag '") + std::string(text) + "'");
 			}
 			++cursor_;
 		}
-		if (!consume(TokenKind::right_paren)) {
-			diagnose(peek(), "expected ')' after tag list");
-			break;
-		}
+		if (!expect(TokenKind::right_paren, "expected ')' after tag list")) break;
 		interface.fields.push_back(std::move(field));
 	}
+
 	if (unit_ && !interface.type_name.empty()) {
-		// A base type can only be given one boundary spec — otherwise two
-		// returning functions would produce conflicting pipeline metadata for
-		// the same type. Keep the first; later duplicates are silently
-		// ignored, matching the overload rule (functions differing only in
-		// boundary spec are indistinguishable).
+		// One boundary spec per base type; later duplicates ignored.
 		for (const auto& existing : unit_->stage_interfaces) {
-			if (existing.role == StageRole::varying && existing.type_name == interface.type_name) {
-				return;
-			}
+			if (existing.role == StageRole::varying && existing.type_name == interface.type_name) return;
 		}
 		unit_->stage_interfaces.push_back(std::move(interface));
 	}
 }
 
-void Parser::maybe_parse_return_boundary(const std::string& base_type) {
-	// `:` right after the return type introduces the boundary spec.
-	if (!consume(TokenKind::colon))
-		return;
-	parse_return_boundary(base_type);
-}
-
-void Parser::parse_using_alias() {
-	const Token start = peek();
-	const bool consumed_using = consume(TokenKind::kw_Using);
-	(void)consumed_using;
-	(void)start;
-
-	if (!at(TokenKind::identifier)) {
-		diagnose(peek(), "expected alias name after 'using'");
-		skip_to_declaration_boundary();
+void Parser::maybe_parse_return_boundary(std::string_view base_type) {
+	if (!consume(TokenKind::colon)) {
 		return;
 	}
-	std::string alias_name = std::string(peek().text);
+	parse_return_boundary(std::string(base_type));
+}
+
+// ---------------------------------------------------------------------------
+// Names / aliases
+// ---------------------------------------------------------------------------
+
+std::string Parser::parse_scoped_name() {
+	if (!at(TokenKind::identifier)) return {};
+	std::string name(peek().text);
 	++cursor_;
-	if (!consume(TokenKind::equal)) {
-		diagnose(peek(), "expected '=' in using declaration");
-		skip_to_declaration_boundary();
-		return;
-	}
-	if (!at(TokenKind::identifier)) {
-		diagnose(peek(), "expected base type name in using declaration");
-		skip_to_declaration_boundary();
-		return;
-	}
-	std::string base_name = std::string(peek().text);
-	++cursor_;
-	// Chain: base itself may already be an alias — resolve to the ultimate base.
-	const std::string resolved_base = resolve_alias(base_name);
-
-	if (unit_) {
-		unit_->type_aliases.push_back(TypeAlias{ .name = alias_name, .base = resolved_base });
-	}
-	if (consume(TokenKind::colon)) {
-		parse_return_boundary(resolved_base);
-	}
-	if (!consume(TokenKind::semicolon)) {
-		diagnose(peek(), "expected ';' after using declaration");
-	}
-}
-
-void Parser::parse_stage_interface(const Decl& decl) {
-	StageRole role = StageRole::varying;
-	if (decl.kind == DeclKind::input) {
-		role = StageRole::input;
-	} else if (decl.kind == DeclKind::output) {
-		role = StageRole::output;
-	}
-
-	StageInterface interface{ .role = role, .type_name = decl.name };
-
-	if (!consume(TokenKind::left_brace)) {
-		return;
-	}
-
-	while (!at_end() && !at(TokenKind::right_brace)) {
-		StageIOField field;
-
-		// Field qualifiers may appear in any order before the field name.
-		bool consuming_qualifiers = true;
-		while (consuming_qualifiers && !at_end()) {
-			if (consume(TokenKind::kw_Smooth)) {
-				field.interpolation = InterpolationKind::smooth;
-			} else if (consume(TokenKind::kw_Flat)) {
-				field.interpolation = InterpolationKind::flat;
-			} else if (consume(TokenKind::kw_Clip)) {
-				// A clip-space position is delivered through the rasterizer's
-				// built-in position slot rather than a user location.
-				field.interpolation = InterpolationKind::clip;
-				if (field.builtin == BuiltinSlot::none) {
-					field.builtin = BuiltinSlot::position;
-				}
-			} else if (consume(TokenKind::kw_Location)) {
-				if (consume(TokenKind::left_paren) && at(TokenKind::integer_literal)) {
-					field.location = static_cast<u32>(std::stoul(std::string(peek().text)));
-					++cursor_;
-					if (!consume(TokenKind::right_paren)) {
-						diagnose(peek(), "expected ')' after location index");
-					}
-				} else {
-					diagnose(peek(), "expected '(' index ')' after 'location'");
-				}
-			} else if (consume(TokenKind::kw_Builtin)) {
-				if (consume(TokenKind::left_paren) && at(TokenKind::identifier)) {
-					field.builtin = parse_builtin_slot(peek().text);
-					++cursor_;
-					if (!consume(TokenKind::right_paren)) {
-						diagnose(peek(), "expected ')' after builtin name");
-					}
-				} else {
-					diagnose(peek(), "expected '(' name ')' after 'builtin'");
-				}
-			} else {
-				consuming_qualifiers = false;
-			}
+	while (consume(TokenKind::colon_colon)) {
+		const bool destructor = consume(TokenKind::tilde);
+		if (!at(TokenKind::identifier)) {
+			diagnose_here(destructor ? "expected destructor name after '~'" : "expected identifier after '::'");
+			return name;
 		}
-
-		if (at(TokenKind::identifier)) {
-			field.name = std::string(peek().text);
-			++cursor_;
-			if (consume(TokenKind::semicolon)) {
-				interface.fields.push_back(std::move(field));
-				continue;
-			}
-			diagnose(peek(), "expected ';' after stage interface field");
-		} else {
-			diagnose(peek(), "expected stage interface field name");
-		}
-		skip_to_declaration_boundary();
-	}
-
-	const bool consumed_end = consume(TokenKind::right_brace);
-	(void)consumed_end;
-
-	if (unit_ && !interface.type_name.empty()) {
-		unit_->stage_interfaces.push_back(std::move(interface));
-	}
-}
-
-StructField Parser::parse_field_declaration() {
-	auto field_type = collect_type_tokens_until_identifier();
-	if (field_type.empty() || !at(TokenKind::identifier)) {
-		return {};
-	}
-	auto field_name = std::string(peek().text);
-	++cursor_;
-	if (!consume(TokenKind::semicolon)) {
-		return {};
-	}
-	return StructField{ .type = std::move(field_type), .name = std::move(field_name) };
-}
-
-std::string Parser::collect_type_tokens_until_identifier() {
-	std::string text;
-	int angle_depth = 0;
-	while (!at_end()) {
-		if (angle_depth == 0 && peek().kind == TokenKind::identifier && !text.empty()) {
-			break;
-		}
-		if (peek().kind == TokenKind::less) {
-			++angle_depth;
-		} else if (peek().kind == TokenKind::greater && angle_depth > 0) {
-			--angle_depth;
-		}
-		text += std::string(peek().text);
+		name += destructor ? "::~" : "::";
+		name.append(peek().text);
 		++cursor_;
+		if (destructor) return name;
 	}
-	return text;
+	return name;
 }
 
-void Parser::parse_function_body(Decl& decl) {
-	if (!consume(TokenKind::left_brace)) {
-		return; // no brace = forward decl; decl.has_body stays false
+std::string Parser::resolve_alias(std::string_view name) const {
+	if (!unit_) return std::string(name);
+	std::string current(name);
+	for (int hops = 0; hops < 16; ++hops) {
+		bool advanced = false;
+		for (const auto& alias : unit_->type_aliases) {
+			if (alias.name == current) { current = alias.base; advanced = true; break; }
+		}
+		if (!advanced) break;
 	}
-	decl.has_body = true;
-	parse_function_body_into(decl, true);
+	return current;
 }
 
-void Parser::parse_function_body_into(Decl& decl, bool stop_on_right_brace) {
-	parse_statement_list_into(decl.body_statements, stop_on_right_brace);
+// ---------------------------------------------------------------------------
+// Statements
+// ---------------------------------------------------------------------------
+
+Decl::BodyStatement Parser::parse_statement() {
+	switch (peek().kind) {
+	case TokenKind::left_brace: return parse_block_statement();
+	case TokenKind::kw_If:      return parse_if_statement();
+	case TokenKind::kw_While:   return parse_while_statement();
+	case TokenKind::kw_Do:      return parse_do_statement();
+	case TokenKind::kw_For:     return parse_for_statement();
+	case TokenKind::kw_Return:  return parse_return_statement();
+	default: break;
+	}
+
+	Decl::BodyStatement local{};
+	if (try_parse_local_declaration(local)) return local;
+	return parse_expression_or_assignment_statement();
 }
 
-void Parser::parse_statement_list_into(std::vector<Decl::BodyStatement>& out, bool stop_on_right_brace) {
-	auto is_declaration_starter = [](TokenKind kind) {
-		return kind == TokenKind::kw_Export || kind == TokenKind::kw_Import ||
-			kind == TokenKind::kw_Namespace || kind == TokenKind::kw_Struct ||
-			kind == TokenKind::kw_Using || kind == TokenKind::kw_Uniform ||
-			kind == TokenKind::kw_Input || kind == TokenKind::kw_Output ||
-			kind == TokenKind::kw_Layout || kind == TokenKind::kw_Function || kind == TokenKind::at;
-	};
+Decl::BodyStatement Parser::parse_block_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::block;
+	stmt.span = peek().span;
+	if (!expect(TokenKind::left_brace, "expected '{'")) return stmt;
+	while (!at_end() && !at(TokenKind::right_brace)) {
+		const auto before = cursor_;
+		auto child = parse_statement();
+		if (child.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(child));
+		if (cursor_ == before) ++cursor_; // forward-progress guard
+	}
+	(void)consume(TokenKind::right_brace);
+	return stmt;
+}
 
+Decl::BodyStatement Parser::parse_if_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::if_stmt;
+	stmt.span = peek().span;
+	(void)consume(TokenKind::kw_If);
+	if (!expect(TokenKind::left_paren, "expected '(' after 'if'")) { skip_to_statement_boundary(); return stmt; }
+	const auto cond_begin = cursor_;
+	stmt.expr = parse_expression();
+	stmt.condition = source_between(cond_begin, cursor_);
+	if (!expect(TokenKind::right_paren, "expected ')' after if condition")) skip_to_statement_boundary();
+
+	auto then_stmt = parse_statement();
+	if (then_stmt.kind == Decl::BodyStatementKind::block) {
+		stmt.children = std::move(then_stmt.children);
+	} else if (then_stmt.kind != Decl::BodyStatementKind::unknown) {
+		stmt.children.push_back(std::move(then_stmt));
+	}
+
+	if (consume(TokenKind::kw_Else)) {
+		auto else_stmt = parse_statement();
+		if (else_stmt.kind == Decl::BodyStatementKind::block) {
+			stmt.else_children = std::move(else_stmt.children);
+		} else if (else_stmt.kind != Decl::BodyStatementKind::unknown) {
+			stmt.else_children.push_back(std::move(else_stmt));
+		}
+	}
+	return stmt;
+}
+
+Decl::BodyStatement Parser::parse_while_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::while_stmt;
+	stmt.span = peek().span;
+	(void)consume(TokenKind::kw_While);
+	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) { skip_to_statement_boundary(); return stmt; }
+	const auto cond_begin = cursor_;
+	stmt.expr = parse_expression();
+	stmt.condition = source_between(cond_begin, cursor_);
+	if (!expect(TokenKind::right_paren, "expected ')' after while condition")) skip_to_statement_boundary();
+	auto body = parse_statement();
+	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
+	return stmt;
+}
+
+Decl::BodyStatement Parser::parse_do_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::do_stmt;
+	stmt.span = peek().span;
+	(void)consume(TokenKind::kw_Do);
+	auto body = parse_statement();
+	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
+	if (!expect(TokenKind::kw_While, "expected 'while' after do-block")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) { skip_to_statement_boundary(); return stmt; }
+	const auto cond_begin = cursor_;
+	stmt.expr = parse_expression();
+	stmt.condition = source_between(cond_begin, cursor_);
+	if (!expect(TokenKind::right_paren, "expected ')' after do-while condition")) skip_to_statement_boundary();
+	if (!expect(TokenKind::semicolon, "expected ';' after do-while")) skip_to_statement_boundary();
+	return stmt;
+}
+
+Decl::BodyStatement Parser::parse_for_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::for_stmt;
+	stmt.span = peek().span;
+	(void)consume(TokenKind::kw_For);
+	if (!expect(TokenKind::left_paren, "expected '(' after 'for'")) { skip_to_statement_boundary(); return stmt; }
+
+	// init clause
+	if (!at(TokenKind::semicolon)) {
+		Decl::BodyStatement init{};
+		if (try_parse_local_declaration(init)) {
+			stmt.loop_init = init.type_name + " " + init.name;
+			if (!init.initializer.empty()) stmt.loop_init += " = " + init.initializer;
+		} else {
+			const auto init_begin = cursor_;
+			(void)parse_expression();
+			if (consume(TokenKind::equal)) (void)parse_expression();
+			stmt.loop_init = source_between(init_begin, cursor_);
+			if (!expect(TokenKind::semicolon, "expected ';' after for-init")) { skip_to_statement_boundary(); return stmt; }
+		}
+	} else {
+		(void)consume(TokenKind::semicolon);
+	}
+
+	// condition
+	if (!at(TokenKind::semicolon)) {
+		const auto cond_begin = cursor_;
+		stmt.expr = parse_expression();
+		stmt.condition = source_between(cond_begin, cursor_);
+	}
+	if (!expect(TokenKind::semicolon, "expected ';' after for-condition")) { skip_to_statement_boundary(); return stmt; }
+
+	// continue clause
+	if (!at(TokenKind::right_paren)) {
+		const auto cont_begin = cursor_;
+		(void)parse_expression();
+		if (consume(TokenKind::equal)) (void)parse_expression();
+		stmt.loop_continue = source_between(cont_begin, cursor_);
+	}
+	if (!expect(TokenKind::right_paren, "expected ')' after for-clauses")) { skip_to_statement_boundary(); return stmt; }
+
+	auto body = parse_statement();
+	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
+	return stmt;
+}
+
+Decl::BodyStatement Parser::parse_return_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.kind = Decl::BodyStatementKind::return_stmt;
+	stmt.span = peek().span;
+	(void)consume(TokenKind::kw_Return);
+	if (!at(TokenKind::semicolon)) {
+		const auto begin = cursor_;
+		stmt.expr = parse_expression();
+		stmt.rhs = source_between(begin, cursor_);
+	}
+	if (!expect(TokenKind::semicolon, "expected ';' after return")) skip_to_statement_boundary();
+	return stmt;
+}
+
+bool Parser::try_parse_local_declaration(Decl::BodyStatement& out) {
+	const auto save = cursor_;
+	ParsedType type = parse_type();
+	if (type.empty() || !at(TokenKind::identifier)) {
+		// A committed struct body can't be silently rewound; anything else is
+		// a clean restore so the caller can try an expression statement.
+		if (type.has_body) {
+			diagnose_here("expected variable name after struct type");
+			return false;
+		}
+		cursor_ = save;
+		return false;
+	}
+	std::string name(peek().text);
+	++cursor_;
+
+	if (consume(TokenKind::equal)) {
+		const auto rhs_begin = cursor_;
+		auto rhs_expr = parse_expression();
+		const auto rhs_end = cursor_;
+		if (!consume(TokenKind::semicolon)) {
+			cursor_ = save;
+			return false;
+		}
+		out = {};
+		out.kind = Decl::BodyStatementKind::declaration;
+		out.type_name = std::move(type.spelling);
+		out.name = std::move(name);
+		out.expr = std::move(rhs_expr);
+		out.initializer = source_between(rhs_begin, rhs_end);
+		out.span = tokens_[save].span;
+		return true;
+	}
+	if (consume(TokenKind::semicolon)) {
+		out = {};
+		out.kind = Decl::BodyStatementKind::declaration;
+		out.type_name = std::move(type.spelling);
+		out.name = std::move(name);
+		out.span = tokens_[save].span;
+		return true;
+	}
+	cursor_ = save;
+	return false;
+}
+
+Decl::BodyStatement Parser::parse_expression_or_assignment_statement() {
+	Decl::BodyStatement stmt{};
+	stmt.span = peek().span;
+
+	// Parse the LHS at "no-assignment" precedence so a statement-level `=`
+	// is recognised as an assignment statement rather than swallowed into a
+	// binary expression tree.
+	const auto lhs_begin = cursor_;
+	auto lhs = parse_logical_or();
+	const auto lhs_end = cursor_;
+
+	if (consume(TokenKind::equal)) {
+		const auto rhs_begin = cursor_;
+		auto rhs = parse_expression();
+		const auto rhs_end = cursor_;
+		stmt.kind = Decl::BodyStatementKind::assignment;
+		stmt.lhs = source_between(lhs_begin, lhs_end);
+		stmt.rhs = source_between(rhs_begin, rhs_end);
+		stmt.expr = std::move(rhs);
+	} else {
+		stmt.kind = Decl::BodyStatementKind::expression;
+		stmt.expr = std::move(lhs);
+	}
+
+	if (!expect(TokenKind::semicolon, "expected ';' after statement")) skip_to_statement_boundary();
+	return stmt;
+}
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+Decl::Expr Parser::parse_expression() { return parse_assignment(); }
+
+Decl::Expr Parser::parse_assignment() {
+	auto lhs = parse_logical_or();
+	if (at(TokenKind::equal)) {
+		++cursor_;
+		auto rhs = parse_assignment();
+		return make_binary("=", std::move(lhs), std::move(rhs));
+	}
+	return lhs;
+}
+
+Decl::Expr Parser::parse_logical_or() {
+	auto lhs = parse_logical_and();
+	while (at(TokenKind::pipe_pipe)) { ++cursor_; auto rhs = parse_logical_and(); lhs = make_binary("||", std::move(lhs), std::move(rhs)); }
+	return lhs;
+}
+Decl::Expr Parser::parse_logical_and() {
+	auto lhs = parse_bitwise_or();
+	while (at(TokenKind::amp_amp))   { ++cursor_; auto rhs = parse_bitwise_or(); lhs = make_binary("&&", std::move(lhs), std::move(rhs)); }
+	return lhs;
+}
+Decl::Expr Parser::parse_bitwise_or() {
+	auto lhs = parse_bitwise_xor();
+	while (at(TokenKind::pipe))      { ++cursor_; auto rhs = parse_bitwise_xor(); lhs = make_binary("|", std::move(lhs), std::move(rhs)); }
+	return lhs;
+}
+Decl::Expr Parser::parse_bitwise_xor() {
+	auto lhs = parse_bitwise_and();
+	while (at(TokenKind::caret))     { ++cursor_; auto rhs = parse_bitwise_and(); lhs = make_binary("^", std::move(lhs), std::move(rhs)); }
+	return lhs;
+}
+Decl::Expr Parser::parse_bitwise_and() {
+	auto lhs = parse_equality();
+	while (at(TokenKind::amp))       { ++cursor_; auto rhs = parse_equality(); lhs = make_binary("&", std::move(lhs), std::move(rhs)); }
+	return lhs;
+}
+Decl::Expr Parser::parse_equality() {
+	auto lhs = parse_relational();
+	while (at(TokenKind::equal_equal) || at(TokenKind::bang_equal)) {
+		const std::string op = at(TokenKind::equal_equal) ? "==" : "!=";
+		++cursor_;
+		auto rhs = parse_relational();
+		lhs = make_binary(op, std::move(lhs), std::move(rhs));
+	}
+	return lhs;
+}
+Decl::Expr Parser::parse_relational() {
+	auto lhs = parse_additive();
+	while (at(TokenKind::less) || at(TokenKind::less_equal) ||
+		   at(TokenKind::greater) || at(TokenKind::greater_equal)) {
+		std::string op;
+		switch (peek().kind) {
+		case TokenKind::less:          op = "<";  break;
+		case TokenKind::less_equal:    op = "<="; break;
+		case TokenKind::greater:       op = ">";  break;
+		case TokenKind::greater_equal: op = ">="; break;
+		default: break;
+		}
+		++cursor_;
+		auto rhs = parse_additive();
+		lhs = make_binary(std::move(op), std::move(lhs), std::move(rhs));
+	}
+	return lhs;
+}
+Decl::Expr Parser::parse_additive() {
+	auto lhs = parse_multiplicative();
+	while (at(TokenKind::plus) || at(TokenKind::minus)) {
+		const std::string op = at(TokenKind::plus) ? "+" : "-";
+		++cursor_;
+		auto rhs = parse_multiplicative();
+		lhs = make_binary(op, std::move(lhs), std::move(rhs));
+	}
+	return lhs;
+}
+Decl::Expr Parser::parse_multiplicative() {
+	auto lhs = parse_unary();
+	while (at(TokenKind::star) || at(TokenKind::slash) || at(TokenKind::percent)) {
+		const std::string op = at(TokenKind::star) ? "*" : (at(TokenKind::slash) ? "/" : "%");
+		++cursor_;
+		auto rhs = parse_unary();
+		lhs = make_binary(op, std::move(lhs), std::move(rhs));
+	}
+	return lhs;
+}
+Decl::Expr Parser::parse_unary() {
+	if (at(TokenKind::plus) || at(TokenKind::minus) ||
+		at(TokenKind::bang) || at(TokenKind::tilde)) {
+		std::string op;
+		switch (peek().kind) {
+		case TokenKind::plus:  op = "+"; break;
+		case TokenKind::minus: op = "-"; break;
+		case TokenKind::bang:  op = "!"; break;
+		case TokenKind::tilde: op = "~"; break;
+		default: break;
+		}
+		++cursor_;
+		auto child = parse_unary();
+		return make_unary(std::move(op), std::move(child));
+	}
+	return parse_postfix();
+}
+
+Decl::Expr Parser::parse_postfix() {
+	auto base = parse_primary();
 	while (!at_end()) {
-		if (stop_on_right_brace && at(TokenKind::right_brace)) {
+		if (at(TokenKind::dot) || at(TokenKind::colon_colon)) {
+			const std::string op = at(TokenKind::dot) ? "." : "::";
 			++cursor_;
-			return;
-		}
-
-		std::vector<Token> stmt_tokens;
-		int paren_depth = 0;
-		int bracket_depth = 0;
-		int brace_depth = 0;
-		bool saw_tokens = false;
-		Token begin = peek();
-		Token end = begin;
-
-		while (!at_end()) {
-			const Token token = peek();
-			if (saw_tokens && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
-				is_declaration_starter(token.kind)) {
-				diagnose(token, "expected ';' before next declaration");
+			if (!at(TokenKind::identifier)) {
+				diagnose_here("expected identifier after member operator");
 				break;
 			}
-			if (token.kind == TokenKind::left_brace && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 &&
-				saw_tokens) {
-				break;
-			}
-			if (token.kind == TokenKind::semicolon && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
-				end = token;
-				stmt_tokens.push_back(token);
-				++cursor_;
-				saw_tokens = true;
-				break;
-			}
-			if (token.kind == TokenKind::right_brace && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
-				if (stop_on_right_brace) {
-					break;
-				}
-				++cursor_;
-				continue;
-			}
-
-			end = token;
-			saw_tokens = true;
-			stmt_tokens.push_back(token);
+			Decl::Expr expr;
+			expr.kind = Decl::Expr::Kind::member;
+			expr.op = op;
+			expr.text = std::string(peek().text);
+			expr.children = { std::move(base) };
 			++cursor_;
-			if (token.kind == TokenKind::left_paren)
-				++paren_depth;
-			else if (token.kind == TokenKind::right_paren && paren_depth > 0)
-				--paren_depth;
-			else if (token.kind == TokenKind::left_bracket)
-				++bracket_depth;
-			else if (token.kind == TokenKind::right_bracket && bracket_depth > 0)
-				--bracket_depth;
-			else if (token.kind == TokenKind::left_brace)
-				++brace_depth;
-			else if (token.kind == TokenKind::right_brace && brace_depth > 0)
-				--brace_depth;
-		}
-
-		if (!saw_tokens) {
-			break;
-		}
-
-		auto body = parse_statement_from_tokens(stmt_tokens);
-		if (body.kind == Decl::BodyStatementKind::unknown) {
-			while (!at_end() && !at(TokenKind::semicolon) && !at(TokenKind::right_brace)) {
-				++cursor_;
-			}
-			if (at(TokenKind::semicolon)) {
-				++cursor_;
-			}
-			if (at(TokenKind::right_brace) && stop_on_right_brace) {
-				++cursor_;
-				return;
-			}
+			base = std::move(expr);
 			continue;
 		}
-		if (body.kind == Decl::BodyStatementKind::if_stmt) {
-			if (at(TokenKind::left_brace)) {
-				++cursor_;
-				parse_statement_list_into(body.children, true);
-			}
-			if (at(TokenKind::kw_Else)) {
-				++cursor_;
-				if (at(TokenKind::left_brace)) {
-					++cursor_;
-					parse_statement_list_into(body.else_children, true);
-				}
-			}
-		} else if (body.kind == Decl::BodyStatementKind::while_stmt ||
-				   body.kind == Decl::BodyStatementKind::do_stmt ||
-				   body.kind == Decl::BodyStatementKind::for_stmt) {
-			if (at(TokenKind::left_brace)) {
-				++cursor_;
-				parse_statement_list_into(body.children, true);
-			}
-		}
-		out.push_back(std::move(body));
-	}
-}
-
-Decl::BodyStatement Parser::parse_if_statement(const std::vector<Token>& tokens) const {
-	Decl::BodyStatement body{};
-	body.kind = Decl::BodyStatementKind::if_stmt;
-	if (!tokens.empty()) {
-		body.span.begin = tokens.front().span.begin;
-		body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
-	}
-	std::size_t open = std::string::npos;
-	std::size_t close = std::string::npos;
-	int depth = 0;
-	for (std::size_t i = 0; i < tokens.size(); ++i) {
-		if (tokens[i].kind == TokenKind::left_paren) {
-			if (depth++ == 0)
-				open = i + 1;
-		} else if (tokens[i].kind == TokenKind::right_paren) {
-			if (depth == 0)
-				break;
-			--depth;
-			if (depth == 0) {
-				close = i;
-				break;
-			}
-		}
-	}
-	if (open != std::string::npos && close != std::string::npos && close > open) {
-		body.condition = trim(tokens_to_text(std::span<const Token>(tokens.data() + open, close - open)));
-		body.expr = parse_expression(body.condition);
-	}
-	return body;
-}
-
-Decl::BodyStatement Parser::parse_while_statement(const std::vector<Token>& tokens) const {
-	Decl::BodyStatement body{};
-	body.kind = Decl::BodyStatementKind::while_stmt;
-	if (!tokens.empty()) {
-		body.span.begin = tokens.front().span.begin;
-		body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
-	}
-	std::size_t open = std::string::npos;
-	std::size_t close = std::string::npos;
-	int depth = 0;
-	for (std::size_t i = 0; i < tokens.size(); ++i) {
-		if (tokens[i].kind == TokenKind::left_paren) {
-			if (depth++ == 0)
-				open = i + 1;
-		} else if (tokens[i].kind == TokenKind::right_paren) {
-			if (depth == 0)
-				break;
-			--depth;
-			if (depth == 0) {
-				close = i;
-				break;
-			}
-		}
-	}
-	if (open != std::string::npos && close != std::string::npos && close > open) {
-		body.condition = trim(tokens_to_text(std::span<const Token>(tokens.data() + open, close - open)));
-		body.expr = parse_expression(body.condition);
-	}
-	return body;
-}
-
-Decl::BodyStatement Parser::parse_do_statement(const std::vector<Token>& tokens) const {
-	Decl::BodyStatement body{};
-	body.kind = Decl::BodyStatementKind::do_stmt;
-	if (!tokens.empty()) {
-		body.span.begin = tokens.front().span.begin;
-		body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
-	}
-	return body;
-}
-
-Decl::BodyStatement Parser::parse_for_statement(const std::vector<Token>& tokens) const {
-	Decl::BodyStatement body{};
-	body.kind = Decl::BodyStatementKind::for_stmt;
-	if (!tokens.empty()) {
-		body.span.begin = tokens.front().span.begin;
-		body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
-	}
-	std::size_t open = std::string::npos;
-	std::size_t close = std::string::npos;
-	int depth = 0;
-	for (std::size_t i = 0; i < tokens.size(); ++i) {
-		if (tokens[i].kind == TokenKind::left_paren) {
-			if (depth++ == 0)
-				open = i + 1;
-		} else if (tokens[i].kind == TokenKind::right_paren) {
-			if (depth == 0)
-				break;
-			--depth;
-			if (depth == 0) {
-				close = i;
-				break;
-			}
-		}
-	}
-	if (open == std::string::npos || close == std::string::npos || close <= open) {
-		return body;
-	}
-	const auto header = std::span<const Token>(tokens.data() + open, close - open);
-	std::size_t first = header.size();
-	std::size_t second = header.size();
-	int split_depth = 0;
-	for (std::size_t i = 0; i < header.size(); ++i) {
-		const auto kind = header[i].kind;
-		if (kind == TokenKind::left_paren || kind == TokenKind::left_bracket || kind == TokenKind::left_brace) {
-			++split_depth;
-		} else if ((kind == TokenKind::right_paren || kind == TokenKind::right_bracket || kind == TokenKind::right_brace) && split_depth > 0) {
-			--split_depth;
-		} else if (kind == TokenKind::semicolon && split_depth == 0) {
-			if (first == header.size())
-				first = i;
-			else {
-				second = i;
-				break;
-			}
-		}
-	}
-	if (first != header.size()) {
-		body.loop_init = trim(tokens_to_text(header.first(first)));
-		if (first + 1 < header.size()) {
-			if (second == header.size()) {
-				body.condition = trim(tokens_to_text(header.subspan(first + 1)));
-			} else {
-				body.condition = trim(tokens_to_text(header.subspan(first + 1, second - first - 1)));
-				if (second + 1 < header.size()) {
-					body.loop_continue = trim(tokens_to_text(header.subspan(second + 1)));
-				}
-			}
-		}
-	}
-	return body;
-}
-
-Decl::BodyStatement Parser::parse_statement_from_tokens(const std::vector<Token>& tokens) const {
-	Decl::BodyStatement body{};
-	if (!tokens.empty()) {
-		body.span.begin = tokens.front().span.begin;
-		body.span.length = tokens.back().span.begin.offset + tokens.back().span.length - tokens.front().span.begin.offset;
-	}
-	if (tokens.empty()) {
-		body.kind = Decl::BodyStatementKind::unknown;
-		return body;
-	}
-	const Token first = tokens.front();
-	if (first.kind == TokenKind::kw_If) {
-		return parse_if_statement(tokens);
-	}
-	if (first.kind == TokenKind::kw_While) {
-		return parse_while_statement(tokens);
-	}
-	if (first.kind == TokenKind::kw_Do) {
-		return parse_do_statement(tokens);
-	}
-	if (first.kind == TokenKind::kw_For) {
-		return parse_for_statement(tokens);
-	}
-
-	if (first.kind == TokenKind::kw_Return) {
-		body.kind = Decl::BodyStatementKind::return_stmt;
-		if (tokens.size() > 1) {
-			body.rhs = trim(tokens_to_text(std::span<const Token>(tokens.data() + 1, tokens.size() - 1)));
-		}
-		body.expr = parse_expression(body.rhs);
-	} else {
-		const auto equals = std::find_if(tokens.begin(), tokens.end(), [](const Token& tok) { return tok.kind == TokenKind::equal; });
-		const auto first_ident = std::find_if(tokens.begin(), tokens.end(), [](const Token& tok) {
-			return tok.kind == TokenKind::identifier;
-		});
-		if (equals != tokens.end() && first_ident != tokens.end() && first_ident < equals) {
-			body.kind = Decl::BodyStatementKind::declaration;
-			body.type_name = std::string(tokens.front().text);
-			body.name = std::string(first_ident->text);
-			const auto eq_index = static_cast<std::size_t>(std::distance(tokens.begin(), equals));
-			body.initializer = eq_index + 1 < tokens.size()
-								   ? trim(tokens_to_text(std::span<const Token>(tokens.data() + eq_index + 1, tokens.size() - eq_index - 1)))
-								   : std::string{};
-			body.expr = parse_expression(body.initializer);
-		} else if (equals != tokens.end()) {
-			body.kind = Decl::BodyStatementKind::assignment;
-			const auto eq_index = static_cast<std::size_t>(std::distance(tokens.begin(), equals));
-			body.lhs = trim(tokens_to_text(std::span<const Token>(tokens.data(), eq_index)));
-			body.rhs = eq_index + 1 < tokens.size()
-						   ? trim(tokens_to_text(std::span<const Token>(tokens.data() + eq_index + 1, tokens.size() - eq_index - 1)))
-						   : std::string{};
-			body.expr = parse_expression(body.rhs);
-		} else {
-			body.kind = Decl::BodyStatementKind::expression;
-			body.expr = parse_expression(trim(tokens_to_text(std::span<const Token>(tokens.data(), tokens.size()))));
-			if (body.expr.kind == Decl::Expr::Kind::name) {
-				diagnose(first, "expected a statement, not a bare identifier");
-				body.kind = Decl::BodyStatementKind::unknown;
-			}
-		}
-	}
-	if (body.kind == Decl::BodyStatementKind::unknown) {
-		diagnose(first, "unsupported statement");
-	}
-	return body;
-}
-
-void Parser::parse_function_signature(Decl& decl) {
-	if (!consume(TokenKind::left_paren)) {
-		diagnose(peek(), "expected '(' after function name");
-		return;
-	}
-
-	while (!at_end() && !at(TokenKind::right_paren)) {
-		if (consume(TokenKind::kw_InOut)) {
-		}
-
-		std::vector<Token> parameter_tokens;
-		int angle_depth = 0;
-		while (!at_end()) {
-			const auto kind = peek().kind;
-			if (angle_depth == 0 && (kind == TokenKind::comma || kind == TokenKind::right_paren)) {
-				break;
-			}
-			if (kind == TokenKind::less) {
-				++angle_depth;
-			} else if (kind == TokenKind::greater && angle_depth > 0) {
-				--angle_depth;
-			}
-			parameter_tokens.push_back(peek());
+		if (at(TokenKind::left_paren)) {
 			++cursor_;
-		}
-
-		if (!parameter_tokens.empty()) {
-			std::string param_name;
-			if (parameter_tokens.size() >= 2 && parameter_tokens.back().kind == TokenKind::identifier) {
-				param_name = std::string(parameter_tokens.back().text);
-				parameter_tokens.pop_back();
-			}
-			// Parameters may be passed by reference: `const Type& name`. The
-			// const/& qualifiers are stripped from the recorded type; reference
-			// semantics are intrinsic to builtin carrier types (e.g. RtVertex).
-			bool is_const = false;
-			bool is_reference = false;
-			std::string param_type;
-			for (const auto& token : parameter_tokens) {
-				if (token.kind == TokenKind::kw_Const) {
-					is_const = true;
-				} else if (token.kind == TokenKind::amp) {
-					is_reference = true;
-				} else {
-					param_type += std::string(token.text);
-				}
-			}
-			if (!param_type.empty()) {
-				// A parameter type spelled as an alias is rewritten to its
-				// base type here — boundary specs describe pipeline behavior, not
-				// type identity, so the receiver sees plain `T`.
-				std::string resolved = resolve_alias(param_type);
-				decl.parameters.push_back(ParameterDecl{
-					.type = std::move(resolved),
-					.name = std::move(param_name),
-					.is_const = is_const,
-					.is_reference = is_reference,
-				});
-			}
-		}
-
-		if (!consume(TokenKind::comma)) {
-			break;
-		}
-	}
-
-	if (!consume(TokenKind::right_paren)) {
-		diagnose(peek(), "expected ')' after function parameters");
-		return;
-	}
-
-	if (consume(TokenKind::arrow)) {
-		std::string spelling = collect_type_until(TokenKind::left_brace, TokenKind::semicolon);
-		// Trim whitespace around the collected identifier before alias lookup.
-		auto trim_ws = [](std::string s) {
-			std::size_t b = 0;
-			while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b])))
-				++b;
-			std::size_t e = s.size();
-			while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1])))
-				--e;
-			return s.substr(b, e - b);
-		};
-		const std::string trimmed = trim_ws(std::move(spelling));
-		decl.return_type = resolve_alias(trimmed);
-		// Inline return boundary: `-> Type : intrinsic field, ...`.
-		// Materialize a StageInterface on the resolved base type.
-		maybe_parse_return_boundary(decl.return_type);
-	} else {
-		decl.return_type = "void";
-	}
-}
-
-std::string Parser::collect_type_until(TokenKind stop_a, TokenKind stop_b) {
-	std::string text;
-	int angle_depth = 0;
-	while (!at_end()) {
-		const auto kind = peek().kind;
-		// `:` also terminates a type spelling: it introduces a return boundary
-		// (`-> Vertex : position -> clip, ...`). Layouts consume their own `:`
-		// before calling this, so they're unaffected.
-		if (angle_depth == 0 && (kind == stop_a || kind == stop_b || kind == TokenKind::right_paren ||
-								 kind == TokenKind::colon)) {
-			break;
-		}
-		if (kind == TokenKind::less) {
-			++angle_depth;
-		} else if (kind == TokenKind::greater && angle_depth > 0) {
-			--angle_depth;
-		}
-		text += std::string(peek().text);
-		++cursor_;
-	}
-	return text;
-}
-
-void Parser::skip_to_declaration_boundary(bool consume_right_brace) {
-	while (!at_end() && !at(TokenKind::semicolon) && !at(TokenKind::right_brace)) {
-		++cursor_;
-	}
-	if (at(TokenKind::semicolon) || (consume_right_brace && at(TokenKind::right_brace))) {
-		++cursor_;
-	}
-}
-
-void Parser::skip_balanced_block() {
-	int parens = 0;
-	int brackets = 0;
-	int braces = 0;
-
-	while (!at_end()) {
-		const auto kind = peek().kind;
-		++cursor_;
-
-		if (kind == TokenKind::left_paren)
-			++parens;
-		else if (kind == TokenKind::right_paren && parens > 0)
-			--parens;
-		else if (kind == TokenKind::left_bracket)
-			++brackets;
-		else if (kind == TokenKind::right_bracket && brackets > 0)
-			--brackets;
-		else if (kind == TokenKind::left_brace)
-			++braces;
-		else if (kind == TokenKind::right_brace && braces > 0)
-			--braces;
-
-		if (parens == 0 && brackets == 0 && braces == 0 &&
-			(kind == TokenKind::semicolon || kind == TokenKind::right_brace)) {
-			break;
-		}
-	}
-}
-
-std::string Parser::append_token_text(std::string statement, const Token& token) const {
-	if (!statement.empty()) {
-		const char last = statement.back();
-		const bool last_ident = (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') ||
-								(last >= '0' && last <= '9') || last == '_';
-		const bool next_ident = token.kind == TokenKind::identifier ||
-								token.kind == TokenKind::integer_literal ||
-								token.kind == TokenKind::float_literal ||
-								(token.kind >= TokenKind::kw_Import && token.kind <= TokenKind::kw_Builtin);
-		if (last_ident && next_ident) {
-			statement.push_back(' ');
-		}
-	}
-	statement += std::string(token.text);
-	return statement;
-}
-
-std::string Parser::tokens_to_text(std::span<const Token> tokens) const {
-	std::string statement;
-	for (const auto& token : tokens) {
-		statement = append_token_text(std::move(statement), token);
-	}
-	return statement;
-}
-
-void Parser::diagnose(const Token& token, std::string_view message) const {
-	diagnostics_.report(2001, DiagnosticSeverity::error, token.span.begin, sources_.name(file_id_), message);
-}
-
-SourceSpan Parser::statement_span(const Token& begin, const Token& end) const {
-	const auto start = begin.span.begin;
-	const auto finish = end.span.begin.offset + end.span.length;
-	SourceSpan span{};
-	span.begin = start;
-	span.length = finish >= start.offset ? finish - start.offset : 0;
-	return span;
-}
-
-Decl::Expr Parser::parse_expression(std::string_view text) const {
-	struct ParserImpl {
-		ExprTokenizer lex;
-		bool error = false;
-		explicit ParserImpl(std::string_view text) : lex(text) {}
-
-		Decl::Expr parse() {
-			Decl::Expr expr = parse_add();
-			if (error) {
-				return {};
-			}
-			if (lex.peek().kind != ExprToken::Kind::end) {
-				return {};
-			}
-			return expr;
-		}
-
-		Decl::Expr parse_add() {
-			auto lhs = parse_mul();
-			while (true) {
-				const auto tok = lex.peek();
-				if (tok.kind != ExprToken::Kind::plus && tok.kind != ExprToken::Kind::minus)
-					break;
-				lex.next();
-				auto rhs = parse_mul();
-				Decl::Expr expr;
-				expr.kind = Decl::Expr::Kind::binary;
-				expr.op = tok.text;
-				expr.children = { std::move(lhs), std::move(rhs) };
-				lhs = std::move(expr);
-			}
-			return lhs;
-		}
-
-		Decl::Expr parse_mul() {
-			auto lhs = parse_unary();
-			while (true) {
-				const auto tok = lex.peek();
-				if (tok.kind != ExprToken::Kind::star && tok.kind != ExprToken::Kind::slash &&
-					tok.kind != ExprToken::Kind::percent)
-					break;
-				lex.next();
-				auto rhs = parse_unary();
-				Decl::Expr expr;
-				expr.kind = Decl::Expr::Kind::binary;
-				expr.op = tok.text;
-				expr.children = { std::move(lhs), std::move(rhs) };
-				lhs = std::move(expr);
-			}
-			return lhs;
-		}
-
-		Decl::Expr parse_unary() {
-			const auto tok = lex.peek();
-			if (tok.kind == ExprToken::Kind::plus || tok.kind == ExprToken::Kind::minus) {
-				lex.next();
-				auto child = parse_unary();
-				Decl::Expr expr;
-				expr.kind = Decl::Expr::Kind::unary;
-				expr.op = tok.text;
-				expr.children = { std::move(child) };
-				return expr;
-			}
-			return parse_postfix();
-		}
-
-		Decl::Expr parse_postfix() {
-			auto base = parse_primary();
-			if (error) {
-				return {};
-			}
-			while (true) {
-				const auto tok = lex.peek();
-				if (tok.kind == ExprToken::Kind::dot || tok.kind == ExprToken::Kind::scope) {
-					lex.next();
-					const auto name = lex.next();
-					if (name.kind != ExprToken::Kind::ident) {
-						error = true;
-						return {};
-					}
-					Decl::Expr expr;
-					expr.kind = Decl::Expr::Kind::member;
-					expr.op = tok.text;
-					expr.text = name.text;
-					expr.children = { std::move(base) };
-					base = std::move(expr);
-					continue;
-				}
-				if (tok.kind == ExprToken::Kind::lparen) {
-					lex.next();
-					Decl::Expr expr;
-					expr.kind = Decl::Expr::Kind::call;
-					expr.children = { std::move(base) };
-					if (lex.peek().kind != ExprToken::Kind::rparen) {
-						while (true) {
-							auto arg = parse();
-							if (error) {
-								return {};
-							}
-							expr.children.push_back(std::move(arg));
-							if (lex.peek().kind == ExprToken::Kind::comma) {
-								lex.next();
-								continue;
-							}
-							break;
-						}
-					}
-					if (lex.peek().kind != ExprToken::Kind::rparen) {
-						error = true;
-						return {};
-					}
-					(void)lex.next();
-					base = std::move(expr);
-					continue;
-				}
-				break;
-			}
-			return base;
-		}
-
-		Decl::Expr parse_primary() {
-			const auto tok = lex.next();
 			Decl::Expr expr;
-			switch (tok.kind) {
-			case ExprToken::Kind::ident:
-				expr.kind = Decl::Expr::Kind::name;
-				expr.text = tok.text;
-				return expr;
-			case ExprToken::Kind::integer:
-				expr.kind = Decl::Expr::Kind::literal_int;
-				expr.text = tok.text;
-				return expr;
-			case ExprToken::Kind::floating:
-				expr.kind = Decl::Expr::Kind::literal_float;
-				expr.text = tok.text;
-				return expr;
-			case ExprToken::Kind::lparen: {
-				auto inner = parse();
-				if (lex.peek().kind != ExprToken::Kind::rparen) {
-					error = true;
-					return {};
+			expr.kind = Decl::Expr::Kind::call;
+			expr.children.push_back(std::move(base));
+			if (!at(TokenKind::right_paren)) {
+				while (true) {
+					expr.children.push_back(parse_expression());
+					if (!consume(TokenKind::comma)) break;
 				}
-				(void)lex.next();
-				return inner;
 			}
-			default:
-				error = true;
-				return expr;
-			}
+			if (!expect(TokenKind::right_paren, "expected ')' after call arguments")) break;
+			base = std::move(expr);
+			continue;
 		}
-	};
+		if (at(TokenKind::left_bracket)) {
+			++cursor_;
+			auto index = parse_expression();
+			if (!expect(TokenKind::right_bracket, "expected ']' after index")) break;
+			base = make_binary("[]", std::move(base), std::move(index));
+			continue;
+		}
+		break;
+	}
+	return base;
+}
 
-	return ParserImpl(trim(text)).parse();
+Decl::Expr Parser::parse_primary() {
+	Decl::Expr expr;
+	const Token tok = peek();
+	switch (tok.kind) {
+	case TokenKind::identifier:
+		expr.kind = Decl::Expr::Kind::name;
+		expr.text = std::string(tok.text);
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::integer_literal:
+		expr.kind = Decl::Expr::Kind::literal_int;
+		expr.text = std::string(tok.text);
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::float_literal:
+		expr.kind = Decl::Expr::Kind::literal_float;
+		expr.text = std::string(tok.text);
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::string_literal:
+		expr.kind = Decl::Expr::Kind::name;
+		expr.text = std::string(tok.text);
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::kw_True:
+		expr.kind = Decl::Expr::Kind::literal_int;
+		expr.text = "1";
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::kw_False:
+		expr.kind = Decl::Expr::Kind::literal_int;
+		expr.text = "0";
+		expr.span = tok.span;
+		++cursor_;
+		return expr;
+	case TokenKind::left_paren: {
+		++cursor_;
+		auto inner = parse_expression();
+		(void)expect(TokenKind::right_paren, "expected ')' in expression");
+		return inner;
+	}
+	default:
+		diagnose_here("expected expression");
+		expr.kind = Decl::Expr::Kind::unknown;
+		return expr;
+	}
+}
+
+std::string Parser::source_between(std::size_t begin_cursor, std::size_t end_cursor) const {
+	if (end_cursor <= begin_cursor || begin_cursor >= tokens_.size()) return {};
+	const std::size_t end = end_cursor > tokens_.size() ? tokens_.size() : end_cursor;
+	const auto s = tokens_[begin_cursor].span.begin.offset;
+	const auto e = tokens_[end - 1].span.begin.offset + tokens_[end - 1].span.length;
+	return join_source(sources_.buffer(file_id_), s, e);
 }
 
 } // namespace rtsl

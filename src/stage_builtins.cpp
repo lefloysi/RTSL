@@ -6,7 +6,7 @@ std::vector<StageBuiltin> stage_builtins(std::string_view carrier_type) {
 	if (carrier_type == "RtVertex") {
 		return {
 			StageBuiltin{ .member = "position", .type = "vec4", .gl_name = "gl_Position", .is_output = true },
-			StageBuiltin{ .member = "point_size", .type = "float", .gl_name = "gl_PointSize", .is_output = true },
+			StageBuiltin{ .member = "point_size", .type = "f32", .gl_name = "gl_PointSize", .is_output = true },
 			StageBuiltin{ .member = "vertex_index", .type = "i32", .gl_name = "gl_VertexIndex", .is_output = false },
 			StageBuiltin{ .member = "instance_index", .type = "i32", .gl_name = "gl_InstanceIndex", .is_output = false },
 		};

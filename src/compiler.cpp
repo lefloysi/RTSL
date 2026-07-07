@@ -174,7 +174,7 @@ bool CompilerInstance::load_or_build_import(const CompilerInvocation& invocation
 	}
 	const auto canonical = std::filesystem::weakly_canonical(source_path).string();
 	if (!active_builds.insert(canonical).second) {
-		diagnostics_.report(2004, DiagnosticSeverity::error, {}, invocation.source_name,
+		diagnostics_.report(DiagnosticCode::compiler_validation_failed, DiagnosticSeverity::error, {}, invocation.source_name,
 			std::format("import cycle detected while building '{}'", name));
 		return false;
 	}
@@ -235,13 +235,13 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 			continue;
 		}
 		if (bytes.empty()) {
-			diagnostics_.report(2002, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
+			diagnostics_.report(DiagnosticCode::compiler_no_input, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
 								std::format("failed to resolve import '{}'", import_name));
 			continue;
 		}
 		Artifact imported;
 		if (!read_artifact(bytes, imported, &diagnostics_)) {
-			diagnostics_.report(2003, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
+			diagnostics_.report(DiagnosticCode::compiler_file_read_failed, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
 								std::format("failed to load import '{}'", import_name));
 			continue;
 		}
@@ -252,6 +252,9 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 	auto semantic_module = sema.analyze(ast);
 	for (const auto& imported : imported_modules) {
 		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.exports.begin(), imported.exports.end());
+	}
+	if (diagnostics_.has_error()) {
+		return;
 	}
 	auto ir = lower_to_ir(semantic_module, &diagnostics_);
 

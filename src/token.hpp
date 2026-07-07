@@ -92,14 +92,9 @@ enum class TokenKind : u16 {
 	RTSL_KEYWORD_TOKENS(RTSL_KEYWORD_ENUM)
 #undef RTSL_KEYWORD_ENUM
 
-		equal_equal,
-	bang_equal,
-	less_equal,
-	greater_equal,
-	amp_amp,
-	pipe_pipe,
-	arrow,
-	colon_colon,
+#define RTSL_TWO_CHAR_PUNCTUATION_ENUM(name, first, second) name,
+	RTSL_TWO_CHAR_PUNCTUATION_TOKENS(RTSL_TWO_CHAR_PUNCTUATION_ENUM)
+#undef RTSL_TWO_CHAR_PUNCTUATION_ENUM
 
 #define RTSL_PUNCTUATION_ENUM(name, spelling) name,
 	RTSL_PUNCTUATION_TOKENS(RTSL_PUNCTUATION_ENUM)

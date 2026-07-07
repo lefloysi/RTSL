@@ -224,6 +224,12 @@ struct StructField {
 	std::string name;
 };
 
+struct StructMemberFunction {
+	std::string name;
+	std::vector<ParameterDecl> parameters;
+	std::string return_type = "void";
+};
+
 struct ExportSymbol {
 	std::string name;
 	std::string kind;
@@ -233,6 +239,7 @@ struct ExportSymbol {
 struct StructDecl {
 	std::string name;
 	std::vector<StructField> fields;
+	std::vector<StructMemberFunction> member_functions;
 	std::vector<ParameterDecl> constructor_parameters;
 };
 
@@ -306,6 +313,18 @@ struct TypeAlias {
 	std::string base;
 };
 
+struct UsingImport {
+	enum class Kind {
+		symbol,
+		uniform_scope,
+		namespace_scope,
+	};
+	Kind kind = Kind::symbol;
+	std::vector<std::string> path;
+	std::string imported_name;
+	bool exported = false;
+};
+
 struct TranslationUnit {
 	u32 file_id = 0;
 	std::vector<Decl> declarations;
@@ -316,6 +335,7 @@ struct TranslationUnit {
 	std::vector<LayoutDecl> layouts;
 	std::vector<StageInterface> stage_interfaces;
 	std::vector<TypeAlias> type_aliases;
+	std::vector<UsingImport> using_imports;
 };
 
 } // namespace rtsl

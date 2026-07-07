@@ -17,6 +17,38 @@ enum class DiagnosticSeverity : u08 {
 	fatal,
 };
 
+enum class DiagnosticCode : int {
+	none = 0,
+
+	lexer_invalid_character = 1001,
+
+	parser_syntax = 2001,
+	compiler_no_input = 2002,
+	compiler_file_read_failed = 2003,
+	compiler_validation_failed = 2004,
+
+	sema_reserved_namespace = 3001,
+	sema_duplicate_namespace_decl = 3002,
+	sema_duplicate_export_decl = 3003,
+
+	ir_lowering_failed = 3100,
+	layout_duplicate = 3101,
+	layout_missing_resource_type = 3102,
+	layout_unknown_type = 3103,
+	layout_unknown_uniform = 3104,
+	layout_invalid_uniform_kind = 3105,
+	ir_expression_error = 3201,
+	ir_invalid_stage_signature = 3202,
+
+	artifact_error = 5001,
+
+	link_empty_artifact = 6001,
+	link_no_inputs = 6002,
+	link_conflict = 6003,
+
+	text_rtir_unimplemented = 7001,
+};
+
 struct Diagnostic {
 	int code = 0;
 	DiagnosticSeverity severity = DiagnosticSeverity::error;
@@ -29,6 +61,7 @@ class DiagnosticEngine {
   public:
 	void clear();
 	void report(int code, DiagnosticSeverity severity, SourceLocation location, std::string_view source_name, std::string_view message);
+	void report(DiagnosticCode code, DiagnosticSeverity severity, SourceLocation location, std::string_view source_name, std::string_view message);
 	void render(std::ostream& out, const SourceManager* sources = nullptr) const;
 
 	[[nodiscard]] bool has_error() const;

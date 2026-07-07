@@ -8,6 +8,19 @@
 
 namespace rtsl {
 
+enum class ResourceBindingKind {
+	none,
+	uniform_buffer,
+	storage_buffer,
+	sampler,
+	sampled_image,
+	image,
+};
+
+[[nodiscard]] ResourceBindingKind resource_binding_kind(std::string_view spelling);
+[[nodiscard]] bool is_buffer_binding(ResourceBindingKind kind);
+[[nodiscard]] bool is_opaque_resource_binding(ResourceBindingKind kind);
+
 // Mangled member identifier for a uniform (e.g. u_6albedo_7texture_h86413326).
 [[nodiscard]] std::string uniform_binding_name(const UniformBinding& uniform);
 

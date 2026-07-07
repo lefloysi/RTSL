@@ -126,9 +126,9 @@ alias, import over, or export symbols in that namespace.
 
 ```rtsl
 struct Vertex {
-    Vertex(Point p);
     vec4 position;
     vec2 uv;
+    fn Vertex(Point p);
 };
 ```
 

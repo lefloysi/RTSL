@@ -4,6 +4,7 @@ struct Point {
 
 struct Vertex {
     vec4 position;
+    fn Vertex(Point p);
 }
 
 fn Vertex::Vertex(Point p) {

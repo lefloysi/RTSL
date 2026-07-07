@@ -1,11 +1,49 @@
 #include "sema.hpp"
 
+#include <span>
+#include <string_view>
 #include <unordered_map>
 
 namespace rtsl {
 
 Sema::Sema(SourceManager& sources, DiagnosticEngine& diagnostics)
 	: sources_(sources), diagnostics_(diagnostics) {}
+
+namespace {
+
+const StructDecl* find_struct(std::span<const StructDecl> structs, std::string_view name) {
+	for (const auto& structure : structs) {
+		if (structure.name == name) {
+			return &structure;
+		}
+	}
+	return nullptr;
+}
+
+bool same_parameters(std::span<const ParameterDecl> a, std::span<const ParameterDecl> b) {
+	if (a.size() != b.size()) {
+		return false;
+	}
+	for (std::size_t i = 0; i < a.size(); ++i) {
+		if (a[i].type != b[i].type) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool declares_member_function(const StructDecl& owner, std::string_view name, std::span<const ParameterDecl> parameters, std::string_view return_type) {
+	for (const auto& member : owner.member_functions) {
+		if (member.name == name &&
+			member.return_type == return_type &&
+			same_parameters(member.parameters, parameters)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
 
 SemanticModule Sema::analyze(const TranslationUnit& unit) {
 	SemanticModule module{ .source_name = std::string(sources_.name(unit.file_id)) };
@@ -14,6 +52,7 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 	module.uniforms = unit.uniforms;
 	module.layouts = unit.layouts;
 	module.stage_interfaces = unit.stage_interfaces;
+	module.using_imports = unit.using_imports;
 
 	// Assign sequential locations to interface fields that did not request one
 	// explicitly. Built-in slots (e.g. `position(clip)`) do not consume a location.
@@ -54,8 +93,23 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 
 	for (const auto& decl : unit.declarations) {
 		if (decl.kind == DeclKind::namespace_decl && decl.name == "rt") {
-			diagnostics_.report(3001, DiagnosticSeverity::error, decl.span.begin, module.source_name, "namespace 'rt' is reserved");
+			diagnostics_.report(DiagnosticCode::sema_reserved_namespace, DiagnosticSeverity::error, decl.span.begin, module.source_name, "namespace 'rt' is reserved");
 			continue;
+		}
+
+		if (decl.kind == DeclKind::function) {
+			if (const auto scope = decl.name.find("::"); scope != std::string::npos) {
+				const auto owner_name = std::string_view(decl.name).substr(0, scope);
+				const auto member_name = std::string_view(decl.name).substr(scope + 2);
+				const StructDecl* owner = find_struct(module.structs, owner_name);
+				if (!owner) {
+					diagnostics_.report(DiagnosticCode::sema_duplicate_namespace_decl, DiagnosticSeverity::error, decl.span.begin, module.source_name,
+										"member function definition has unknown owner type");
+				} else if (!declares_member_function(*owner, member_name, decl.parameters, decl.return_type)) {
+					diagnostics_.report(DiagnosticCode::sema_duplicate_export_decl, DiagnosticSeverity::error, decl.span.begin, module.source_name,
+										"member function definition has no matching declaration in its owner type");
+				}
+			}
 		}
 
 		module.symbols.emplace_back(SemanticSymbol{

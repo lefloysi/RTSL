@@ -32,7 +32,7 @@ rtsl_stage_role to_c_role(rtsl::StageRole role) {
 	std::unreachable();
 }
 
-rtsl_uniform_kind uniform_kind_from_type(const rtsl::IRModule& module, const std::string& uniform_type, rtsl::IRId type_id) {
+rtsl_uniform_kind uniform_kind_from_type(const rtsl::IRModule& module, std::string_view uniform_type, rtsl::IRId type_id) {
 	if (uniform_type == "UniformBuffer") {
 		return RTSL_UNIFORM_KIND_UNIFORM_BUFFER;
 	}
@@ -40,8 +40,9 @@ rtsl_uniform_kind uniform_kind_from_type(const rtsl::IRModule& module, const std
 		return RTSL_UNIFORM_KIND_STORAGE_BUFFER;
 	}
 	for (const auto& inst : module.type_constant_pool) {
-		if (inst.result_id != type_id)
+		if (inst.result_id != type_id) {
 			continue;
+		}
 		switch (inst.op) {
 		case rtsl::IROp::TypeSampler:
 			return RTSL_UNIFORM_KIND_SAMPLER;

@@ -18,6 +18,10 @@ void DiagnosticEngine::report(int code, DiagnosticSeverity severity, SourceLocat
 	});
 }
 
+void DiagnosticEngine::report(DiagnosticCode code, DiagnosticSeverity severity, SourceLocation location, std::string_view source_name, std::string_view message) {
+	report(static_cast<int>(code), severity, location, source_name, message);
+}
+
 static std::string_view severity_name(DiagnosticSeverity severity) {
 	switch (severity) {
 	case DiagnosticSeverity::note: return "note";

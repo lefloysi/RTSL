@@ -252,7 +252,7 @@ std::string disassemble_artifact(const Artifact& artifact) {
 
 bool assemble_text_rtir(std::string_view, Artifact&, DiagnosticEngine* diagnostics) {
 	if (diagnostics) {
-		diagnostics->report(7001, DiagnosticSeverity::error, {}, "<rtir>", "text RTIR assembly is not implemented for the SSA format");
+		diagnostics->report(DiagnosticCode::text_rtir_unimplemented, DiagnosticSeverity::error, {}, "<rtir>", "text RTIR assembly is not implemented for the SSA format");
 	}
 	return false;
 }

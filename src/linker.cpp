@@ -202,7 +202,7 @@ bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
 
 bool Linker::add_artifact(Artifact artifact) {
 	if (artifact.bytes.empty()) {
-		diagnostics_.report(6001, DiagnosticSeverity::error, {}, "<link>", "cannot link an empty artifact");
+		diagnostics_.report(DiagnosticCode::link_empty_artifact, DiagnosticSeverity::error, {}, "<link>", "cannot link an empty artifact");
 		return false;
 	}
 	inputs_.push_back(std::move(artifact));
@@ -212,7 +212,7 @@ bool Linker::add_artifact(Artifact artifact) {
 Artifact Linker::link_program() {
 	Artifact program{ .kind = ArtifactKind::program };
 	if (inputs_.empty()) {
-		diagnostics_.report(6002, DiagnosticSeverity::error, {}, "<link>", "no input artifacts provided");
+		diagnostics_.report(DiagnosticCode::link_no_inputs, DiagnosticSeverity::error, {}, "<link>", "no input artifacts provided");
 		return program;
 	}
 
@@ -252,7 +252,7 @@ Artifact Linker::link_program() {
 Artifact Linker::link_library() {
 	Artifact library{ .kind = ArtifactKind::library };
 	if (inputs_.empty()) {
-		diagnostics_.report(6002, DiagnosticSeverity::error, {}, "<link>", "no input artifacts provided");
+		diagnostics_.report(DiagnosticCode::link_no_inputs, DiagnosticSeverity::error, {}, "<link>", "no input artifacts provided");
 		return library;
 	}
 
@@ -349,11 +349,11 @@ void Linker::validate_program_stages(const Artifact& program) {
 		has_fragment = has_fragment || entry.stage == StageKind::fragment;
 	}
 	if (!has_vertex) {
-		diagnostics_.report(6003, DiagnosticSeverity::error, {}, "<link>",
+		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
 							"graphics program is missing a vertex stage (vert)");
 	}
 	if (!has_fragment) {
-		diagnostics_.report(6003, DiagnosticSeverity::error, {}, "<link>",
+		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
 							"graphics program is missing a fragment stage (frag)");
 	}
 }

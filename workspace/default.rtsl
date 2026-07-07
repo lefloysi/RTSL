@@ -18,17 +18,19 @@ struct Vertex {
     vec4 position;
     vec2 uv;
     u32 material;
-}
+    fn Vertex(Point p);
+};
 
 fn Vertex::Vertex(Point p) {
     position = mvp * vec4(p.position, 1.0);
     uv = p.uv;
     material = 0;
 }
-s
+
 struct Fragment {
     vec4 color;
-}
+    fn Fragment(Vertex v);
+};
 
 fn Fragment::Fragment(Vertex v) {
     color = sample(albedo::texture, v.uv) * albedo::tint;
@@ -36,7 +38,7 @@ fn Fragment::Fragment(Vertex v) {
 
 
 @vertex
-fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
+fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(clip), material(flat) {
     return Vertex(p);
 }
 @fragment

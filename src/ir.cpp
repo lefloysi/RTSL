@@ -26,6 +26,22 @@
 
 namespace rtsl {
 
+struct TransparentStringHash {
+	using is_transparent = void;
+
+	[[nodiscard]] size_t operator()(std::string_view value) const noexcept {
+		return std::hash<std::string_view>{}(value);
+	}
+
+	[[nodiscard]] size_t operator()(const std::string& value) const noexcept {
+		return (*this)(std::string_view(value));
+	}
+
+	[[nodiscard]] size_t operator()(const char* value) const noexcept {
+		return (*this)(std::string_view(value));
+	}
+};
+
 // ----------------------------------------------------------------------------
 // IRBuilder: id allocation, type/constant pool with dedup, local instruction
 // emission.
@@ -42,7 +58,7 @@ class IRBuilder {
 
 	// Append a type/constant pool entry and return its id. The entry is keyed
 	// by a stable string signature so identical types map to the same id.
-	IRId intern_type(const std::string& signature, IROp op, IRId type_id, std::vector<IRId> operands, std::vector<u32> literals) {
+	IRId intern_type(std::string_view signature, IROp op, IRId type_id, std::span<const IRId> operands, std::span<const u32> literals) {
 		auto it = type_cache_.find(signature);
 		if (it != type_cache_.end()) {
 			return it->second;
@@ -52,16 +68,24 @@ class IRBuilder {
 		inst.op = op;
 		inst.result_id = id;
 		inst.type_id = type_id;
-		inst.operands = std::move(operands);
-		inst.literals = std::move(literals);
+		inst.operands.assign(operands.begin(), operands.end());
+		inst.literals.assign(literals.begin(), literals.end());
 		module_.type_constant_pool.push_back(std::move(inst));
-		type_cache_.emplace(signature, id);
+		type_cache_.emplace(std::string(signature), id);
 		return id;
 	}
 
-	IRId intern_constant(const std::string& signature, IROp op, IRId type_id, std::vector<IRId> operands, std::vector<u32> literals) {
+	IRId intern_type(std::string_view signature, IROp op, IRId type_id, std::initializer_list<IRId> operands, std::initializer_list<u32> literals) {
+		return intern_type(signature, op, type_id, std::span<const IRId>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
+	}
+
+	IRId intern_constant(std::string_view signature, IROp op, IRId type_id, std::span<const IRId> operands, std::span<const u32> literals) {
 		// Constants share the same pool as types; deduped via the same cache.
-		return intern_type(signature, op, type_id, std::move(operands), std::move(literals));
+		return intern_type(signature, op, type_id, operands, literals);
+	}
+
+	IRId intern_constant(std::string_view signature, IROp op, IRId type_id, std::initializer_list<IRId> operands, std::initializer_list<u32> literals) {
+		return intern_constant(signature, op, type_id, std::span<const IRId>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
 	}
 
 	void add_global_variable(IRInstruction inst) {
@@ -74,13 +98,13 @@ class IRBuilder {
 	bool is_known_callable(std::string_view name) const { return callable_names_.contains(std::string(name)); }
 	void diagnose(std::string_view message) const {
 		if (diagnostics_) {
-			diagnostics_->report(3201, DiagnosticSeverity::error, {}, module_.source_name, message);
+			diagnostics_->report(DiagnosticCode::ir_expression_error, DiagnosticSeverity::error, {}, module_.source_name, message);
 		}
 	}
 
   private:
 	IRModule& module_;
-	std::unordered_map<std::string, IRId> type_cache_;
+	std::unordered_map<std::string, IRId, TransparentStringHash, std::equal_to<>> type_cache_;
 	std::unordered_set<std::string> callable_names_;
 	DiagnosticEngine* diagnostics_ = nullptr;
 };
@@ -93,11 +117,6 @@ class IRBuilder {
 
 struct TypeInfo {
 	IRId id = IRId_None;
-	// The two marker kinds — UniformBuffer / StorageBuffer — are placeholders
-	// that only appear as the declared type of a uniform binding. They carry
-	// no SPIR-V type on their own; the binding's real value type comes from
-	// a matching `layout` declaration and gets stitched in during IR
-	// lowering.
 	enum class Kind { Void,
 					  Bool,
 					  Int,
@@ -106,11 +125,6 @@ struct TypeInfo {
 					  Vector,
 					  Matrix,
 					  Struct,
-					  Sampler,
-					  SampledImage,
-					  Image,
-					  UniformBuffer,
-					  StorageBuffer,
 					  Unknown };
 	Kind kind = Kind::Unknown;
 	u32 width = 0;									   // scalar width in bits
@@ -126,11 +140,8 @@ class TypeRegistry {
 		// common vec/mat aggregates. Anything not registered here is looked up
 		// by name against user struct decls.
 		const IRId f32 = scalar("f32", TypeInfo::Kind::Float, 32, IROp::TypeFloat);
-		scalar("float", TypeInfo::Kind::Float, 32, IROp::TypeFloat);
 		const IRId i32 = scalar("i32", TypeInfo::Kind::Int, 32, IROp::TypeInt);
-		scalar("int", TypeInfo::Kind::Int, 32, IROp::TypeInt);
 		const IRId u32_ty = scalar("u32", TypeInfo::Kind::UInt, 32, IROp::TypeUInt);
-		scalar("uint", TypeInfo::Kind::UInt, 32, IROp::TypeUInt);
 		scalar("bool", TypeInfo::Kind::Bool, 1, IROp::TypeBool);
 		scalar("void", TypeInfo::Kind::Void, 0, IROp::TypeVoid);
 
@@ -149,23 +160,8 @@ class TypeRegistry {
 		matrix("mat3", info_["vec3"].id, 3);
 		matrix("mat2", info_["vec2"].id, 2);
 
-		// Opaque resource handles.
-		opaque("Sampler2D", TypeInfo::Kind::SampledImage, IROp::TypeSampledImage);
-		opaque("Image2D", TypeInfo::Kind::Image, IROp::TypeImage);
-		opaque("Sampler", TypeInfo::Kind::Sampler, IROp::TypeSampler);
-		// Buffer binding markers. These are placeholder types — a uniform
-		// binding declared with `UniformBuffer` / `StorageBuffer` gets its
-		// real value type from a matching `layout` declaration. We register
-		// them so the parser sees them as valid type identifiers; IR
-		// lowering never uses their `id` for a real OpVariable.
-		marker("UniformBuffer", TypeInfo::Kind::UniformBuffer);
-		marker("StorageBuffer", TypeInfo::Kind::StorageBuffer);
-
-		// Stage entry wrappers synthesize a leading globals parameter such as
-		// `vert_globals g` / `frag_globals g`. These are ABI carrier types, not
-		// user-declared structs, so we materialize them here as empty structs
-		// to keep the IR well-typed.
-		opaque("globals", TypeInfo::Kind::Struct, IROp::TypeStruct);
+		// Stage entry wrappers accept ABI carrier parameters for stage-specific
+		// builtin access.
 		opaque("vert_globals", TypeInfo::Kind::Struct, IROp::TypeStruct);
 		opaque("frag_globals", TypeInfo::Kind::Struct, IROp::TypeStruct);
 	}
@@ -208,11 +204,10 @@ class TypeRegistry {
 			signature += ":" + field.type;
 		}
 		const IRId id = builder_.intern_type(signature, IROp::TypeStruct, IRId_None, std::move(member_ids), {});
-		TypeInfo info;
+		auto& info = info_[decl.name];
 		info.id = id;
 		info.kind = TypeInfo::Kind::Struct;
 		info.members = std::move(members);
-		info_[decl.name] = std::move(info);
 	}
 
 	[[nodiscard]] IRId find(std::string_view name) const {
@@ -234,9 +229,18 @@ class TypeRegistry {
 		return nullptr;
 	}
 
+	[[nodiscard]] std::string_view name_by_id(IRId id) const {
+		for (const auto& [name, info] : info_) {
+			if (info.id == id) {
+				return name;
+			}
+		}
+		return "<unknown>";
+	}
+
 	// Resolve an unknown name to "unknown" (Id 0). Lowering treats this as
 	// opaque — operations are still emitted but the backend gets to refuse.
-	[[nodiscard]] IRId find_or_unknown(const std::string& name) const {
+	[[nodiscard]] IRId find_or_unknown(std::string_view name) const {
 		const IRId id = find(name);
 		return id ? id : IRId_None;
 	}
@@ -246,66 +250,47 @@ class TypeRegistry {
 		if (pointee == IRId_None) {
 			pointee = find("void");
 		}
-		const std::string sig = "ptr:" + std::to_string(pointee) + ":" + std::to_string(static_cast<u32>(sc));
-		return builder_.intern_type(sig, IROp::TypePointer, IRId_None, { pointee }, { static_cast<u32>(sc) });
+		return builder_.intern_type(std::format("ptr:{}:{}", pointee, static_cast<u32>(sc)), IROp::TypePointer, IRId_None, { pointee }, { static_cast<u32>(sc) });
 	}
 
   private:
-	IRId scalar(const char* name, TypeInfo::Kind kind, u32 width, IROp op) {
-		const std::string sig = std::string("scalar:") + name;
-		std::vector<u32> literals;
+	IRId scalar(std::string_view name, TypeInfo::Kind kind, u32 width, IROp op) {
+		std::span<const u32> literals;
+		u32 width_literal = width;
 		if (op != IROp::TypeBool && op != IROp::TypeVoid) {
-			literals.push_back(width);
+			literals = std::span<const u32>(&width_literal, 1);
 		}
-		const IRId id = builder_.intern_type(sig, op, IRId_None, {}, std::move(literals));
-		TypeInfo info;
+		const IRId id = builder_.intern_type(std::format("scalar:{}", name), op, IRId_None, {}, literals);
+		auto& info = info_[std::string(name)];
 		info.id = id;
 		info.kind = kind;
 		info.width = width;
-		info_[name] = std::move(info);
 		return id;
 	}
 
-	void vector(const char* name, IRId elem, u32 n) {
-		const std::string sig = std::string("vec:") + std::to_string(elem) + ":" + std::to_string(n);
-		const IRId id = builder_.intern_type(sig, IROp::TypeVector, IRId_None, { elem }, { n });
-		TypeInfo info;
+	void vector(std::string_view name, IRId elem, u32 n) {
+		const IRId id = builder_.intern_type(std::format("vec:{}:{}", elem, n), IROp::TypeVector, IRId_None, { elem }, { n });
+		auto& info = info_[std::string(name)];
 		info.id = id;
 		info.kind = TypeInfo::Kind::Vector;
 		info.components = n;
 		info.element_type_id = elem;
-		info_[name] = std::move(info);
 	}
 
-	void matrix(const char* name, IRId col_vec, u32 n) {
-		const std::string sig = std::string("mat:") + std::to_string(col_vec) + ":" + std::to_string(n);
-		const IRId id = builder_.intern_type(sig, IROp::TypeMatrix, IRId_None, { col_vec }, { n });
-		TypeInfo info;
+	void matrix(std::string_view name, IRId col_vec, u32 n) {
+		const IRId id = builder_.intern_type(std::format("mat:{}:{}", col_vec, n), IROp::TypeMatrix, IRId_None, { col_vec }, { n });
+		auto& info = info_[std::string(name)];
 		info.id = id;
 		info.kind = TypeInfo::Kind::Matrix;
 		info.components = n;
 		info.element_type_id = col_vec;
-		info_[name] = std::move(info);
 	}
 
-	void opaque(const char* name, TypeInfo::Kind kind, IROp op) {
-		const std::string sig = std::string("opaque:") + name;
-		const IRId id = builder_.intern_type(sig, op, IRId_None, {}, {});
-		TypeInfo info;
+	void opaque(std::string_view name, TypeInfo::Kind kind, IROp op) {
+		const IRId id = builder_.intern_type(std::format("opaque:{}", name), op, IRId_None, {}, {});
+		auto& info = info_[std::string(name)];
 		info.id = id;
 		info.kind = kind;
-		info_[name] = std::move(info);
-	}
-
-	// Register a name that has no real SPIR-V type on its own — a placeholder
-	// that only participates in lookup. Used for `UniformBuffer` /
-	// `StorageBuffer`: their `id` is 0 and never lands on an OpVariable; the
-	// binding's real type comes from a `layout` declaration.
-	void marker(const char* name, TypeInfo::Kind kind) {
-		TypeInfo info;
-		info.id = IRId_None;
-		info.kind = kind;
-		info_[name] = std::move(info);
 	}
 
 	IRBuilder& builder_;
@@ -466,18 +451,18 @@ struct Value {
 
 class FunctionLowerer {
   public:
-	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn, const std::vector<UniformBinding>& uniforms, const std::unordered_map<std::string, IRId>& uniform_var_ids, const std::unordered_map<std::string, IRId>& uniform_var_type_ids, const std::vector<StageInterface>& stage_interfaces, StageKind stage)
+	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn, const std::vector<UniformBinding>& uniforms, const std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>>& using_uniforms, const std::unordered_map<std::string, IRId>& uniform_var_ids, const std::unordered_map<std::string, IRId>& uniform_var_type_ids, const std::vector<StageInterface>& stage_interfaces, StageKind stage)
 		: builder_(builder), types_(types), fn_(fn), uniforms_(uniforms),
-		  uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids),
+		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids),
 		  stage_interfaces_(stage_interfaces), stage_(stage) {}
 
-	void bind_parameter(const std::string& name, const std::string& type, IRId param_id) {
+	void bind_parameter(std::string_view name, std::string_view type, IRId param_id) {
 		Local local;
 		local.id = param_id;
 		local.type_id = types_.find(type);
-		local.type_name = type;
+		local.type_name = std::string(type);
 		local.is_pointer = false;
-		locals_[name] = local;
+		locals_[std::string(name)] = std::move(local);
 	}
 
 	// Enter "constructor" lowering mode. While active, unqualified field
@@ -485,24 +470,27 @@ class FunctionLowerer {
 	// per-field slot map instead of being dropped, and emit_constructor_return
 	// synthesizes the trailing CompositeConstruct + ReturnValue for the
 	// assembled `this`.
-	void begin_constructor(const std::string& owner) {
-		ctor_owner_name_ = owner;
+	void begin_constructor(std::string_view owner) {
+		ctor_owner_name_ = std::string(owner);
 		ctor_owner_type_id_ = types_.find(owner);
 		ctor_field_values_.clear();
 		const TypeInfo* info = ctor_owner_type_id_ ? types_.info_by_id(ctor_owner_type_id_) : nullptr;
-		if (info)
+		if (info) {
 			ctor_field_values_.assign(info->members.size(), IRId_None);
+		}
 	}
 	[[nodiscard]] bool in_constructor() const { return ctor_owner_type_id_ != IRId_None; }
 
 	// Try to record `field = value` against the constructor's implicit `this`.
 	// Returns true if the field was recognized and stored.
-	bool record_constructor_field(const std::string& field, IRId value) {
-		if (!in_constructor())
+	bool record_constructor_field(std::string_view field, IRId value) {
+		if (!in_constructor()) {
 			return false;
+		}
 		const TypeInfo* info = types_.info_by_id(ctor_owner_type_id_);
-		if (!info)
+		if (!info) {
 			return false;
+		}
 		for (u32 i = 0; i < info->members.size(); ++i) {
 			if (info->members[i].first == field) {
 				if (i < ctor_field_values_.size()) {
@@ -584,7 +572,7 @@ class FunctionLowerer {
 
 	// Compute final-pass id for the function's parameter list now that
 	// parameters have been added.
-	void emit_function_parameters(const std::vector<ParameterDecl>& params) {
+	void emit_function_parameters(std::span<const ParameterDecl> params) {
 		for (const auto& p : params) {
 			IRInstruction inst;
 			inst.op = IROp::FunctionParameter;
@@ -611,16 +599,30 @@ class FunctionLowerer {
 	};
 
 	static std::string trim(std::string_view text) {
-		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
-			text.remove_prefix(1);
-		while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
-			text.remove_suffix(1);
-		return std::string(text);
+		const auto is_space = [](char c) {
+			return std::isspace(static_cast<unsigned char>(c)) != 0;
+		};
+		const auto first = std::ranges::find_if_not(text, is_space);
+		const auto last = std::find_if_not(text.rbegin(), text.rend(), is_space).base();
+		if (first >= last) {
+			return {};
+		}
+		return { first, last };
+	}
+
+	static bool is_effectful_expression_statement(const Decl::Expr& expr) {
+		return expr.kind == Decl::Expr::Kind::call ||
+			   (expr.kind == Decl::Expr::Kind::binary && expr.op == "=");
 	}
 
 	void lower_expression(const Decl::Expr& expr) {
-		const Value v = lower_expr(expr);
-		(void)v;
+		if (!is_effectful_expression_statement(expr)) {
+			builder_.diagnose("expression statement has no effect");
+			return;
+		}
+		if (lower_expr(expr).id == IRId_None) {
+			return;
+		}
 	}
 
 	void emit_branch(IRId target) {
@@ -778,7 +780,7 @@ class FunctionLowerer {
 		fn_.body.push_back(std::move(merge_inst));
 	}
 
-	void lower_decl(const std::string& type_name, const std::string& local_name, const Decl::Expr& init) {
+	void lower_decl(std::string_view type_name, std::string_view local_name, const Decl::Expr& init) {
 		// Inside a constructor body, `position = vec4(...)` parses as a
 		// declaration where the parser fills both the "type" and "name" with
 		// "position". Without intervention we'd allocate a junk Variable with
@@ -788,11 +790,13 @@ class FunctionLowerer {
 		if (in_constructor() && init.kind != Decl::Expr::Kind::unknown) {
 			const TypeInfo* info = types_.info_by_id(ctor_owner_type_id_);
 			const bool name_matches_owner_field = [&]() {
-				if (!info)
+				if (!info) {
 					return false;
+				}
 				for (const auto& member : info->members) {
-					if (member.first == local_name)
+					if (member.first == local_name) {
 						return true;
+					}
 				}
 				return false;
 			}();
@@ -801,8 +805,9 @@ class FunctionLowerer {
 				(type_name.empty() || type_name == local_name || !types_.find(type_name));
 			if (looks_like_field_write) {
 				const Value v = lower_expr(init);
-				if (record_constructor_field(local_name, v.id))
+				if (record_constructor_field(local_name, v.id)) {
 					return;
+				}
 			}
 		}
 
@@ -818,9 +823,9 @@ class FunctionLowerer {
 		Local local;
 		local.id = fn_.body.back().result_id;
 		local.type_id = type_id;
-		local.type_name = type_name;
+		local.type_name = std::string(type_name);
 		local.is_pointer = true;
-		locals_[local_name] = local;
+		locals_[std::string(local_name)] = std::move(local);
 
 		if (init.kind != Decl::Expr::Kind::unknown) {
 			const Value v = lower_expr(init);
@@ -831,7 +836,7 @@ class FunctionLowerer {
 		}
 	}
 
-	void lower_assign(const std::string& lhs, const Decl::Expr& rhs) {
+	void lower_assign(std::string_view lhs, const Decl::Expr& rhs) {
 		const std::string lhs_t = trim(lhs);
 
 		// Stage-I/O write target (synthesized by the wrapper):
@@ -879,8 +884,9 @@ class FunctionLowerer {
 			if (t.kind == TokKind::dot) {
 				lex.next();
 				const Tok field = lex.next();
-				if (field.kind != TokKind::ident)
+				if (field.kind != TokKind::ident) {
 					break;
+				}
 				path.push_back(field.text);
 			} else {
 				break;
@@ -895,13 +901,21 @@ class FunctionLowerer {
 			// field-value map. The trailing CompositeConstruct + ReturnValue
 			// synthesized by emit_constructor_return assembles them into the
 			// returned `this`.
-			if (path.empty() && record_constructor_field(head.text, v.id))
+			if (path.empty() && in_constructor()) {
+				if (record_constructor_field(head.text, v.id)) {
+					return;
+				}
+				builder_.diagnose(std::format("no member named '{}' in type '{}'",
+											  head.text, ctor_owner_name_));
 				return;
+			}
 			// Fallback: treat as a write to an implicit "this" pointer if a
 			// pointer-shaped `this` local was synthesized elsewhere.
 			const auto this_it = locals_.find("this");
-			if (this_it == locals_.end())
+			if (this_it == locals_.end()) {
+				builder_.diagnose(std::format("assignment to unknown name '{}'", head.text));
 				return;
+			}
 			std::vector<std::string> full_path = { head.text };
 			full_path.insert(full_path.end(), path.begin(), path.end());
 			store_member(this_it->second, full_path, v);
@@ -1010,6 +1024,8 @@ class FunctionLowerer {
 			return;
 		}
 		const Value v = lower_expr(expr);
+		if (v.id == IRId_None)
+			return;
 		IRInstruction r;
 		r.op = IROp::ReturnValue;
 		r.operands = { v.id };
@@ -1042,6 +1058,8 @@ class FunctionLowerer {
 			if (expr.children.size() == 2) {
 				const Value lhs = lower_expr(expr.children[0]);
 				const Value rhs = lower_expr(expr.children[1]);
+				if (lhs.id == IRId_None || rhs.id == IRId_None)
+					return {};
 				if (expr.op == "+")
 					return emit_binop(IROp::FAdd, lhs, rhs);
 				if (expr.op == "-")
@@ -1059,12 +1077,19 @@ class FunctionLowerer {
 				std::vector<Value> args;
 				for (std::size_t i = 1; i < expr.children.size(); ++i) {
 					args.push_back(lower_expr(expr.children[i]));
+					if (args.back().id == IRId_None)
+						return {};
 				}
 				return emit_call(expr.children.front().text, args);
 			}
 			return {};
 		case Decl::Expr::Kind::member:
 			if (!expr.children.empty()) {
+				if (expr.op == "::") {
+					if (const auto qualified = qualified_name_from_expr(expr); !qualified.empty()) {
+						return emit_name(qualified);
+					}
+				}
 				return emit_member_access(lower_expr(expr.children.front()), expr.text);
 			}
 			return {};
@@ -1074,9 +1099,40 @@ class FunctionLowerer {
 		return {};
 	}
 
-	[[nodiscard]] static std::optional<u32> vector_component(const std::string& name) {
-		if (name.size() != 1)
+	static std::string qualified_name_from_expr(const Decl::Expr& expr) {
+		std::vector<std::string_view> parts;
+		if (!collect_qualified_name_parts(expr, parts)) {
+			return {};
+		}
+		std::string name;
+		for (std::size_t i = 0; i < parts.size(); ++i) {
+			if (i != 0) {
+				name += "::";
+			}
+			name += parts[i];
+		}
+		return name;
+	}
+
+	static bool collect_qualified_name_parts(const Decl::Expr& expr, std::vector<std::string_view>& parts) {
+		if (expr.kind == Decl::Expr::Kind::name) {
+			parts.push_back(expr.text);
+			return true;
+		}
+		if (expr.kind != Decl::Expr::Kind::member || expr.op != "::" || expr.children.size() != 1) {
+			return false;
+		}
+		if (!collect_qualified_name_parts(expr.children.front(), parts)) {
+			return false;
+		}
+		parts.push_back(expr.text);
+		return true;
+	}
+
+	[[nodiscard]] static std::optional<u32> vector_component(std::string_view name) {
+		if (name.size() != 1) {
 			return std::nullopt;
+		}
 		switch (name[0]) {
 		case 'x':
 		case 'r':
@@ -1145,7 +1201,7 @@ class FunctionLowerer {
 
 	// Name lookup that handles locals, parameters, struct field names (when
 	// shadowed by the implicit `this`), and global uniform variables.
-	Value emit_name(const std::string& name) {
+	Value emit_name(std::string_view name) {
 		// Local / parameter.
 		if (const auto it = locals_.find(name); it != locals_.end()) {
 			if (it->second.is_pointer) {
@@ -1179,10 +1235,19 @@ class FunctionLowerer {
 		// matching against the uniform table; the mangled form is also accepted
 		// so that downstream code paths that go through lower_uniform_references
 		// continue to work.
-		std::string lookup_name = name;
+		std::string lookup_name(name);
+		if (uniform_var_ids_.find(lookup_name) == uniform_var_ids_.end()) {
+			if (const auto imported = using_uniforms_.find(name); imported != using_uniforms_.end()) {
+				lookup_name = imported->second;
+			}
+		}
 		if (uniform_var_ids_.find(lookup_name) == uniform_var_ids_.end()) {
 			for (const auto& u : uniforms_) {
 				if (u.name == name && (u.is_anonymous || u.scope_name.empty())) {
+					lookup_name = uniform_binding_name(u);
+					break;
+				}
+				if (!u.scope_name.empty() && std::format("{}::{}", u.scope_name, u.name) == name) {
 					lookup_name = uniform_binding_name(u);
 					break;
 				}
@@ -1211,7 +1276,7 @@ class FunctionLowerer {
 			fn_.body.push_back(std::move(load));
 			return Value{ load.result_id, pointee_ty };
 		}
-		// Unknown name — leave a placeholder. The verify pass surfaces this.
+		builder_.diagnose(std::format("unknown name '{}'", name));
 		return Value{ IRId_None, IRId_None };
 	}
 
@@ -1234,14 +1299,16 @@ class FunctionLowerer {
 		return Value{ load.result_id, member_type };
 	}
 
-	Value emit_member_access(const Value& base, const std::string& name) {
+	Value emit_member_access(const Value& base, std::string_view name) {
 		const TypeInfo* info = types_.info_by_id(base.type_id);
-		if (!info)
+		if (!info) {
 			return base;
+		}
 		if (info->kind == TypeInfo::Kind::Vector) {
 			const auto idx = vector_component(name);
-			if (!idx)
+			if (!idx) {
 				return base;
+			}
 			IRInstruction extract;
 			extract.op = IROp::CompositeExtract;
 			extract.result_id = builder_.fresh_id();
@@ -1264,19 +1331,34 @@ class FunctionLowerer {
 					return Value{ extract.result_id, info->members[i].second };
 				}
 			}
+			builder_.diagnose(std::format("no member named '{}' in type '{}'",
+										  name, types_.name_by_id(base.type_id)));
 		}
 		return base;
 	}
 
-	Value emit_call(const std::string& callee, const std::vector<Value>& args) {
+	Value emit_call(std::string_view callee, const std::vector<Value>& args) {
 		// Constructor of a known type.
 		if (const IRId type_id = types_.find(callee); type_id) {
-			// If the user wrote a custom constructor (`Type::Type(...)`) with
-			// a matching arity, inline its body here. Without this, backends
-			// see CompositeConstruct Type with operands shaped like the call
-			// arguments rather than Type's fields, which is a type error.
+			// Type construction is structural: first try a declared member-init
+			// function, then fall back to aggregate construction only when the
+			// argument list exactly matches the type's fields.
 			if (const Value inlined = try_inline_constructor(type_id, args); inlined.id != IRId_None) {
 				return inlined;
+			}
+			if (const TypeInfo* info = types_.info_by_id(type_id); info && info->kind == TypeInfo::Kind::Struct) {
+				if (info->members.size() != args.size()) {
+					builder_.diagnose(std::format("cannot construct '{}' from {} argument(s)",
+												  callee, args.size()));
+					return Value{};
+				}
+				for (std::size_t i = 0; i < args.size(); ++i) {
+					if (info->members[i].second != args[i].type_id) {
+						builder_.diagnose(std::format("argument {} does not match field '{}' while constructing '{}'",
+													  i, info->members[i].first, callee));
+						return Value{};
+					}
+				}
 			}
 			IRInstruction construct;
 			construct.op = IROp::CompositeConstruct;
@@ -1327,14 +1409,15 @@ class FunctionLowerer {
 		// inliner runs); operand[1..N] are the argument values.
 		call.operands.reserve(args.size() + 1);
 		call.operands.push_back(IRId_None);
-		for (const auto& a : args)
+		for (const auto& a : args) {
 			call.operands.push_back(a.id);
+		}
 		// literal[0] indexes into IRModule::call_target_names where the
 		// source-level callee identifier lives. Cleared by the inliner once
 		// every call in the module is resolved.
 		auto& targets = builder_.module().call_target_names;
 		const u32 name_index = static_cast<u32>(targets.size());
-		targets.push_back(callee);
+		targets.emplace_back(callee);
 		call.literals = { name_index };
 		fn_.body.push_back(std::move(call));
 		return Value{ call.result_id, IRId_None };
@@ -1362,9 +1445,23 @@ class FunctionLowerer {
 		for (const auto& candidate : functions) {
 			if (candidate.stage != StageKind::none)
 				continue;
+			if (!candidate.is_constructor)
+				continue;
 			if (candidate.return_type_id != type_id)
 				continue;
 			if (candidate.parameter_ids.size() != args.size())
+				continue;
+			bool params_match = true;
+			for (std::size_t i = 0; i < args.size(); ++i) {
+				const IRId param_id = candidate.parameter_ids[i];
+				auto param_it = std::find_if(candidate.body.begin(), candidate.body.end(),
+					[&](const IRInstruction& inst) { return inst.result_id == param_id; });
+				if (param_it == candidate.body.end() || param_it->type_id != args[i].type_id) {
+					params_match = false;
+					break;
+				}
+			}
+			if (!params_match)
 				continue;
 			ctor = &candidate;
 			break;
@@ -1468,11 +1565,12 @@ class FunctionLowerer {
 	TypeRegistry& types_;
 	IRFunction& fn_;
 	const std::vector<UniformBinding>& uniforms_;
+	const std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>>& using_uniforms_;
 	const std::unordered_map<std::string, IRId>& uniform_var_ids_;
 	const std::unordered_map<std::string, IRId>& uniform_var_type_ids_;
 	const std::vector<StageInterface>& stage_interfaces_;
 	StageKind stage_;
-	std::unordered_map<std::string, Local> locals_;
+	std::unordered_map<std::string, Local, TransparentStringHash, std::equal_to<>> locals_;
 
 	// Constructor lowering state. Active when the current function is a
 	// member-init body for `Type::Type(...)`. See begin_constructor.
@@ -1492,9 +1590,9 @@ std::string globals_type_name(StageKind stage) {
 	case StageKind::fragment:
 		return "frag_globals";
 	case StageKind::none:
-		return "globals";
+		return {};
 	}
-	return "globals";
+	return {};
 }
 
 bool is_stage_globals_type(StageKind stage, std::string_view type) {
@@ -1688,8 +1786,7 @@ struct TypeShape {
 
 [[nodiscard]] TypeShape classify_type_shape(std::string_view type) {
 	// Scalars — 4-byte components across the board today.
-	if (type == "f32" || type == "float" || type == "i32" || type == "int" ||
-		type == "u32" || type == "uint" || type == "bool") {
+	if (type == "f32" || type == "i32" || type == "u32" || type == "bool") {
 		return { TypeShape::Kind::Scalar, 4, 1, 0 };
 	}
 	// Vectors.
@@ -1822,7 +1919,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	}
 	const auto report_unknown_type = [&](std::string_view where, std::string_view type) {
 		if (diagnostics && !type.empty()) {
-			diagnostics->report(3202, DiagnosticSeverity::error, {}, module.source_name,
+			diagnostics->report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name,
 				std::format("unknown type '{}' in {}", type, where));
 		}
 	};
@@ -1845,15 +1942,24 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 	for (const auto& uniform : module.uniforms) {
-		if (uniform.type == "UniformBuffer" || uniform.type == "StorageBuffer" ||
-			uniform.type == "Sampler" || uniform.type == "Sampler2D" || uniform.type == "Image2D") {
+		if (resource_binding_kind(uniform.type) != ResourceBindingKind::none) {
 			continue;
 		}
 		check_type(std::format("uniform '{}'", uniform.name), uniform.type);
 	}
 
-	const auto is_uniform_buffer_type = [](std::string_view s) { return s == "UniformBuffer"; };
-	const auto is_storage_buffer_type = [](std::string_view s) { return s == "StorageBuffer"; };
+	const auto resource_backend_type = [&](ResourceBindingKind kind) -> IRId {
+		switch (kind) {
+		case ResourceBindingKind::sampler:
+			return builder.intern_type("resource:Sampler", IROp::TypeSampler, IRId_None, {}, {});
+		case ResourceBindingKind::sampled_image:
+			return builder.intern_type("resource:Sampler2D", IROp::TypeSampledImage, IRId_None, {}, {});
+		case ResourceBindingKind::image:
+			return builder.intern_type("resource:Image2D", IROp::TypeImage, IRId_None, {}, {});
+		default:
+			return IRId_None;
+		}
+	};
 
 	// Resolve `layout` declarations against uniform bindings by qualified
 	// name. Every uniform sits at exactly one path in the (currently flat)
@@ -1915,15 +2021,15 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		const auto it = uniform_by_qualified.find(qn);
 		if (it == uniform_by_qualified.end()) {
 			if (diagnostics) {
-				diagnostics->report(3104, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+				diagnostics->report(DiagnosticCode::layout_unknown_uniform, DiagnosticSeverity::error, layout.span.begin, module.source_name,
 									std::format("layout refers to unknown uniform '{}'", qn));
 			}
 			continue;
 		}
 		const auto& target = ir.uniforms[it->second];
-		if (!is_uniform_buffer_type(target.type) && !is_storage_buffer_type(target.type)) {
+		if (!is_buffer_binding(resource_binding_kind(target.type))) {
 			if (diagnostics) {
-				diagnostics->report(3105, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+				diagnostics->report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
 									std::format("uniform '{}' has type {} and does not accept a layout", qn, target.type));
 			}
 			continue;
@@ -1932,7 +2038,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		if (!inserted) {
 			const auto& existing = module.layouts[existing_it->second];
 			if (!layouts_match(existing, layout) && diagnostics) {
-				diagnostics->report(3101, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+				diagnostics->report(DiagnosticCode::layout_duplicate, DiagnosticSeverity::error, layout.span.begin, module.source_name,
 									std::format("conflicting layout for '{}'", qn));
 			}
 		}
@@ -1946,10 +2052,11 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	for (std::size_t uidx = 0; uidx < ir.uniforms.size(); ++uidx) {
 		auto& uniform = ir.uniforms[uidx];
 		const std::string mangled = uniform_binding_name(uniform);
-		const bool is_ubo = is_uniform_buffer_type(uniform.type);
-		const bool is_ssbo = is_storage_buffer_type(uniform.type);
-		const bool needs_layout = is_ubo || is_ssbo;
-		const bool is_resource = is_resource_uniform_type(uniform.type);
+		const ResourceBindingKind binding_kind = resource_binding_kind(uniform.type);
+		const bool is_ubo = binding_kind == ResourceBindingKind::uniform_buffer;
+		const bool is_ssbo = binding_kind == ResourceBindingKind::storage_buffer;
+		const bool needs_layout = is_buffer_binding(binding_kind);
+		const bool is_resource = is_opaque_resource_binding(binding_kind);
 		StorageClass sc = StorageClass::Uniform;
 		if (is_resource)
 			sc = StorageClass::UniformConstant;
@@ -1967,7 +2074,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			const auto layout_it = first_layout_for_uniform.find(uidx);
 			if (layout_it == first_layout_for_uniform.end()) {
 				if (diagnostics) {
-					diagnostics->report(3102, DiagnosticSeverity::error, {}, module.source_name,
+					diagnostics->report(DiagnosticCode::layout_missing_resource_type, DiagnosticSeverity::error, {}, module.source_name,
 										std::format("{} '{}' has no layout", is_ubo ? "UniformBuffer" : "StorageBuffer", qn));
 				}
 				value_ty = types.find("void");
@@ -1981,7 +2088,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 				} else {
 					value_ty = types.find(layout.type_spelling);
 					if (value_ty == IRId_None && diagnostics) {
-						diagnostics->report(3103, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+						diagnostics->report(DiagnosticCode::layout_unknown_type, DiagnosticSeverity::error, layout.span.begin, module.source_name,
 											std::format("unknown type '{}' in layout for '{}'", layout.type_spelling, qn));
 						value_ty = types.find("void");
 					}
@@ -1994,7 +2101,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 				}
 			}
 		} else {
-			value_ty = types.find(uniform.type);
+			value_ty = is_resource ? resource_backend_type(binding_kind) : types.find(uniform.type);
 		}
 		const IRId ptr_ty = types.pointer_to(value_ty, sc);
 		// Record the value type id on the reflection record so the C API can
@@ -2043,6 +2150,33 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 						.kind = IRDecorationKind::ColMajor,
 						.member_index = member_index,
 					});
+				}
+			}
+		}
+	}
+
+	std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> using_uniforms;
+	const auto qualified_from_using_path = [](const std::vector<std::string>& path) {
+		std::string qn;
+		for (std::size_t i = 0; i < path.size(); ++i) {
+			if (i) qn += "::";
+			qn += path[i];
+		}
+		return qn;
+	};
+	for (const auto& use : module.using_imports) {
+		if (use.kind == UsingImport::Kind::symbol) {
+			const auto qn = qualified_from_using_path(use.path);
+			if (const auto it = uniform_by_qualified.find(qn); it != uniform_by_qualified.end()) {
+				using_uniforms[use.imported_name] = uniform_binding_name(ir.uniforms[it->second]);
+			}
+			continue;
+		}
+		if (use.kind == UsingImport::Kind::uniform_scope) {
+			const auto scope = qualified_from_using_path(use.path);
+			for (const auto& uniform : ir.uniforms) {
+				if (!uniform.is_anonymous && uniform.scope_name == scope) {
+					using_uniforms[uniform.name] = uniform_binding_name(uniform);
 				}
 			}
 		}
@@ -2113,9 +2247,10 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		ir.functions.push_back(std::move(fn));
 		const std::size_t fn_index = ir.functions.size() - 1;
 
-		FunctionLowerer lowerer(builder, types, ir.functions.back(), ir.uniforms, uniform_var_ids, uniform_var_type_ids, ir.stage_interfaces, stage);
-		if (is_constructor)
+		FunctionLowerer lowerer(builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, ir.stage_interfaces, stage);
+		if (is_constructor) {
 			lowerer.begin_constructor(ctor_owner);
+		}
 		lowerer.begin_entry_block();
 		lowerer.emit_function_parameters(parameters);
 		for (const auto& statement : symbol.body_statements) {
@@ -2135,8 +2270,9 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 								   (body.back().op != IROp::Return &&
 									body.back().op != IROp::ReturnValue &&
 									body.back().op != IROp::Branch);
-			if (needs_ret)
+			if (needs_ret) {
 				lowerer.emit_implicit_void_return();
+			}
 		}
 
 		if (is_stage_entry) {
@@ -2144,8 +2280,9 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			std::string input_type;
 			for (const auto& p : symbol.parameters) {
 				if (is_stage_builtin_carrier(p.type)) {
-					if (carrier_type.empty())
+					if (carrier_type.empty()) {
 						carrier_type = p.type;
+					}
 				} else if (is_stage_globals_type(stage, p.type)) {
 					continue;
 				} else if (input_type.empty()) {
@@ -2167,13 +2304,16 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	// declare them. A varying must be declared explicitly because its
 	// interpolation qualifiers are not derivable.
 	const auto synth_from_struct = [&](std::string_view type, StageRole role) {
-		if (type.empty() || type == "void")
+		if (type.empty() || type == "void") {
 			return;
-		if (find_interface(ir.stage_interfaces, type))
+		}
+		if (find_interface(ir.stage_interfaces, type)) {
 			return;
+		}
 		for (const auto& decl : ir.structs) {
-			if (decl.name != type)
+			if (decl.name != type) {
 				continue;
+			}
 			StageInterface derived;
 			derived.role = role;
 			derived.type_name = type;
@@ -2189,12 +2329,16 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	};
 	const auto require_varying = [&](std::string_view type, std::string_view context) {
-		if (type.empty() || type == "void") return;
+		if (type.empty() || type == "void") {
+			return;
+		}
 		for (const auto& interface : ir.stage_interfaces) {
-			if (interface.type_name == type && interface.role == StageRole::varying) return;
+			if (interface.type_name == type && interface.role == StageRole::varying) {
+				return;
+			}
 		}
 		if (diagnostics) {
-			diagnostics->report(3100, DiagnosticSeverity::error, {}, module.source_name,
+			diagnostics->report(DiagnosticCode::ir_lowering_failed, DiagnosticSeverity::error, {}, module.source_name,
 								std::format("stage payload '{}' is {} and requires a 'varying' declaration to define interpolation", type, context));
 		}
 	};
@@ -2203,10 +2347,12 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	// interface with one field so the wrapper has something to write to. If
 	// the user returns a struct, they must annotate its fields — no magic.
 	const auto synth_bare_color_output = [&](std::string_view type) {
-		if (type != "vec4")
+		if (type != "vec4") {
 			return;
-		if (find_interface(ir.stage_interfaces, type))
+		}
+		if (find_interface(ir.stage_interfaces, type)) {
 			return;
+		}
 		StageInterface derived;
 		derived.role = StageRole::output;
 		derived.type_name = std::string(type);

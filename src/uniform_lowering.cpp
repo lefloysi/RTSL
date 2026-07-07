@@ -7,6 +7,19 @@
 
 namespace rtsl {
 
+struct ResourceBindingSpec {
+	std::string_view spelling;
+	ResourceBindingKind kind;
+};
+
+static constexpr ResourceBindingSpec ResourceBindings[] = {
+	{ "UniformBuffer", ResourceBindingKind::uniform_buffer },
+	{ "StorageBuffer", ResourceBindingKind::storage_buffer },
+	{ "Sampler", ResourceBindingKind::sampler },
+	{ "Sampler2D", ResourceBindingKind::sampled_image },
+	{ "Image2D", ResourceBindingKind::image },
+};
+
 static bool is_identifier_char(char c) {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
@@ -67,7 +80,26 @@ static std::string replace_symbol(std::string text, std::string_view from, std::
 }
 
 bool is_resource_uniform_type(std::string_view type) {
-	return type == "Sampler2D";
+	return is_opaque_resource_binding(resource_binding_kind(type));
+}
+
+ResourceBindingKind resource_binding_kind(std::string_view spelling) {
+	for (const auto& binding : ResourceBindings) {
+		if (binding.spelling == spelling) {
+			return binding.kind;
+		}
+	}
+	return ResourceBindingKind::none;
+}
+
+bool is_buffer_binding(ResourceBindingKind kind) {
+	return kind == ResourceBindingKind::uniform_buffer || kind == ResourceBindingKind::storage_buffer;
+}
+
+bool is_opaque_resource_binding(ResourceBindingKind kind) {
+	return kind == ResourceBindingKind::sampler ||
+		   kind == ResourceBindingKind::sampled_image ||
+		   kind == ResourceBindingKind::image;
 }
 
 std::string uniform_binding_name(const UniformBinding& uniform) {

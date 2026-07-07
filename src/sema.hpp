@@ -32,6 +32,7 @@ struct SemanticModule {
 	std::vector<UniformBinding> uniforms;
 	std::vector<LayoutDecl> layouts;
 	std::vector<StageInterface> stage_interfaces;
+	std::vector<UsingImport> using_imports;
 };
 
 class Sema {

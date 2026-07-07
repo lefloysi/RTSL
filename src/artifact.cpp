@@ -395,7 +395,7 @@ std::vector<u08> write_container(ArtifactKind kind, std::vector<Section> section
 
 void report_read_error(DiagnosticEngine* diagnostics, std::string message) {
 	if (diagnostics)
-		diagnostics->report(5001, DiagnosticSeverity::error, {}, "<artifact>", std::move(message));
+		diagnostics->report(DiagnosticCode::artifact_error, DiagnosticSeverity::error, {}, "<artifact>", message);
 }
 
 std::vector<Artifact::EntryPoint> default_entries_from_module(const IRModule& module) {
