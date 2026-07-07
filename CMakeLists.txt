@@ -16,21 +16,21 @@ endif()
 set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(RTSL_SOURCES
-    ${_rtsl_src}/basic_diagnostics.cpp
-    ${_rtsl_src}/basic_source_manager.cpp
-    ${_rtsl_src}/lexer.cpp
-    ${_rtsl_src}/parser.cpp
-    ${_rtsl_src}/sema.cpp
-    ${_rtsl_src}/stage_builtins.cpp
-    ${_rtsl_src}/ir.cpp
-    ${_rtsl_src}/mangler.cpp
-    ${_rtsl_src}/uniform_lowering.cpp
-    ${_rtsl_src}/artifact.cpp
-    ${_rtsl_src}/text_rtir.cpp
-    ${_rtsl_src}/compiler.cpp
-    ${_rtsl_src}/language_service.cpp
-    ${_rtsl_src}/linker.cpp
-    ${_rtsl_src}/rtsl.cpp
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 )
 
 add_library(rtsl STATIC ${RTSL_SOURCES})
@@ -53,7 +53,7 @@ target_include_directories(rtsl
 # nothing about Rutile, and each backend compiles package.cpp itself when it
 # needs the reader.
 
-add_executable(rtslc ${_rtsl_src}/rtslc.cpp)
+add_executable(rtslc )
 find_package(CLI11 CONFIG QUIET)
 if(CLI11_FOUND)
     target_link_libraries(rtslc PRIVATE rtsl CLI11::CLI11)
