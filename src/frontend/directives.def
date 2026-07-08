@@ -1,0 +1,18 @@
+// directives.def — the preprocessor directives RTSL understands.
+//
+//   RTSL_PP_DIRECTIVE(name, spelling)
+//
+// `name` is the DirectiveKind enumerator; `spelling` is the identifier that
+// follows `#` in source.
+
+#ifndef RTSL_PP_DIRECTIVE
+#define RTSL_PP_DIRECTIVE(name, spelling)
+#endif
+
+RTSL_PP_DIRECTIVE(Define, "define")
+RTSL_PP_DIRECTIVE(Ifdef, "ifdef")
+RTSL_PP_DIRECTIVE(Ifndef, "ifndef")
+RTSL_PP_DIRECTIVE(Else, "else")
+RTSL_PP_DIRECTIVE(Endif, "endif")
+
+#undef RTSL_PP_DIRECTIVE

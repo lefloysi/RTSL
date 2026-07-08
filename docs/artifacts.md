@@ -1,155 +1,225 @@
 # RTSL Artifact Formats
 
-RTSL artifacts are binary files using one sectioned container family. Textual
-RTIR exists for disassembly, assembly, tests, and inspection, but the canonical
-toolchain interchange format is binary.
+RTSL artifacts are binary files using one sectioned container format. Textual
+RTIR exists for disassembly and inspection, but the canonical toolchain
+interchange format is binary.
 
-For v0.1, the artifact family is graphics-only: the compiler and linker support
-the object, module/interface, library, and program forms needed by the current
-vertex/fragment pipeline.
+This document is the byte-level specification of what
+`src/artifact/artifact.cpp` actually reads and writes today (container version
+0.4). If the code and this document disagree, one of them is a bug.
 
 ## Artifact Kinds
 
-`rtslo` is a compiled object file for one source file. It contains implementation
-bodies, local symbols, imports, exports, unresolved references, and debug data.
+| kind | extension | u16 value | contents |
+|------|-----------|-----------|----------|
+| object  | `.rtslo` | 1 | one compiled source file: bodies, imports, exports, unresolved calls |
+| module  | `.rtslm` | 2 | public interface of an object/library: exported signatures, no private bodies |
+| library | `.rtsll` | 3 | merged objects; internal references resolved, no entry points required |
+| program | `.rtslp` | 4 | final linked module consumed by Rutile backends |
 
-`rtsll` is a linked library file. It contains linked implementation bodies and
-resolved internal references, but does not require executable entry points.
+A `.rtsld` sidecar (debug artifact) uses the same container; it currently
+carries no sections.
 
-`rtslm` is a module/interface file. It contains exported interface data for an
-object or library. It never contains private function bodies.
+## Encoding primitives
 
-`rtslp` is a linked program file. It contains the final linked RTIR, resolved
-entry points, resource metadata, stage metadata, and debug data consumed by
-Rutile backends.
-
-## Container Header
-
-Every artifact starts with a fixed-size header:
+All multi-byte values are **little-endian**. The building blocks (implemented
+in `src/support/binary.hpp`) are:
 
 ```text
-magic              u32  artifact magic
-version_major      u16
-version_minor      u16
-artifact_kind      u16  rtslo, rtsll, rtslm, or rtslp
-endianness         u8
-flags              u32
-header_size        u32
-section_count      u32
-section_table_off  u64
-file_size          u64
-content_hash       u128
+uN       fixed-width little-endian integer (enums encode as their underlying type)
+bool     one byte; readers accept only 0 or 1
+string   u32 length + that many bytes (no null terminator)
+vec<T>   u32 count + `count` contiguous T records
 ```
 
-The current implementation uses the same layout but still treats the format as
-release-0.1 data. Future incompatible changes must bump the version fields and
-be called out in release notes.
-
-All offsets are from the start of the file. The initial format uses little
-endian encoding. Unknown required flags make the artifact unreadable. Unknown
-optional flags may be ignored by older tools.
-
-## Section Table
-
-Each section table entry contains:
+## Container layout
 
 ```text
-section_kind  u32
-flags         u32
-offset        u64
-size          u64
-alignment     u32
-hash          u128
++------------------+ offset 0
+| header           | 48 bytes (zero-padded)
++------------------+ offset 48
+| section table    | 32 bytes per section
++------------------+ offset 48 + 32 * section_count
+| section payloads | concatenated, in section-table order
++------------------+ = file_size
 ```
 
-Sections are individually hashable so tools can validate stale interfaces,
-incremental builds, and cache entries.
+### Header (48 bytes)
 
-## Common Sections
+```text
+offset size field                 value
+0      u32  magic                 0x4c535452 (bytes "RTSL")
+4      u16  version_major         0
+6      u16  version_minor         4
+8      u16  artifact_kind         see kind table above
+10     u8   endianness            1 (little-endian)
+11     u8   reserved              0
+12     u32  reserved              0
+16     u32  header_size           48
+20     u32  section_count
+24     u64  section_table_offset  48
+32     u64  file_size             total bytes, validated on read
+40     u64  (zero padding to header_size)
+```
 
-`string_table` stores all display names, qualified names, source paths, import
-paths, debug strings, and disassembly names.
+Readers reject a wrong magic, a different `version_major`, `endianness != 1`,
+`header_size != 48`, or a `file_size` that does not match the input length.
 
-`type_table` stores scalar, vector, matrix, struct, resource, generic, function,
-and stage payload types.
+### Section table entry (32 bytes)
 
-`symbol_table` stores all symbols referenced by the artifact. Symbol records
-include kind, linkage, display name, qualified name, canonical identity,
-signature, type, source origin, and target table reference when present.
+```text
+offset size field
+0      u32  section_kind
+4      u32  reserved (0)
+8      u64  payload offset (from start of file)
+16     u64  payload size in bytes
+24     u32  flags (currently always 1)
+28     u32  reserved (0)
+```
 
-`constant_table` stores typed constants used by RTIR and metadata.
+### Section kinds
 
-`debug_table` stores source file records, source spans, symbol origins,
-function-origin records, and instruction-origin records.
+```text
+1  string_table            5  decoration_table        9  entry_table
+2  ir_module               6  struct_table           10  debug_table (empty today)
+3  import_table            7  resource_table         11  imported_export_table
+4  export_table            8  stage_interface_table
+```
 
-`source_map` maps generated RTIR ranges back to original source spans.
+Which sections a writer emits depends on the artifact kind: **programs omit**
+`import_table`, `export_table`, `imported_export_table`, and `struct_table` —
+a linked program never re-links, so only the reflection surface the runtime
+reads survives. All other kinds write every section.
 
-## Implementation Sections
+## Section payloads
 
-`function_table` stores function records and points into the instruction stream.
+### string_table (1)
 
-`block_table` stores basic block ranges and control-flow metadata.
+`vec<string>`. Entry 0 is the module's source name. `StringId` fields elsewhere
+(function display/mangled names, debug parameter names) index into this table.
 
-`instruction_stream` stores binary RTIR instructions.
+### ir_module (2)
 
-`reloc_table` stores unresolved symbolic references in `rtslo` and references
-that still need final resolution when producing `rtslp`.
+```text
+next_id             u32                   id allocator high-water mark
+type_constant_pool  vec<instruction>
+global_variables    vec<instruction>
+function_count      u32
+functions           function * function_count
+call_target_names   vec<string>           pending FunctionCall targets (empty in programs)
+debug_count         u32
+function_debug      debug_info * debug_count
+```
 
-`import_table` records imported module paths, imported symbols, and the required
-interface hashes.
+One `instruction` record (also the wire form inside function bodies):
 
-`export_table` records symbols exported by this implementation artifact and the
-matching interface records that must appear in `rtslm`.
+```text
+op          u16        IROp enum value — see src/ir/ops.def; ORDER IS WIRE FORMAT
+result_id   u32        0 = no result
+type_id     u32        0 = untyped
+operands    vec<u32>   ids
+literals    vec<u32>   inline data (constant bits, indices, storage class, ...)
+loc_file    u32        debug location (0 when absent)
+loc_line    u32
+loc_column  u32
+```
 
-`entry_table` records executable entry points and is required for `rtslp`.
+One `function` record:
 
-`resource_table` records resource declarations, access qualifiers, resource
-types, binding scopes, and reflected names.
+```text
+result_id         u32
+function_type_id  u32
+return_type_id    u32
+stage             u8          StageKind (0 none, 1 vertex, 2 fragment)
+generated         u8          bool
+exported          u8          bool
+display_name      u32         StringId
+mangled_name      u32         StringId
+source_name       string      inliner/linker resolution key ("" in programs)
+parameter_ids     vec<u32>
+body              vec<instruction>
+```
 
-`stage_interface_table` records varyings, interpolation qualifiers, stage input
-and output payloads, and stage-family metadata.
+Constructor functions (`Foo::Foo`) are dead after inlining and are **not**
+serialized. One `debug_info` record: `display_name u32`, `param_count u32`,
+then `param_count` `u32` StringIds.
 
-## Interface Sections
+### import_table (3)
 
-`interface_export_table` records public exported symbols.
+`vec<string>` of imported module names.
 
-`interface_type_table` records public type signatures needed by importers.
+### export_table (4) and imported_export_table (11)
 
-`interface_resource_table` records public resource contracts when resources are
-exportable or required by exported entry signatures.
+`vec<export_symbol>` where `export_symbol` = `name string, kind string,
+type string`.
 
-`dependency_table` records imported interfaces and hashes used to validate stale
-build products.
+### decoration_table (5)
 
-`interface_hash_table` records stable hashes for the full interface and for
-individual exported symbols.
+`vec<decoration>`:
 
-## Artifact Section Rules
+```text
+target        u32   decorated id
+kind          u16   IRDecorationKind
+member_index  u32   0xffffffff = decorate the target itself, else struct member
+literals      vec<u32>
+```
 
-`rtslo` requires header, string table, type table, symbol table, function table,
-instruction stream, import table, and debug table. It includes export and
-resource sections when needed. Calls to unresolved external symbols reference
-symbol ids.
+### struct_table (6)
 
-`rtsll` requires header, string table, type table, symbol table, function table,
-instruction stream, debug table, and resource metadata. Internal references are
-resolved. Export sections are present when the library has public symbols.
+`vec<struct_decl>` where `struct_decl` = `name string` + `vec<field>` and
+`field` = `type string, name string`.
 
-`rtslm` requires header, string table, public symbol/interface export table,
-interface type table, dependency table, and interface hashes. It must not contain
-private function bodies or private instruction streams.
+### resource_table (7)
 
-`rtslp` requires header, string table, final type table, final symbol table,
-function table, instruction stream, entry table, resource table,
-stage-interface table, and debug table. Calls are resolved to final function ids
-unless they target reserved primitives.
+`count u32`, then per uniform:
 
-## Naming And Debug Preservation
+```text
+scope_name          string   "" for anonymous / unscoped
+name                string
+type_id             u32      IR type pool id of the value type
+access              u8       AccessKind (0 rw, 1 ro, 2 wo)
+set                 u32      descriptor set
+member              u32      binding within the set
+is_anonymous        u8       bool
+anonymous_block_id  u32
+field_count         u32      inline-struct payload field names
+field_name          string * field_count
+```
 
-Artifacts store both canonical identities and display names. Canonical identities
-drive linking. Display names drive diagnostics, reflection, disassembly, and
-debugging.
+### stage_interface_table (8)
 
-The linker must preserve authored names where possible. Generated temporaries may
-use deterministic compiler names, but user-authored symbols, resources, entries,
-types, fields, and namespaces keep their original display names.
+Only host-visible roles (input, output) are serialized; varyings are
+pipeline-internal and matched by location at link time. `vec<interface>`:
+
+```text
+role    u8              StageRole (0 input, 2 output)
+fields  vec<io_field>
+
+io_field:
+  name           string
+  interpolation  u8      InterpolationKind (0 none, 1 smooth, 2 flat, 3 clip)
+  builtin        u8      BuiltinSlot (0 none; then frontend/builtins.def order + 1)
+  location       u32     0xffffffff = no location (builtin drives placement)
+```
+
+### entry_table (9)
+
+`vec<entry>` where `entry` = `name string, mangled_name string, stage u8,
+function_id u32`.
+
+### debug_table (10)
+
+Reserved. Written empty today.
+
+## Versioning
+
+Any change to the byte layout above — including reordering `ir/ops.def` or
+`frontend/builtins.def`, whose enum values are wire encodings — must bump
+`version_minor` (compatible additions) or `version_major` (breaking changes).
+
+## Naming and debug preservation
+
+Artifacts store both canonical identities (mangled names) and display names.
+Canonical identities drive linking; display names drive diagnostics,
+reflection, disassembly, and debugging. The linker preserves user-authored
+names; only compiler-generated temporaries use deterministic synthetic names.

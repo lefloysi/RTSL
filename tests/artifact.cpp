@@ -1,5 +1,5 @@
-#include "artifact.hpp"
-#include "mangler.hpp"
+#include "artifact/artifact.hpp"
+#include "sema/mangler.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,9 +1,9 @@
-#include "artifact.hpp"
-#include "compiler.hpp"
-#include "lexer.hpp"
-#include "linker.hpp"
-#include "mangler.hpp"
-#include "parser.hpp"
+#include "artifact/artifact.hpp"
+#include "driver/compiler.hpp"
+#include "frontend/lexer.hpp"
+#include "artifact/linker.hpp"
+#include "sema/mangler.hpp"
+#include "frontend/parser.hpp"
 #include "rtsl.h"
 
 #include <catch2/catch_test_macros.hpp>

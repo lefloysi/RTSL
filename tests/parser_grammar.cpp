@@ -3,11 +3,11 @@
 // pipeline to run. Each test drives Lexer + Parser directly so failures point
 // at the parser and not at whatever sema/IR does afterwards.
 
-#include "ast.hpp"
-#include "basic_diagnostics.hpp"
-#include "basic_source_manager.hpp"
-#include "lexer.hpp"
-#include "parser.hpp"
+#include "frontend/ast.hpp"
+#include "support/basic_diagnostics.hpp"
+#include "support/basic_source_manager.hpp"
+#include "frontend/lexer.hpp"
+#include "frontend/parser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -9,28 +9,39 @@ if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TA
     list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 endif()
 
-# All RTSL sources live flat in src/. Headers and .cpp sit next to each other;
-# sibling includes use plain "foo.hpp". The public C ABI header is the only
-# split-out surface and lives at bindings/c/include/rtsl.h.
+# RTSL sources are grouped by pipeline layer under src/; includes are rooted
+# at src/ (e.g. #include "frontend/lexer.hpp"). The public C ABI header is the
+# only split-out surface and lives at bindings/c/include/rtsl.h.
+#
+#   support/   shared plumbing: types, source manager, diagnostics, binary io
+#   frontend/  preprocessor, lexer, parser, AST (+ tokens/directives/builtins .def)
+#   sema/      semantic analysis, mangling, uniform lowering, stage builtins
+#   ir/        SSA RTIR: lowering, verification, disassembly (+ ops.def)
+#   artifact/  artifact container serialization and the linker
+#   driver/    compiler orchestration and the rtslc CLI
+#   api/       the C API (rtsl.cpp) and the language service
+#   runtime/   .rtslp reader for Rutile backends (not part of this library)
 
 set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set(RTSL_SOURCES
-    ${_rtsl_src}/basic_diagnostics.cpp
-    ${_rtsl_src}/basic_source_manager.cpp
-    ${_rtsl_src}/lexer.cpp
-    ${_rtsl_src}/parser.cpp
-    ${_rtsl_src}/sema.cpp
-    ${_rtsl_src}/stage_builtins.cpp
-    ${_rtsl_src}/ir.cpp
-    ${_rtsl_src}/mangler.cpp
-    ${_rtsl_src}/uniform_lowering.cpp
-    ${_rtsl_src}/artifact.cpp
-    ${_rtsl_src}/text_rtir.cpp
-    ${_rtsl_src}/compiler.cpp
-    ${_rtsl_src}/language_service.cpp
-    ${_rtsl_src}/linker.cpp
-    ${_rtsl_src}/rtsl.cpp
+    ${_rtsl_src}/support/basic_diagnostics.cpp
+    ${_rtsl_src}/support/basic_source_manager.cpp
+    ${_rtsl_src}/support/io.cpp
+    ${_rtsl_src}/frontend/preprocessor.cpp
+    ${_rtsl_src}/frontend/lexer.cpp
+    ${_rtsl_src}/frontend/parser.cpp
+    ${_rtsl_src}/sema/sema.cpp
+    ${_rtsl_src}/sema/stage_builtins.cpp
+    ${_rtsl_src}/sema/mangler.cpp
+    ${_rtsl_src}/sema/uniform_lowering.cpp
+    ${_rtsl_src}/ir/ir.cpp
+    ${_rtsl_src}/ir/text_rtir.cpp
+    ${_rtsl_src}/artifact/artifact.cpp
+    ${_rtsl_src}/artifact/linker.cpp
+    ${_rtsl_src}/driver/compiler.cpp
+    ${_rtsl_src}/api/language_service.cpp
+    ${_rtsl_src}/api/rtsl.cpp
 )
 
 add_library(rtsl STATIC ${RTSL_SOURCES})
@@ -47,13 +58,13 @@ target_include_directories(rtsl
         "${_rtsl_src}"
         "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
 )
-# `src/package.hpp/cpp` is a helper for reading .rtslp programs at runtime;
+# `src/runtime/package.hpp/cpp` is a helper for reading .rtslp programs at runtime;
 # it targets Rutile backends and depends on their `rutile.h`. Keeping it out
 # of the RTSL library build inverts the dependency correctly — RTSL knows
 # nothing about Rutile, and each backend compiles package.cpp itself when it
 # needs the reader.
 
-add_executable(rtslc ${_rtsl_src}/rtslc.cpp)
+add_executable(rtslc ${_rtsl_src}/driver/rtslc.cpp)
 find_package(CLI11 CONFIG QUIET)
 if(CLI11_FOUND)
     target_link_libraries(rtslc PRIVATE rtsl CLI11::CLI11)

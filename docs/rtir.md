@@ -308,28 +308,13 @@ ids to SPIR-V's `Id` numbering, maps opcodes, packs decorations into
 
 ## Artifact wire format
 
-The instruction stream is serialized as packed records:
-
-```text
-record:
-  op           : u16
-  result_id    : u32
-  type_id      : u32
-  operand_count: u16
-  literal_count: u16
-  operands     : u32 * operand_count
-  literals     : u32 * literal_count
-  loc          : u32 file_id + u32 (line<<12 | column)
-```
-
-Functions point into the stream by `[begin, end)` byte offset, as today. The
-existing `string_table`, `symbol_table`, `entry_table`, `resource_table`,
-`stage_interface_table`, `debug_table` sections remain — they describe the
-module surface and reflection metadata. The new sections are:
-
-- `type_table` repurposed to hold the type/constant pool instruction range
-- `global_variable_table` for module-scope `Variable` instructions
-- `decoration_table` for `IRDecoration` records
+The byte-level encoding of instructions, functions, and every container
+section is specified in [artifacts.md](artifacts.md). In short: one
+`instruction` record is `op u16, result_id u32, type_id u32,
+operands vec<u32>, literals vec<u32>, loc (3 × u32)`, all little-endian, with
+`vec` meaning a `u32` count followed by the elements. The opcode value is the
+`IROp` enum position — `src/ir/ops.def` is the wire-format registry and is
+append-only.
 
 ## Textual disassembly
 
@@ -385,17 +370,9 @@ Step (1) is the only nontrivial work. Steps (2)–(8) are mechanical.
 
 ## Status
 
-The old IR (statement-string `BodyOp`) is being removed. The new IR is being
-introduced incrementally:
-
-1. New `IR/IR.h` data model (this commit).
-2. New AST -> SSA lowering in `IR/IR.cpp`.
-3. New `instruction_stream`, `global_variable_table`, `decoration_table`
-   serialization in `Serialization/Artifact.cpp`.
-4. New `Serialization/TextRTIR.cpp` SPIR-V-style disassembly.
-5. New `Backend/SpirvBackend.cpp` emitting Vulkan SPIR-V.
-6. `Backend/GlslBackend.cpp` is retired — Vulkan no longer goes through GLSL.
-
-Until those land, only this design is current; the rest of the codebase still
-reflects the old IR. Compute-stage support is intentionally out of scope for
-the v0.1 surface.
+Implemented today: the data model (`src/ir/ir.hpp`, opcodes in
+`src/ir/ops.def`), AST → SSA lowering (`src/ir/ir.cpp`), artifact
+serialization (`src/artifact/artifact.cpp`, byte layout in
+[artifacts.md](artifacts.md)), and the disassembler (`src/ir/text_rtir.cpp`).
+The text-RTIR assembler and the SPIR-V backend are not implemented yet.
+Compute-stage support is intentionally out of scope for the v0.1 surface.

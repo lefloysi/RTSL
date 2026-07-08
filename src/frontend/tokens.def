@@ -1,0 +1,79 @@
+// tokens.def — the single source of truth for every RTSL token.
+//
+// Include this file after defining any of the macros below; each macro you
+// leave undefined defaults to a no-op, and all of them are #undef'd at the
+// end so call sites stay clean.
+//
+//   RTSL_KEYWORD(name, spelling)      reserved word, token `kw_<name>`
+//   RTSL_PUNCTUATOR(name, spelling)   punctuation of any length
+//
+// Only true reserved words live here. Contextual words (input, output,
+// layout, inout, readonly, smooth, clip, std140, ...) are ordinary
+// identifiers that the parser recognizes by spelling where the grammar
+// allows them — they stay usable as names everywhere else.
+//
+// PUNCTUATOR ORDER IS MATCH PRIORITY: the lexer tries entries top to bottom
+// and takes the first prefix match, so longer spellings must precede any
+// spelling they start with ("->" before "-", "==" before "=").
+
+#ifndef RTSL_KEYWORD
+#define RTSL_KEYWORD(name, spelling)
+#endif
+#ifndef RTSL_PUNCTUATOR
+#define RTSL_PUNCTUATOR(name, spelling)
+#endif
+
+RTSL_KEYWORD(Import, "import")
+RTSL_KEYWORD(Export, "export")
+RTSL_KEYWORD(Namespace, "namespace")
+RTSL_KEYWORD(Struct, "struct")
+RTSL_KEYWORD(Using, "using")
+RTSL_KEYWORD(Uniform, "uniform")
+RTSL_KEYWORD(Function, "fn")
+RTSL_KEYWORD(Const, "const")
+RTSL_KEYWORD(Auto, "auto")
+RTSL_KEYWORD(Void, "void")
+RTSL_KEYWORD(If, "if")
+RTSL_KEYWORD(Else, "else")
+RTSL_KEYWORD(While, "while")
+RTSL_KEYWORD(Do, "do")
+RTSL_KEYWORD(For, "for")
+RTSL_KEYWORD(Return, "return")
+RTSL_KEYWORD(True, "true")
+RTSL_KEYWORD(False, "false")
+
+RTSL_PUNCTUATOR(equal_equal, "==")
+RTSL_PUNCTUATOR(bang_equal, "!=")
+RTSL_PUNCTUATOR(less_equal, "<=")
+RTSL_PUNCTUATOR(greater_equal, ">=")
+RTSL_PUNCTUATOR(amp_amp, "&&")
+RTSL_PUNCTUATOR(pipe_pipe, "||")
+RTSL_PUNCTUATOR(arrow, "->")
+RTSL_PUNCTUATOR(colon_colon, "::")
+RTSL_PUNCTUATOR(plus, "+")
+RTSL_PUNCTUATOR(minus, "-")
+RTSL_PUNCTUATOR(star, "*")
+RTSL_PUNCTUATOR(slash, "/")
+RTSL_PUNCTUATOR(percent, "%")
+RTSL_PUNCTUATOR(equal, "=")
+RTSL_PUNCTUATOR(less, "<")
+RTSL_PUNCTUATOR(greater, ">")
+RTSL_PUNCTUATOR(bang, "!")
+RTSL_PUNCTUATOR(amp, "&")
+RTSL_PUNCTUATOR(pipe, "|")
+RTSL_PUNCTUATOR(caret, "^")
+RTSL_PUNCTUATOR(tilde, "~")
+RTSL_PUNCTUATOR(left_paren, "(")
+RTSL_PUNCTUATOR(right_paren, ")")
+RTSL_PUNCTUATOR(left_brace, "{")
+RTSL_PUNCTUATOR(right_brace, "}")
+RTSL_PUNCTUATOR(left_bracket, "[")
+RTSL_PUNCTUATOR(right_bracket, "]")
+RTSL_PUNCTUATOR(comma, ",")
+RTSL_PUNCTUATOR(semicolon, ";")
+RTSL_PUNCTUATOR(dot, ".")
+RTSL_PUNCTUATOR(colon, ":")
+RTSL_PUNCTUATOR(at, "@")
+
+#undef RTSL_KEYWORD
+#undef RTSL_PUNCTUATOR

@@ -1,4 +1,4 @@
-#include "compiler.hpp"
+#include "driver/compiler.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
