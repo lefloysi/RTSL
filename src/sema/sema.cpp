@@ -54,8 +54,8 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 	module.stage_interfaces = unit.stage_interfaces;
 	module.using_imports = unit.using_imports;
 
-	// Assign sequential locations to interface fields that did not request one
-	// explicitly. Built-in slots (e.g. `position(clip)`) do not consume a location.
+	// Assign sequential ABI locations to user payload fields. Built-in slots
+	// (for example `position(clip)`) do not consume a location.
 	for (auto& interface : module.stage_interfaces) {
 		u32 next_location = 0;
 		for (auto& field : interface.fields) {
@@ -122,7 +122,7 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 			.stage = decl.stage,
 			.has_body = decl.has_body,
 		});
-		if (decl.exported) {
+		if (decl.exported && decl.kind != DeclKind::import) {
 			module.exports.emplace_back(ExportSymbol{
 				.name = decl.name,
 				.kind = decl.kind == DeclKind::function ? "function" : "symbol",

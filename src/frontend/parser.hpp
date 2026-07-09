@@ -19,11 +19,9 @@ namespace rtsl {
 //      accepts an inline struct. Anonymous struct types get compiler-generated
 //      names. `struct Foo` without a body is a reference to (or forward
 //      declaration of) that type.
-//   2. The top scope holds only a handful of declaration kinds: type
-//      declarations (`struct T {...};` / `using A = T;`), function
-//      declarations (`fn`), resource scopes (`uniform`), layout definitions
-//      (`layout`), stage interfaces (`input`/`output`), imports, and
-//      namespaces. Everything else is a diagnostic.
+//   2. The top scope holds declarations: imports, namespaces, types,
+//      functions, uniforms, layouts, and using declarations. Everything else
+//      is a diagnostic.
 //   3. A return boundary (`-> T : field(tag, ...)`) is part of the return
 //      type spec; tags are data-driven, not per-keyword grammar.
 //
@@ -59,10 +57,8 @@ class Parser {
 	bool expect(TokenKind kind, std::string_view what);
 	[[nodiscard]] bool at_end() const;
 
-	// Contextual words. RTSL keeps its reserved-word set small; grammar words
-	// like `input`, `layout`, `inout`, `readonly`, `smooth`, `std140`, ... are
-	// ordinary identifiers matched by spelling only where the grammar allows
-	// them, so they stay usable as names everywhere else.
+	// Contextual words such as `readonly`, `smooth`, and `std140`
+	// are identifiers matched by spelling only where the grammar allows them.
 	[[nodiscard]] bool at_word(std::string_view word, std::size_t lookahead = 0) const;
 	bool consume_word(std::string_view word);
 	// Whether the token at `lookahead` can begin a type expression.
@@ -77,7 +73,6 @@ class Parser {
 	Decl parse_type_declaration(bool exported);
 	Decl parse_invalid_global_declaration(bool exported);
 	Decl parse_uniform(bool exported);
-	Decl parse_stage_interface_decl(DeclKind kind, bool exported);
 	void parse_layout();
 	void parse_using(bool exported);
 
@@ -85,9 +80,9 @@ class Parser {
 	StageKind parse_stage_attribute();
 
 	// The single type rule. Consumes:
-	//   'const'? ( struct_type | named_type ) ('&' | '*')?
-	//   struct_type := 'struct' scoped_name? ('{' struct_body '}')?
-	//   named_type  := (ident | 'void' | 'auto') ('::' ident)* ('<' ... '>')?
+	//   'const'? type_atom ('&' | '*')?
+	//   type_atom := 'struct' scoped_name? ('{' struct_body '}' )?
+	//              | (ident | 'void' | 'auto') ('::' ident)* ('<' ... '>')?
 	// A struct body registers the type in the translation unit (generated name
 	// when anonymous). Returns an empty ParsedType if the cursor isn't on a
 	// type-starting token (cursor untouched in that case unless a body or
@@ -109,7 +104,6 @@ class Parser {
 						   std::vector<ParameterDecl>& constructor_parameters,
 						   std::string_view owner_name);
 	void parse_uniform_body(const Decl& decl);
-	void parse_stage_interface_body(StageRole role, std::string_view type_name);
 
 	// Statements.
 	Decl::BodyStatement parse_statement();

@@ -1,66 +1,80 @@
-# Rutile Shading Language (RTSL)
+# Rutile Shading Language
 
-Rutile Shading Language is a shader language and compiler for the Rutile
-graphics API.
+RTSL is Rutile's shader language and compiler. v0.1 targets graphics shaders:
+vertex and fragment stages, resource declarations, stage payloads, linking,
+reflection, and backend-ready program artifacts.
 
-RTSL keeps a shader contract in one source file: resources, stage payloads,
-helper types, and entry points live together in a C-style language that lowers
-to backend-neutral Rutile shader IR.
+RTSL source describes the shader contract. The compiler assigns concrete
+resource bindings and stage locations, then exposes them through reflection.
+
+## Minimal Program
+
+```rtsl
+struct Point {
+    vec3 position;
+    vec2 uv;
+};
+
+struct Vertex {
+    vec4 position;
+    vec2 uv;
+};
+
+@vertex
+fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {
+    return Vertex(vec4(p.position, 1.0), p.uv);
+}
+
+@fragment
+fn fragment_entry(Vertex v) -> vec4 {
+    return vec4(v.uv, 0.0, 1.0);
+}
+```
+
+Entry functions are selected by `@vertex` and `@fragment`. Their names are
+ordinary function names; `main` is only a convention.
+
+The bare fragment `vec4` return is the default single color target. Structured
+vertex returns use a return boundary to mark clip-space position and
+interpolated fields.
+
+## Artifacts
+
+- `.rtslo`: compiled source object
+- `.rtslm`: exported module interface
+- `.rtsll`: linked library
+- `.rtslp`: linked program consumed by Rutile backends
 
 ## Documentation
 
-The specification is split by concern:
-
-- [Language semantics](docs/language.md)
-- [Compiler architecture](docs/compiler-architecture.md)
-- [Artifact formats](docs/artifacts.md)
+- [Language](docs/language.md)
 - [RTIR](docs/rtir.md)
+- [Artifacts](docs/artifacts.md)
 - [Linking](docs/linking.md)
 - [Backend contract](docs/backend-contract.md)
+- [Compiler architecture](docs/compiler-architecture.md)
+- [C binding](bindings/README.md)
 
-## Examples
+## Build
 
-The `workspace` directory contains sample shader files:
+```powershell
+cmake -S . -B out/build
+cmake --build out/build --config Debug
+ctest --test-dir out/build -C Debug --output-on-failure
+```
 
-- `default.rtsl`
-- `graphics.rtsl`
-
-For the v0.1 release, only `graphics.rtsl` is a supported end-to-end sample.
-The other files are exploratory or placeholder material and are not part of the
-release promise.
-
-## Current Status
-
-RTSL v0.1 is a graphics-only release. It supports compilation to `rtslo`,
-optional `rtslm` interfaces, linking to `rtsll` / `rtslp`, reflection for
-uniforms and stage interfaces, and the current vertex/fragment backend path.
-
-Editor tooling scaffolding lives under `tools/vs-rtsl-ext/`.
+On Windows, run those commands from a Visual Studio developer shell.
 
 ## CMake Integration
-
-Downstream CMake projects can opt into shader compilation with the RTSL CMake
-module:
 
 ```cmake
 list(APPEND CMAKE_MODULE_PATH "/path/to/RTSL/cmake")
 include(Rtsl)
 
-rtsl_add_program(my_game_rtsl
+rtsl_add_program(game_shaders
     RTSLC rtslc
     SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/world.rtsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui.rtsl"
     EMBED
 )
 ```
-
-The helper:
-
-- recompiles when any source changes
-- relinks to fresh `rtslp` outputs
-- can generate a C++ translation unit that embeds the `rtslp` bytes into the
-  final executable
-- keeps the build output visible to the normal compiler/IDE pipeline so RTSL
-  failures show up as build errors
-

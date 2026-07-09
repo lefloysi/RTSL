@@ -13,24 +13,24 @@ constexpr u32 Magic = 0x4c535452;
 constexpr u16 VersionMajor = 0;
 constexpr u16 VersionMinor = 4;
 constexpr u32 HeaderSize = 48;
-constexpr u32 SectionEntrySize = 32;
+constexpr u32 PayloadRecordSize = 32;
 
-enum class SectionKind : u32 {
-	string_table = 1,
+enum class PayloadKind : u32 {
+	strings = 1,
 	ir_module = 2,
-	import_table = 3,
-	export_table = 4,
-	decoration_table = 5,
-	struct_table = 6,
-	resource_table = 7,
-	stage_interface_table = 8,
-	entry_table = 9,
-	debug_table = 10,
-	imported_export_table = 11,
+	imports = 3,
+	exports = 4,
+	decorations = 5,
+	structs = 6,
+	resources = 7,
+	stage_interfaces = 8,
+	entries = 9,
+	debug = 10,
+	imported_exports = 11,
 };
 
-struct Section {
-	SectionKind kind;
+struct Payload {
+	PayloadKind kind;
 	std::vector<u08> bytes;
 };
 
@@ -102,6 +102,7 @@ template <bin::byte_stream Stream, bin::data<StageInterface> Iface>
 bin::error process(Stream& stream, Iface& iface) {
 	return stream(
 		bin::field("role", iface.role),
+		bin::field("type_name", iface.type_name),
 		bin::field("fields", iface.fields));
 }
 
@@ -119,7 +120,7 @@ bin::error process(Stream& stream, Entry& entry) {
 struct StringPoolHash {
 	using is_transparent = void;
 	std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
-	std::size_t operator()(const std::string& s) const noexcept { return std::hash<std::string_view>{}(s); }
+	std::size_t operator()(const char* s) const noexcept { return std::hash<std::string_view>{}(s); }
 };
 
 struct StringPoolEqual {
@@ -166,18 +167,18 @@ StringPool build_string_pool(const IRModule& module, std::span<const Artifact::E
 	return pool;
 }
 
-// ---- Section builders ---------------------------------------------------
+// ---- Payload builders ---------------------------------------------------
 
-Section make_string_table(const StringPool& pool) {
-	Section section{ .kind = SectionKind::string_table };
+Payload make_string_payload(const StringPool& pool) {
+	Payload payload{ .kind = PayloadKind::strings };
 	bin::write_stream stream;
 	(void)stream(bin::field("strings", pool.values));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_ir_module_section(const IRModule& module, bool linked_program) {
-	Section section{ .kind = SectionKind::ir_module };
+Payload make_ir_module_payload(const IRModule& module, bool linked_program) {
+	Payload payload{ .kind = PayloadKind::ir_module };
 	bin::write_stream stream;
 
 	// Constructors are dead post-inlining. Skip them so `Foo::Foo` never lands
@@ -232,52 +233,52 @@ Section make_ir_module_section(const IRModule& module, bool linked_program) {
 		}
 	}
 
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_import_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::import_table };
+Payload make_import_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::imports };
 	bin::write_stream stream;
 	(void)stream(bin::field("imports", module.imports));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_export_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::export_table };
+Payload make_export_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::exports };
 	bin::write_stream stream;
 	(void)stream(bin::field("exports", module.exports));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_imported_export_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::imported_export_table };
+Payload make_imported_export_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::imported_exports };
 	bin::write_stream stream;
 	(void)stream(bin::field("imported_exports", module.imported_exports));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_decoration_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::decoration_table };
+Payload make_decoration_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::decorations };
 	bin::write_stream stream;
 	(void)stream(bin::field("decorations", module.decorations));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_struct_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::struct_table };
+Payload make_struct_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::structs };
 	bin::write_stream stream;
 	(void)stream(bin::field("structs", module.structs));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_resource_section(const IRModule& module) {
-	Section section{ .kind = SectionKind::resource_table };
+Payload make_resource_payload(const IRModule& module) {
+	Payload payload{ .kind = PayloadKind::resources };
 	bin::write_stream stream;
 	const u32 count = static_cast<u32>(module.uniforms.size());
 	(void)stream(bin::field("count", count));
@@ -299,15 +300,13 @@ Section make_resource_section(const IRModule& module) {
 			(void)stream(bin::field("field_name", f.name));
 		}
 	}
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_stage_interface_section(const IRModule& module) {
-	// Only host-visible boundaries (input, output) reach the artifact. Varyings
-	// are pipeline-internal — the linker matches them by location, so no
-	// reflection carries them.
-	Section section{ .kind = SectionKind::stage_interface_table };
+Payload make_stage_interface_payload(const IRModule& module) {
+	// Only reflected host-visible stage variables reach the artifact.
+	Payload payload{ .kind = PayloadKind::stage_interfaces };
 	bin::write_stream stream;
 	std::vector<StageInterface> emit;
 	emit.reserve(module.stage_interfaces.size());
@@ -316,33 +315,33 @@ Section make_stage_interface_section(const IRModule& module) {
 		emit.push_back(iface);
 	}
 	(void)stream(bin::field("interfaces", emit));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-Section make_entry_section(std::span<const Artifact::EntryPoint> entries) {
-	Section section{ .kind = SectionKind::entry_table };
+Payload make_entry_payload(std::span<const Artifact::EntryPoint> entries) {
+	Payload payload{ .kind = PayloadKind::entries };
 	bin::write_stream stream;
 	// Cheap copy so the free-function process() overload's mutable requirement
 	// can bind. A dedicated const overload could avoid this but at the cost of
 	// duplicating every serializer.
 	std::vector<Artifact::EntryPoint> local(entries.begin(), entries.end());
 	(void)stream(bin::field("entries", local));
-	section.bytes = stream.take_written();
-	return section;
+	payload.bytes = stream.take_written();
+	return payload;
 }
 
-// ---- Container header + section table -----------------------------------
+// ---- Container header + payload records ---------------------------------
 
-std::vector<u08> write_container(ArtifactKind kind, std::vector<Section> sections) {
-	const u32 section_count = static_cast<u32>(sections.size());
-	const u64 section_table_offset = HeaderSize;
-	u64 data_offset = HeaderSize + static_cast<u64>(SectionEntrySize) * section_count;
+std::vector<u08> write_container(ArtifactKind kind, std::vector<Payload> payloads) {
+	const u32 payload_count = static_cast<u32>(payloads.size());
+	const u64 payload_record_offset = HeaderSize;
+	u64 data_offset = HeaderSize + static_cast<u64>(PayloadRecordSize) * payload_count;
 	std::vector<u64> offsets;
-	offsets.reserve(sections.size());
-	for (const auto& section : sections) {
+	offsets.reserve(payloads.size());
+	for (const auto& payload : payloads) {
 		offsets.push_back(data_offset);
-		data_offset += section.bytes.size();
+		data_offset += payload.bytes.size();
 	}
 
 	bin::write_stream stream;
@@ -359,25 +358,25 @@ std::vector<u08> write_container(ArtifactKind kind, std::vector<Section> section
 		bin::field("reserved_a", reserved8),
 		bin::field("reserved_b", reserved32),
 		bin::field("header_size", HeaderSize),
-		bin::field("section_count", section_count),
-		bin::field("section_table_offset", section_table_offset),
+		bin::field("payload_count", payload_count),
+		bin::field("payload_record_offset", payload_record_offset),
 		bin::field("file_size", data_offset));
 
 	auto out = stream.take_written();
-	// Header is fixed-size; pad any trailing bytes so the section table lands
-	// at HeaderSize regardless of how many fields the header actually spent.
+	// Header is fixed-size; pad any trailing bytes so payload records land at
+	// HeaderSize regardless of how many fields the header actually spent.
 	out.resize(HeaderSize, u08{ 0 });
 
-	// Section table entries — 32 bytes each, fixed layout.
-	bin::write_stream table;
-	for (std::size_t i = 0; i < sections.size(); ++i) {
-		const u32 skind = static_cast<u32>(sections[i].kind);
+	// Payload records: 32 bytes each, fixed layout.
+	bin::write_stream records;
+	for (std::size_t i = 0; i < payloads.size(); ++i) {
+		const u32 skind = static_cast<u32>(payloads[i].kind);
 		const u32 res32 = 0;
 		const u64 offset = offsets[i];
-		const u64 size = static_cast<u64>(sections[i].bytes.size());
+		const u64 size = static_cast<u64>(payloads[i].bytes.size());
 		const u32 flag = 1;
 		const u32 res_tail = 0;
-		(void)table(
+		(void)records(
 			bin::field("kind", skind),
 			bin::field("reserved", res32),
 			bin::field("offset", offset),
@@ -385,11 +384,11 @@ std::vector<u08> write_container(ArtifactKind kind, std::vector<Section> section
 			bin::field("flag", flag),
 			bin::field("reserved_tail", res_tail));
 	}
-	auto table_bytes = table.take_written();
-	out.insert(out.end(), table_bytes.begin(), table_bytes.end());
+	auto record_bytes = records.take_written();
+	out.insert(out.end(), record_bytes.begin(), record_bytes.end());
 
-	for (const auto& section : sections)
-		out.insert(out.end(), section.bytes.begin(), section.bytes.end());
+	for (const auto& payload : payloads)
+		out.insert(out.end(), payload.bytes.begin(), payload.bytes.end());
 	return out;
 }
 
@@ -414,24 +413,24 @@ std::vector<Artifact::EntryPoint> default_entries_from_module(const IRModule& mo
 
 std::vector<u08> write_artifact(ArtifactKind kind, const IRModule& module) {
 	const auto entries = default_entries_from_module(module);
-	// A linked program will never re-link: dropping the struct/import/export
-	// tables leaves just the reflection surface the runtime actually reads.
+	// A linked program will never re-link: dropping import/export/type-decl
+	// payloads leaves just the reflection surface the runtime actually reads.
 	const bool linked_program = kind == ArtifactKind::program;
 	const auto strings = build_string_pool(module, entries, linked_program);
-	std::vector<Section> sections;
-	sections.push_back(make_string_table(strings));
-	sections.push_back(make_ir_module_section(module, linked_program));
+	std::vector<Payload> payloads;
+	payloads.push_back(make_string_payload(strings));
+	payloads.push_back(make_ir_module_payload(module, linked_program));
 	if (!linked_program) {
-		sections.push_back(make_import_section(module));
-		sections.push_back(make_export_section(module));
-		sections.push_back(make_imported_export_section(module));
-		sections.push_back(make_struct_section(module));
+		payloads.push_back(make_import_payload(module));
+		payloads.push_back(make_export_payload(module));
+		payloads.push_back(make_imported_export_payload(module));
+		payloads.push_back(make_struct_payload(module));
 	}
-	sections.push_back(make_decoration_section(module));
-	sections.push_back(make_resource_section(module));
-	sections.push_back(make_stage_interface_section(module));
-	sections.push_back(make_entry_section(entries));
-	return write_container(kind, std::move(sections));
+	payloads.push_back(make_decoration_payload(module));
+	payloads.push_back(make_resource_payload(module));
+	payloads.push_back(make_stage_interface_payload(module));
+	payloads.push_back(make_entry_payload(entries));
+	return write_container(kind, std::move(payloads));
 }
 
 std::vector<u08> write_debug_artifact(const IRModule&) {
@@ -459,8 +458,8 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 	u08 reserved8 = 0;
 	u32 reserved32 = 0;
 	u32 header_size = 0;
-	u32 section_count = 0;
-	u64 section_table_offset = 0;
+	u32 payload_count = 0;
+	u64 payload_record_offset = 0;
 	u64 file_size = 0;
 	if (auto err = header(
 			bin::field("magic", magic),
@@ -471,8 +470,8 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 			bin::field("reserved_a", reserved8),
 			bin::field("reserved_b", reserved32),
 			bin::field("header_size", header_size),
-			bin::field("section_count", section_count),
-			bin::field("section_table_offset", section_table_offset),
+			bin::field("payload_count", payload_count),
+			bin::field("payload_record_offset", payload_record_offset),
 			bin::field("file_size", file_size));
 		err) {
 		report_read_error(diagnostics, "invalid RTSL artifact header: " + err.message);
@@ -494,51 +493,51 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 	artifact.kind = static_cast<ArtifactKind>(kind_raw);
 	artifact.bytes.assign(data.begin(), data.end());
 
-	for (u32 i = 0; i < section_count; ++i) {
-		const auto entry_offset = static_cast<std::size_t>(section_table_offset + i * SectionEntrySize);
-		if (entry_offset + SectionEntrySize > data.size()) {
-			report_read_error(diagnostics, "section table entry out of bounds");
+	for (u32 i = 0; i < payload_count; ++i) {
+		const auto entry_offset = static_cast<std::size_t>(payload_record_offset + i * PayloadRecordSize);
+		if (entry_offset + PayloadRecordSize > data.size()) {
+			report_read_error(diagnostics, "payload record out of bounds");
 			return false;
 		}
-		bin::read_stream entry(data.subspan(entry_offset, SectionEntrySize));
-		u32 section_kind_raw = 0;
+		bin::read_stream entry(data.subspan(entry_offset, PayloadRecordSize));
+		u32 payload_kind_raw = 0;
 		u32 e_reserved = 0;
-		u64 section_offset = 0;
-		u64 section_size = 0;
+		u64 payload_offset = 0;
+		u64 payload_size = 0;
 		u32 e_flag = 0;
 		u32 e_reserved_tail = 0;
 		if (auto err = entry(
-				bin::field("kind", section_kind_raw),
+				bin::field("kind", payload_kind_raw),
 				bin::field("reserved", e_reserved),
-				bin::field("offset", section_offset),
-				bin::field("size", section_size),
+				bin::field("offset", payload_offset),
+				bin::field("size", payload_size),
 				bin::field("flag", e_flag),
 				bin::field("reserved_tail", e_reserved_tail));
 			err) {
-			report_read_error(diagnostics, "section table entry: " + err.message);
+			report_read_error(diagnostics, "payload record: " + err.message);
 			return false;
 		}
-		if (section_offset + section_size > data.size()) {
-			report_read_error(diagnostics, "section payload is out of bounds");
+		if (payload_offset + payload_size > data.size()) {
+			report_read_error(diagnostics, "payload is out of bounds");
 			return false;
 		}
-		const auto section_kind = static_cast<SectionKind>(section_kind_raw);
-		auto section_bytes = data.subspan(static_cast<std::size_t>(section_offset), static_cast<std::size_t>(section_size));
-		bin::read_stream r(section_bytes);
+		const auto payload_kind = static_cast<PayloadKind>(payload_kind_raw);
+		auto payload_bytes = data.subspan(static_cast<std::size_t>(payload_offset), static_cast<std::size_t>(payload_size));
+		bin::read_stream r(payload_bytes);
 		auto propagate = [&](bin::error err, const char* what) -> bool {
 			if (!err) return true;
 			report_read_error(diagnostics, std::string(what) + ": " + err.message);
 			return false;
 		};
 
-		switch (section_kind) {
-		case SectionKind::string_table: {
-			if (!propagate(r(bin::field("strings", artifact.strings)), "string_table")) return false;
+		switch (payload_kind) {
+		case PayloadKind::strings: {
+			if (!propagate(r(bin::field("strings", artifact.strings)), "strings")) return false;
 			if (!artifact.strings.empty())
 				artifact.module.source_name = artifact.strings.front();
 			break;
 		}
-		case SectionKind::ir_module: {
+		case PayloadKind::ir_module: {
 			if (!propagate(r(
 					bin::field("next_id", artifact.module.next_id),
 					bin::field("type_constant_pool", artifact.module.type_constant_pool),
@@ -590,32 +589,32 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 			}
 			break;
 		}
-		case SectionKind::import_table: {
-			if (!propagate(r(bin::field("imports", artifact.module.imports)), "import_table")) return false;
+		case PayloadKind::imports: {
+			if (!propagate(r(bin::field("imports", artifact.module.imports)), "imports")) return false;
 			artifact.imports = artifact.module.imports;
 			break;
 		}
-		case SectionKind::export_table: {
-			if (!propagate(r(bin::field("exports", artifact.module.exports)), "export_table")) return false;
+		case PayloadKind::exports: {
+			if (!propagate(r(bin::field("exports", artifact.module.exports)), "exports")) return false;
 			artifact.exports = artifact.module.exports;
 			break;
 		}
-		case SectionKind::imported_export_table: {
-			if (!propagate(r(bin::field("imported_exports", artifact.module.imported_exports)), "imported_export_table")) return false;
+		case PayloadKind::imported_exports: {
+			if (!propagate(r(bin::field("imported_exports", artifact.module.imported_exports)), "imported_exports")) return false;
 			artifact.imported_exports = artifact.module.imported_exports;
 			break;
 		}
-		case SectionKind::decoration_table: {
-			if (!propagate(r(bin::field("decorations", artifact.module.decorations)), "decoration_table")) return false;
+		case PayloadKind::decorations: {
+			if (!propagate(r(bin::field("decorations", artifact.module.decorations)), "decorations")) return false;
 			break;
 		}
-		case SectionKind::struct_table: {
-			if (!propagate(r(bin::field("structs", artifact.module.structs)), "struct_table")) return false;
+		case PayloadKind::structs: {
+			if (!propagate(r(bin::field("structs", artifact.module.structs)), "structs")) return false;
 			break;
 		}
-		case SectionKind::resource_table: {
+		case PayloadKind::resources: {
 			u32 count = 0;
-			if (!propagate(r(bin::field("count", count)), "resource_table.count")) return false;
+			if (!propagate(r(bin::field("count", count)), "resources.count")) return false;
 			artifact.module.uniforms.reserve(count);
 			for (u32 idx = 0; idx < count; ++idx) {
 				UniformBinding u;
@@ -632,27 +631,27 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 						bin::field("is_anonymous", is_anonymous),
 						bin::field("anonymous_block_id", u.anonymous_block_id),
 						bin::field("field_count", field_count)),
-					"resource_table.uniform")) return false;
+					"resources.uniform")) return false;
 				u.access = static_cast<AccessKind>(access);
 				u.is_anonymous = is_anonymous != 0;
 				for (u32 f = 0; f < field_count; ++f) {
 					std::string fname;
-					if (!propagate(r(bin::field("field_name", fname)), "resource_table.inline_field")) return false;
+					if (!propagate(r(bin::field("field_name", fname)), "resources.inline_field")) return false;
 					u.inline_fields.push_back(StructField{ .name = std::move(fname) });
 				}
 				artifact.module.uniforms.push_back(std::move(u));
 			}
 			break;
 		}
-		case SectionKind::stage_interface_table: {
-			if (!propagate(r(bin::field("interfaces", artifact.module.stage_interfaces)), "stage_interface_table")) return false;
+		case PayloadKind::stage_interfaces: {
+			if (!propagate(r(bin::field("interfaces", artifact.module.stage_interfaces)), "stage_interfaces")) return false;
 			break;
 		}
-		case SectionKind::entry_table: {
-			if (!propagate(r(bin::field("entries", artifact.entries)), "entry_table")) return false;
+		case PayloadKind::entries: {
+			if (!propagate(r(bin::field("entries", artifact.entries)), "entries")) return false;
 			break;
 		}
-		case SectionKind::debug_table:
+		case PayloadKind::debug:
 			break;
 		}
 	}

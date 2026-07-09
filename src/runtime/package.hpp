@@ -106,7 +106,6 @@ enum class stage_kind : std::uint8_t {
 	none = 0,
 	vertex = 1,
 	fragment = 2,
-	compute = 4,
 };
 
 enum class stage_role : std::uint8_t {
@@ -166,18 +165,13 @@ enum class builtin_slot : std::uint8_t {
 	frag_coord = 5,
 	front_facing = 6,
 	frag_depth = 7,
-	global_invocation_id = 8,
-	local_invocation_id = 9,
-	work_group_id = 10,
-	local_invocation_index = 11,
-	num_work_groups = 12,
 };
 
 struct uniform {
 	std::string scope_name;
 	std::string name;
 	// IR type pool id of the member's value type. Use the type_constant_pool
-	// + decoration table to walk member offsets / strides for descriptor
+	// and decorations payload to walk member offsets / strides for descriptor
 	// setup; the artifact no longer carries a type spelling.
 	u32 type_id = 0;
 	// access_kind value, kept as std::uint8_t because <io.h> on MSVC defines
@@ -198,6 +192,7 @@ struct stage_field {
 
 struct stage_interface {
 	stage_role role = stage_role::input;
+	std::string type_name;
 	std::vector<stage_field> fields;
 };
 

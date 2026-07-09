@@ -10,25 +10,22 @@
 //      the single `type` rule below. Anonymous bodies get compiler-generated
 //      names. A bodyless `struct Foo` is a reference to / forward declaration
 //      of that type.
-//   2. The top scope holds exactly: type declarations (`struct T {...};`,
-//      `using A = T;`), function declarations (`fn`), resource scopes
-//      (`uniform`), layout definitions (`layout`), stage interfaces
-//      (`input`/`output`), imports, and namespaces.
+//   2. The top scope holds exactly: imports, namespaces, type declarations
+//      (`struct T {...};`, `using A = T;`), resource scopes (`uniform`),
+//      and functions (`fn`).
 //   3. The return boundary `-> T : field(tag, ...)` belongs to the return
 //      type. Tags are data (a lookup table), not grammar.
 //
 // Grammar (EBNF):
 //
-// Words in single quotes that are NOT in frontend/tokens.def ('input',
-// 'output', 'layout', 'inout', 'readonly', 'writeonly', 'smooth', 'flat',
-// 'clip', 'location', 'builtin', 'std140', 'std430', 'scalar') are contextual
-// identifiers: the parser matches them by spelling only in these positions,
-// and they remain usable as ordinary names everywhere else.
+// Words in single quotes that are NOT in frontend/tokens.def ('readonly',
+// 'writeonly', 'smooth', 'flat', 'clip', 'std140', 'std430',
+// 'scalar') are contextual identifiers: the parser matches them by spelling
+// only in these positions.
 //
 //   translation_unit := decl*
 //   decl := 'export'? ( import | namespace | attribute? function
-//                     | type_decl | uniform | layout | using
-//                     | input | output )
+//                     | type_decl | uniform | layout | using )
 //   attribute   := '@' ident                 // '@vertex' | '@fragment'
 //   import      := 'import' ( '<' path '>' | string_literal ) ';'
 //   namespace   := 'namespace' scoped_name '{' balanced_body '}' ';'?
@@ -39,20 +36,17 @@
 //   layout      := 'layout' scoped_name ':' layout_rule? type ';'
 //   using       := 'using' ('uniform' | 'namespace')? scoped_name ';'
 //                | 'using' ident '=' type return_boundary? ';'
-//   input       := 'input'  scoped_name '{' io_body '}' ';'?
-//   output      := 'output' scoped_name '{' io_body '}' ';'?
-//
-//   type        := 'const'? ( struct_type | named_type ) ('&' | '*')?
-//   struct_type := 'struct' scoped_name? ('{' struct_body '}')?
-//   named_type  := (ident | 'void' | 'auto') ('::' ident)* ('<' balanced '>')?
+//   type        := 'const'? type_atom ('&' | '*')?
+//   type_atom   := 'struct' scoped_name? ('{' struct_body '}')?
+//                | (ident | 'void' | 'auto') ('::' ident)* ('<' balanced '>')?
 //   scoped_name := ident ('::' ('~' ident | ident))*
 //
-//   struct_body      := ( constructor_decl | field )*
-//   constructor_decl := 'fn' ident '(' params? ')' ';'
+//   struct_body      := ( member_fn | field )*
+//   member_fn        := 'fn' ident '(' params? ')' ('->' type)? ( block | ';' )
 //   field            := type ident ';'
 //
 //   params := param (',' param)*
-//   param  := 'inout'? type ident?
+//   param  := type ident?
 //
 //   return_boundary := ':' entry (',' entry)*
 //   entry           := ident '(' tag (',' tag)* ')'
@@ -60,11 +54,6 @@
 //
 //   uniform_body := ( access_qual? field )*      // field type may be inline
 //   access_qual  := 'readonly' | 'writeonly'
-//   io_body      := io_field*
-//   io_field     := io_qual* ident ';'
-//   io_qual      := 'smooth' | 'flat' | 'clip'
-//                 | 'location' '(' integer ')' | 'builtin' '(' ident ')'
-//
 //   statement := block | if | while | do | for | return | local_decl | expr_stmt
 //   block      := '{' statement* '}'
 //   if         := 'if' '(' expr ')' statement ( 'else' statement )?
@@ -229,7 +218,7 @@ Parser::ParsedType Parser::parse_type() {
 	if (consume(TokenKind::kw_Const)) type.is_const = true;
 
 	if (consume(TokenKind::kw_Struct)) {
-		// struct_type := 'struct' scoped_name? ('{' struct_body '}')?
+		// struct type atom: `struct` scoped_name? (`{` struct_body `}`)?
 		type.spelling = parse_scoped_name(); // may be empty (anonymous)
 
 		if (consume(TokenKind::left_brace)) {
@@ -326,12 +315,27 @@ void Parser::parse_struct_body(std::vector<StructField>& fields,
 				}
 				member.return_type = resolve_alias(ret.spelling);
 			}
-			if (!expect(TokenKind::semicolon, "expected ';' after member function declaration")) {
-				skip_to_declaration_boundary();
-				continue;
-			}
 			if (member.name == owner_name) {
 				constructor_parameters = member.parameters;
+			}
+
+			if (at(TokenKind::left_brace)) {
+				Decl inline_decl{
+					.kind = DeclKind::function,
+					.name = std::string(owner_name) + "::" + member.name,
+					.parameters = member.parameters,
+					.return_type = member.return_type,
+					.span = peek().span,
+					.has_body = true,
+				};
+				auto block = parse_block_statement();
+				inline_decl.body_statements = std::move(block.children);
+				if (unit_) {
+					unit_->declarations.push_back(std::move(inline_decl));
+				}
+			} else if (!expect(TokenKind::semicolon, "expected function body '{' or ';' after member function declaration")) {
+				skip_to_declaration_boundary();
+				continue;
 			}
 			member_functions.push_back(std::move(member));
 			continue;
@@ -363,7 +367,7 @@ StructField Parser::parse_field_declaration() {
 		cursor_ = save;
 		return {};
 	}
-	std::string name(peek().text);
+	std::string name{ peek().text };
 	++cursor_;
 	if (!consume(TokenKind::semicolon)) {
 		if (type.has_body) {
@@ -421,6 +425,7 @@ Decl Parser::parse_declaration() {
 	case TokenKind::kw_Namespace: return parse_namespace(exported);
 	case TokenKind::kw_Function:  return parse_function(exported, stage);
 	case TokenKind::kw_Uniform:   return parse_uniform(exported);
+	case TokenKind::kw_Layout:    parse_layout(); return {};
 	case TokenKind::kw_Using:     parse_using(exported); return {};
 	case TokenKind::kw_Struct: {
 		const auto save = cursor_;
@@ -438,20 +443,6 @@ Decl Parser::parse_declaration() {
 	default: break;
 	}
 
-	// Contextual declaration words: `input`/`output`/`layout` are identifiers,
-	// recognized as declarations only when the following token fits the shape
-	// (`input Name { ... }`, `layout path : ...`).
-	if (at_word("input") && at(TokenKind::identifier, 1)) {
-		return parse_stage_interface_decl(DeclKind::input, exported);
-	}
-	if (at_word("output") && at(TokenKind::identifier, 1)) {
-		return parse_stage_interface_decl(DeclKind::output, exported);
-	}
-	if (at_word("layout") && at(TokenKind::identifier, 1)) {
-		parse_layout();
-		return {};
-	}
-
 	if (at(TokenKind::identifier) || at(TokenKind::kw_Const) || at(TokenKind::kw_Void) || at(TokenKind::kw_Auto)) {
 		const auto save = cursor_;
 		ParsedType type = parse_type();
@@ -463,7 +454,7 @@ Decl Parser::parse_declaration() {
 	}
 
 	if (exported) diagnose_here("expected declaration after 'export'");
-	else diagnose_here("expected a top-level declaration: fn, struct, using, uniform, layout, input, output, import, or namespace");
+	else diagnose_here("expected a top-level declaration: fn, struct, using, uniform, layout, import, or namespace");
 	skip_to_declaration_boundary(true);
 	return {};
 }
@@ -496,7 +487,12 @@ Decl Parser::parse_import(bool exported) {
 		skip_to_declaration_boundary();
 	}
 
-	if (unit_) unit_->imports.push_back(name);
+	if (unit_) {
+		unit_->imports.push_back(name);
+		if (exported) {
+			unit_->exported_imports.push_back(name);
+		}
+	}
 	return Decl{ .kind = DeclKind::import, .name = std::move(name), .span = start.span, .exported = exported };
 }
 
@@ -671,7 +667,7 @@ void Parser::parse_uniform_body(const Decl& decl) {
 			skip_to_declaration_boundary();
 			continue;
 		}
-		std::string name(peek().text);
+		std::string name{ peek().text };
 		++cursor_;
 		if (!expect(TokenKind::semicolon, "expected ';' after uniform binding")) {
 			skip_to_declaration_boundary();
@@ -700,7 +696,7 @@ void Parser::parse_uniform_body(const Decl& decl) {
 
 void Parser::parse_layout() {
 	const Token start = peek();
-	(void)consume_word("layout");
+	(void)consume(TokenKind::kw_Layout);
 
 	LayoutDecl layout;
 	layout.span = start.span;
@@ -826,96 +822,13 @@ void Parser::parse_using(bool exported) {
 
 	if (unit_) unit_->type_aliases.push_back(TypeAlias{ .name = alias_name, .base = resolved_base });
 
-	if (consume(TokenKind::colon)) parse_return_boundary(resolved_base);
+	if (consume(TokenKind::colon)) {
+		diagnose_here("using aliases cannot declare a stage boundary");
+		skip_to_declaration_boundary();
+		return;
+	}
 	if (!expect(TokenKind::semicolon, "expected ';' after using declaration")) {
 		skip_to_declaration_boundary();
-	}
-}
-
-Decl Parser::parse_stage_interface_decl(DeclKind kind, bool exported) {
-	const Token start = peek();
-	++cursor_; // 'input' or 'output'
-
-	Decl decl{ .kind = kind, .name = parse_scoped_name(), .span = start.span, .exported = exported };
-	if (decl.name.empty()) diagnose_here("expected stage interface name");
-
-	if (!expect(TokenKind::left_brace, "expected '{' to open stage interface body")) {
-		skip_to_declaration_boundary(true);
-		return decl;
-	}
-
-	const StageRole role = kind == DeclKind::input ? StageRole::input
-					   : (kind == DeclKind::output ? StageRole::output : StageRole::varying);
-	parse_stage_interface_body(role, decl.name);
-	(void)consume(TokenKind::right_brace);
-	(void)consume(TokenKind::semicolon);
-	return decl;
-}
-
-void Parser::parse_stage_interface_body(StageRole role, std::string_view type_name) {
-	StageInterface interface{ .role = role, .type_name = std::string(type_name) };
-
-	while (!at_end() && !at(TokenKind::right_brace)) {
-		StageIOField field;
-
-		// Qualifiers are contextual identifiers. A word only counts as a
-		// qualifier when it can't be the field name itself: interpolation
-		// words must not be followed by ';', and location/builtin must open
-		// a parenthesized argument. So `smooth;` still declares a field
-		// literally named "smooth".
-		bool eating_qualifiers = true;
-		while (eating_qualifiers && at(TokenKind::identifier)) {
-			const auto word = peek().text;
-			const auto interpolation = parse_interpolation(word);
-			if (interpolation != InterpolationKind::none && !at(TokenKind::semicolon, 1)) {
-				++cursor_;
-				field.interpolation = interpolation;
-				if (interpolation == InterpolationKind::clip && field.builtin == BuiltinSlot::none) {
-					field.builtin = BuiltinSlot::position;
-				}
-			} else if (word == "location" && at(TokenKind::left_paren, 1)) {
-				cursor_ += 2; // 'location' '('
-				if (!at(TokenKind::integer_literal)) {
-					diagnose_here("expected integer literal as location index");
-					break;
-				}
-				field.location = static_cast<u32>(std::stoul(std::string(peek().text)));
-				++cursor_;
-				if (!expect(TokenKind::right_paren, "expected ')' after location index")) {
-					break;
-				}
-			} else if (word == "builtin" && at(TokenKind::left_paren, 1)) {
-				cursor_ += 2; // 'builtin' '('
-				if (!at(TokenKind::identifier)) {
-					diagnose_here("expected builtin slot name");
-					break;
-				}
-				field.builtin = parse_builtin_slot(peek().text);
-				++cursor_;
-				if (!expect(TokenKind::right_paren, "expected ')' after builtin name")) {
-					break;
-				}
-			} else {
-				eating_qualifiers = false;
-			}
-		}
-
-		if (!at(TokenKind::identifier)) {
-			diagnose_here("expected stage interface field name");
-			skip_to_declaration_boundary();
-			continue;
-		}
-		field.name = std::string(peek().text);
-		++cursor_;
-		if (!expect(TokenKind::semicolon, "expected ';' after stage interface field")) {
-			skip_to_declaration_boundary();
-			continue;
-		}
-		interface.fields.push_back(std::move(field));
-	}
-
-	if (unit_ && !interface.type_name.empty()) {
-		unit_->stage_interfaces.push_back(std::move(interface));
 	}
 }
 
@@ -952,12 +865,6 @@ void Parser::parse_parameter_list(std::vector<ParameterDecl>& out) {
 		return;
 	}
 	while (!at_end()) {
-		// `inout` is contextual: it only qualifies when a type follows, so a
-		// parameter type may itself be named `inout`.
-		if (at_word("inout") && at_type_start(1)) {
-			++cursor_;
-		}
-
 		ParsedType type = parse_type();
 		if (type.empty()) {
 			diagnose_here("expected parameter type");
@@ -1012,7 +919,9 @@ void Parser::parse_return_boundary(std::string base_type) {
 		return at(TokenKind::identifier) ? peek().text : std::string_view{};
 	};
 
-	StageInterface interface{ .role = StageRole::varying, .type_name = std::move(base_type) };
+	StageInterface interface;
+	interface.role = StageRole::varying;
+	interface.type_name = base_type;
 	bool first = true;
 	while (!at_end() && !at(TokenKind::left_brace) && !at(TokenKind::semicolon)) {
 		if (!first) {
@@ -1055,7 +964,7 @@ void Parser::parse_return_boundary(std::string base_type) {
 		for (const auto& existing : unit_->stage_interfaces) {
 			if (existing.role == StageRole::varying && existing.type_name == interface.type_name) return;
 		}
-		unit_->stage_interfaces.push_back(std::move(interface));
+		unit_->stage_interfaces.push_back(interface);
 	}
 }
 
@@ -1072,7 +981,7 @@ void Parser::maybe_parse_return_boundary(std::string_view base_type) {
 
 std::string Parser::parse_scoped_name() {
 	if (!at(TokenKind::identifier)) return {};
-	std::string name(peek().text);
+	std::string name{ peek().text };
 	++cursor_;
 	while (consume(TokenKind::colon_colon)) {
 		const bool destructor = consume(TokenKind::tilde);
@@ -1090,7 +999,7 @@ std::string Parser::parse_scoped_name() {
 
 std::string Parser::resolve_alias(std::string_view name) const {
 	if (!unit_) return std::string(name);
-	std::string current(name);
+	std::string current{ name };
 	for (int hops = 0; hops < 16; ++hops) {
 		bool advanced = false;
 		for (const auto& alias : unit_->type_aliases) {
@@ -1273,7 +1182,7 @@ bool Parser::try_parse_local_declaration(Decl::BodyStatement& out) {
 		cursor_ = save;
 		return false;
 	}
-	std::string name(peek().text);
+	std::string name{ peek().text };
 	++cursor_;
 
 	if (consume(TokenKind::equal)) {

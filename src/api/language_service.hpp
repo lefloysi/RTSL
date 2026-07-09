@@ -19,8 +19,6 @@ enum class LanguageSymbolKind : u08 {
 	function,
 	struct_decl,
 	uniform,
-	input,
-	output,
 	namespace_decl,
 	type_alias,
 	parameter,

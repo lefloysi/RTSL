@@ -8,11 +8,11 @@ source and do not consume textual RTIR in production paths.
 A backend receives a binary `rtslp` containing:
 
 - final RTIR instruction stream
-- resolved function table
+- resolved functions
 - entry point metadata
 - resource metadata
 - stage-interface metadata
-- type and constant tables
+- types and constants
 - symbol names and debug metadata
 - primitive call references
 
@@ -27,7 +27,7 @@ Each entry point record includes:
 - canonical symbol identity
 - function id
 - stage family
-- parameter and return payload types
+- parameter and return types
 - source/debug origin
 - required resource and stage-interface references
 
@@ -52,7 +52,6 @@ buffers, or other target-specific binding systems.
 
 Stage metadata includes:
 
-- input and output payload types
 - `varying` declarations
 - interpolation qualifiers such as `clip`, `smooth`, and `flat`
 - stage-family-specific payload data
@@ -94,6 +93,6 @@ A backend may lower `rtslp` to SPIR-V, HLSL, MSL, WGSL, or another
 backend-specific representation. Backend output is outside the RTSL artifact
 family and may have target-specific reflection or packaging.
 
-The backend contract is intentionally based on RTIR, metadata tables, and
+The backend contract is intentionally based on RTIR, metadata payloads, and
 primitive identities so new target formats can be added without changing the
 source language.

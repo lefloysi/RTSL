@@ -4,4 +4,4 @@ uniform albedo {
 }
 layout albedo::tint : vec4;
 
-export fn main() {}
+fn uses_namespaced_uniform() {}

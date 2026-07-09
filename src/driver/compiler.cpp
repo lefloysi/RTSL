@@ -17,6 +17,11 @@ namespace rtsl {
 
 namespace fs = std::filesystem;
 
+struct LoadedImport {
+	std::string name;
+	Artifact artifact;
+};
+
 std::vector<fs::path> import_search_roots(const CompilerInvocation& invocation) {
 	std::vector<fs::path> roots;
 	if (!invocation.source_name.empty()) {
@@ -121,7 +126,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 	Parser parser(sources_, diagnostics_, file_id, tokens);
 	auto ast = parser.parse_translation_unit();
 
-	std::vector<Artifact> imported_modules;
+	std::vector<LoadedImport> imported_modules;
 	for (const auto& import_name : ast.imports) {
 		std::vector<u08> bytes;
 		if (!load_or_build_import(invocation, import_name, bytes, active_builds)) {
@@ -141,13 +146,25 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 								std::format("failed to load import '{}'", import_name));
 			continue;
 		}
-		imported_modules.push_back(std::move(imported));
+		imported_modules.push_back(LoadedImport{ .name = import_name, .artifact = std::move(imported) });
 	}
 
 	Sema sema(sources_, diagnostics_);
 	auto semantic_module = sema.analyze(ast);
 	for (const auto& imported : imported_modules) {
-		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.exports.begin(), imported.exports.end());
+		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.artifact.exports.begin(), imported.artifact.exports.end());
+	}
+	for (const auto& decl : ast.declarations) {
+		if (decl.kind != DeclKind::import || !decl.exported) {
+			continue;
+		}
+		for (const auto& imported : imported_modules) {
+			if (imported.name != decl.name) {
+				continue;
+			}
+			semantic_module.exports.insert(semantic_module.exports.end(), imported.artifact.exports.begin(), imported.artifact.exports.end());
+			break;
+		}
 	}
 	if (diagnostics_.has_error()) {
 		return;

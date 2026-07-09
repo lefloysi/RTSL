@@ -115,7 +115,7 @@ bool inline_one_module_pass(IRModule& ir) {
 				new_body.push_back(std::move(copy));
 				continue;
 			}
-			const std::string& callee_name = ir.call_target_names[name_index];
+			const std::string_view callee_name = ir.call_target_names[name_index];
 			const std::size_t arg_count = inst.operands.size() - 1;
 
 			const IRFunction* target = nullptr;
@@ -189,6 +189,25 @@ bool inline_one_module_pass(IRModule& ir) {
 	return progress;
 }
 
+bool report_unresolved_program_calls(const IRModule& ir, DiagnosticEngine& diagnostics) {
+	bool found = false;
+	for (const auto& fn : ir.functions) {
+		for (const auto& inst : fn.body) {
+			if (inst.op != IROp::FunctionCall) {
+				continue;
+			}
+			std::string name = "<unknown>";
+			if (!inst.literals.empty() && inst.literals[0] < ir.call_target_names.size()) {
+				name = ir.call_target_names[inst.literals[0]];
+			}
+			diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+							   "unresolved function call '" + name + "' in program link");
+			found = true;
+		}
+	}
+	return found;
+}
+
 Linker::Linker(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {}
 
 bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
@@ -219,8 +238,14 @@ Artifact Linker::link_program() {
 	if (inputs_.size() == 1) {
 		program = inputs_.front();
 		program.kind = ArtifactKind::program;
-		program.bytes = write_artifact(ArtifactKind::program, program.module);
+		program.bytes.clear();
+		const auto error_count = diagnostics_.diagnostics().size();
+		report_unresolved_program_calls(program.module, diagnostics_);
 		validate_program_stages(program);
+		if (diagnostics_.diagnostics().size() != error_count) {
+			return program;
+		}
+		program.bytes = write_artifact(ArtifactKind::program, program.module);
 		return program;
 	}
 
@@ -244,8 +269,14 @@ Artifact Linker::link_program() {
 	}
 	for (int iteration = 0; iteration < 64 && inline_one_module_pass(program.module); ++iteration) {}
 
-	program.bytes = write_artifact(ArtifactKind::program, program.module);
+	program.bytes.clear();
+	const auto error_count = diagnostics_.diagnostics().size();
+	report_unresolved_program_calls(program.module, diagnostics_);
 	validate_program_stages(program);
+	if (diagnostics_.diagnostics().size() != error_count) {
+		return program;
+	}
+	program.bytes = write_artifact(ArtifactKind::program, program.module);
 	return program;
 }
 
@@ -303,11 +334,13 @@ Artifact extract_module_interface(const Artifact& source) {
 	}
 	// No exports means there's nothing to publish through .rtslm. Skip
 	// sidecar emission entirely so users don't get phantom module files
-	// sitting next to their compiled objects.
-	if (module_artifact.module.functions.empty()) {
+	// sitting next to their compiled objects. A module may still have exports
+	// with no local function bodies when it only re-exports an imported
+	// interface.
+	if (module_artifact.module.exports.empty()) {
 		return module_artifact;
 	}
-	// Carry over the full struct table so the exported signatures resolve
+	// Carry over full type declarations so exported signatures resolve
 	// to real struct definitions. Pruning down to just the structs that
 	// are actually transitively referenced is a later optimization.
 	module_artifact.module.structs = source.module.structs;
@@ -318,12 +351,10 @@ Artifact extract_module_interface(const Artifact& source) {
 }
 
 // Classification of a linked program based on which stages it declares.
-// Different program kinds have different completeness requirements — only
-// graphics programs need both vert + frag; a compute-only program is fine.
+// Graphics programs need both vert + frag.
 enum class ProgramKind : u08 {
 	none,     // no entry points at all
-	graphics, // any of vertex/fragment/tess/geometry stages
-	// compute / raygen / mesh — to be added as the language grows
+	graphics,
 };
 
 static ProgramKind classify_program(const Artifact& program) {
@@ -340,13 +371,30 @@ static ProgramKind classify_program(const Artifact& program) {
 }
 
 void Linker::validate_program_stages(const Artifact& program) {
+	if (program.entries.empty()) {
+		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+							"program link requires at least one stage entry point");
+		return;
+	}
 	if (classify_program(program) != ProgramKind::graphics) return;
 
 	bool has_vertex = false;
 	bool has_fragment = false;
 	for (const auto& entry : program.entries) {
-		has_vertex = has_vertex || entry.stage == StageKind::vertex;
-		has_fragment = has_fragment || entry.stage == StageKind::fragment;
+		if (entry.stage == StageKind::vertex) {
+			if (has_vertex) {
+				diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+									"graphics program has more than one vertex stage entry point");
+			}
+			has_vertex = true;
+		}
+		if (entry.stage == StageKind::fragment) {
+			if (has_fragment) {
+				diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+									"graphics program has more than one fragment stage entry point");
+			}
+			has_fragment = true;
+		}
 	}
 	if (!has_vertex) {
 		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",

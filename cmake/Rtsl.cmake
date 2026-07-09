@@ -17,6 +17,11 @@ function(rtsl_add_program target_name)
         set(RTSL_NAMESPACE "${target_name}")
     endif()
 
+    set(_rtsl_include_args)
+    foreach(dir IN LISTS RTSL_INCLUDE_DIRS)
+        list(APPEND _rtsl_include_args -I "${dir}")
+    endforeach()
+
     file(MAKE_DIRECTORY "${RTSL_OUTPUT_DIR}")
 
     # First pass: build a map of source basename -> .rtslm output path so we
@@ -45,10 +50,10 @@ function(rtsl_add_program target_name)
         # search path at compile time and don't imply an ordering here.
         set(import_deps)
         if(EXISTS "${source}")
-            file(STRINGS "${source}" _rtsl_import_lines REGEX "^[ \t]*import[ \t]")
+            file(STRINGS "${source}" _rtsl_import_lines REGEX "^[ \t]*(export[ \t]+)?import[ \t]")
             foreach(line IN LISTS _rtsl_import_lines)
-                if(line MATCHES "import[ \t]+[<\"]([^>\"]+)[>\"]")
-                    set(_imported "${CMAKE_MATCH_1}")
+                if(line MATCHES "(export[ \t]+)?import[ \t]+[<\"]([^>\"]+)[>\"]")
+                    set(_imported "${CMAKE_MATCH_2}")
                     get_filename_component(_imported_base "${_imported}" NAME_WE)
                     if(DEFINED _rtsl_module_${_imported_base})
                         list(APPEND import_deps "${_rtsl_module_${_imported_base}}")
@@ -67,6 +72,7 @@ function(rtsl_add_program target_name)
             BYPRODUCTS "${module_path}"
             COMMAND "$<TARGET_FILE:rtslc>" compile "${source}" -o "${object_path}"
                 -I "${RTSL_OUTPUT_DIR}"
+                ${_rtsl_include_args}
             COMMAND "$<TARGET_FILE:rtslc>" link-program "${object_path}" -o "${program_path}"
             DEPENDS "${source}" rtslc ${RTSL_DEPENDS} ${import_deps}
             VERBATIM

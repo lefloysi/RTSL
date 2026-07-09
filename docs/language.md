@@ -1,306 +1,112 @@
-# RTSL Language Semantics
+# RTSL Language
 
-This document defines the source language accepted by the RTSL compiler. RTSL is
-a graphics-first shader language for Rutile. For v0.1, source files compile to
-`rtslo` objects and optional `rtslm` interfaces, and linked programs target the
-vertex and fragment graphics stages.
+RTSL is a graphics shader language for Rutile. v0.1 supports vertex and
+fragment programs.
 
-## Lexical Model
+## Declarations
 
-RTSL source is UTF-8 text. The initial compiler implementation may restrict
-identifiers to ASCII, but the format must preserve original source spelling for
-diagnostics and debug output.
+Top-level declarations:
 
-Whitespace separates tokens and is otherwise insignificant outside literals.
-Line comments start with `//` and end at the next line break. Block comments
-start with `/*` and end with `*/`.
+- `import <path>;`
+- `export import <path>;`
+- `export fn name(...) ...`
+- `namespace name { ... }`
+- `struct Name { ... };`
+- `using Alias = Type;`
+- `using path::name;`
+- `using uniform scope;`
+- `uniform name? { ... }`
+- `layout path : rule? Type;`
+- `fn name(...) ...`
+- `@vertex fn name(...) ...`
+- `@fragment fn name(...) ...`
 
-Identifiers start with a letter or `_` and continue with letters, digits, or
-`_`. Identifiers are case-sensitive. Keywords cannot be used as ordinary
-identifiers.
+`layout` is a reserved keyword. `readonly`, `writeonly`, `smooth`,
+`flat`, `clip`, `std140`, `std430`, and `scalar` are contextual words.
 
-Numeric literals include integer and floating-point forms. String literals use
-double quotes. Character literals may be added later if needed by the standard
-library or compile-time evaluation.
+## Types
 
-The core punctuators and operators include:
-
-- grouping: `(`, `)`, `{`, `}`, `[`, `]`
-- separators: `,`, `;`, `.`, `::`
-- arithmetic: `+`, `-`, `*`, `/`, `%`
-- assignment and comparison: `=`, `==`, `!=`, `<`, `<=`, `>`, `>=`
-- logical and bitwise: `!`, `&&`, `||`, `&`, `|`, `^`, `~`
-- type and function syntax: `->`, `<`, `>`
-
-## Keywords
-
-Modules and visibility: `import`, `export`
-
-Declarations and scopes: `namespace`, `struct`, `using`, `uniform`, `varying`,
-`input`, `output`
-
-Functions and types: `fn`, `const`, `auto`, `void`
-
-Control flow: `if`, `else`, `while`, `do`, `for`, `return`
-
-Stage interface qualifiers: `clip`, `smooth`, `flat`, `location`, `builtin`
-
-Resource access qualifiers: `readonly`, `writeonly`
-
-Boolean literals: `true`, `false`
-
-Parameter and payload qualifiers may include `inout` for stages or APIs that
-require writable payload parameters.
-
-## v0.1 Scope
-
-The first release is intentionally narrow. Supported v0.1 features are:
-
-- source compilation to `rtslo`
-- optional `rtslm` interface emission
-- linked `rtsll` libraries and `rtslp` programs
-- uniform reflection
-- stage-interface reflection
-- vertex and fragment entry points
-- textual RTIR disassembly and assembly for inspection
-
-The following are documented goals, but not release guarantees for v0.1:
-
-- import search paths and full multi-file dependency resolution
-- backend-agnostic primitive expansion beyond the current graphics path
-- broader stage families beyond vertex and fragment
-- a stable long-term artifact ABI
-
-## Translation Units
-
-Every `.rtsl` file is a translation unit and may define private symbols,
-exported symbols, entry points, resource scopes, and stage payload contracts.
-There are no user-authored header files.
-
-Forward declarations are allowed for local ordering convenience. They do not
-form an import interface. Import interfaces come from `rtslm` files.
-
-## Imports And Exports
-
-Imports are file-oriented:
-
-```rtsl
-import <math.rtsl>;
-import <lighting/brdf.rtsl>;
-```
-
-The source-like import path resolves to a compiled module interface:
-
-```text
-math.rtsl -> math.rtslm
-lighting/brdf.rtsl -> lighting/brdf.rtslm
-```
-
-`export` marks a symbol as visible through the emitted `rtslm` interface. A
-source file with no exports still emits `rtslo`, but does not need to emit
-`rtslm`.
-
-## Namespaces And Name Lookup
-
-`namespace` introduces a qualified scope. `::` selects a member of a namespace,
-uniform scope, type scope, or other qualified symbol container.
-
-Name lookup first searches the innermost lexical scope, then outer lexical
-scopes, then imported/exported scopes made visible by `using`.
-
-Function identity is not the short name alone. The canonical identity is:
-
-```text
-qualified_name + parameter_types + return_type
-```
-
-The original display name is preserved for diagnostics, disassembly, and debug
-symbols.
-
-The namespace `rt::__primitive` is reserved. User code cannot define, shadow,
-alias, import over, or export symbols in that namespace.
-
-## Type Declarations
-
-`struct` defines aggregate data and may declare constructors or methods:
+A type is a builtin type, qualified name, alias, or inline `struct` body.
 
 ```rtsl
 struct Vertex {
     vec4 position;
     vec2 uv;
-    fn Vertex(Point p);
+};
+
+layout camera : struct {
+    mat4 view_proj;
 };
 ```
 
-Methods are defined with qualified names:
+## Structs
+
+Structs are aggregate data. Constructors may be declared and defined inline or
+out of line.
 
 ```rtsl
+struct Vertex {
+    vec4 position;
+    fn Vertex(vec3 p) {
+        position = vec4(p, 1.0);
+    }
+};
+
 fn Vertex::Vertex(Point p) {
     position = vec4(p.position, 1.0);
 }
 ```
 
-Builtin scalar, vector, matrix, resource, and stage helper types are provided by
-the compiler and standard library. For v0.1, the supported surface is limited to
-plain scalar/vector/matrix types, `Sampler2D`, and the built-in graphics stage
-carriers.
+## Resources
 
-## Functions And Statements
-
-Functions use `fn`:
+Resources are declared with `uniform`. Concrete set, binding, and location
+values are compiler-assigned.
 
 ```rtsl
-fn saturate(f32 x) -> f32 {
-    return clamp(x, 0.0, 1.0);
+uniform camera {
+    UniformBuffer data;
 }
+
+layout camera::data : std140 mat4;
 ```
 
-If no return type is written, the function returns `void`.
+## Stage Entries
 
-Statements include declarations, expression statements, blocks, `if`, `else`,
-`while`, `do`, `for`, and `return`.
-
-Expressions include literals, names, qualified names, calls, constructors, field
-access, indexing, unary operators, binary operators, assignment, and compound
-assignment.
-
-## Uniforms And Resources
-
-`uniform` declares a resource binding scope:
-
-```rtsl
-uniform albedo {
-    Sampler2D texture;
-    vec4 tint;
-}
-```
-
-Named uniform members are accessed through the uniform scope:
-
-```rtsl
-sample(albedo::texture, uv) * albedo::tint
-```
-
-Anonymous uniform scopes expose their members directly in the surrounding
-namespace. Reopened named uniform scopes are merged. Nested `uniform` scopes are
-invalid.
-
-Resource declarations may use access qualifiers:
-
-```rtsl
-uniform particles {
-    readonly Sampler2D texture;
-    vec4 tint;
-}
-```
-
-The compiler assigns backend binding numbers and records the reflected resource
-layout in artifacts.
-
-## Stage Interfaces
-
-Three declarations describe how a payload type crosses a stage boundary:
-
-- `input` — host-supplied stage inputs (e.g. vertex attributes)
-- `varying` — values interpolated from one stage to the next
-- `output` — final stage outputs (e.g. framebuffer attachments)
-
-```rtsl
-input Point {
-    location(0) position;
-    location(1) uv;
-}
-using RasterVertex = Vertex : position(clip), uv(smooth), material(flat);
-output Fragment {
-    location(0) color;
-}
-```
-
-Stage-boundary metadata is written the same way everywhere: `field(tag, tag, ...)`.
-Tags are bare identifiers looked up in a fixed table — none are reserved words —
-so adding a new one is a data change, not a grammar change.
-
-- Interpolation tags: `smooth`, `flat`, `clip`.
-- Built-in slot tags: `position`, `depth`, `vertex_index`, … (see below).
-- `clip` marks the clip-space position; it is delivered through the rasterizer's
-  built-in position slot and consumes no user location. It is a vertex output
-  only and is not readable as an input on later stages.
-
-For fields that instead need an explicit binding location, use `location(N)`
-inside an `input` or `output` block. Fields without an explicit location are
-numbered sequentially; fields bound to a built-in slot consume no location.
-
-Assigned locations are recorded in every artifact and are queryable through the
-reflection ABI so hosts can bind inputs and read outputs.
-
-## Entry Points
-
-Executable shader entry points are marked with a stage attribute — `@vertex`,
-`@fragment` — placed immediately before the `fn`. Because the stage is carried
-by the attribute rather than the function's name, the same identifier (e.g.
-`main`) can be reused across stages via overloading:
+Stage entries are ordinary functions with a stage attribute. The function name
+is not special.
 
 ```rtsl
 @vertex
-fn main(Point p) -> Vertex {
-    return Vertex(p);
+fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {
+    return Vertex(vec4(p.position, 1.0), p.uv);
 }
 
 @fragment
-fn main(Vertex v) -> vec4 {
-    return sample(albedo, v.uv);
+fn fragment_entry(Vertex v) -> vec4 {
+    return vec4(v.uv, 0.0, 1.0);
 }
 ```
 
-Fragment sugar: when a `@fragment` function returns a bare `vec4` (rather than
-a struct), the value is treated as a single color output at location 0 — no
-`output` block or per-field annotation required. Returning a struct still
-requires the fields to be annotated explicitly; no naming convention is
-implied.
-
-The compiler keeps the authored function as an ordinary function and generates a
-backend entry wrapper named for the stage (`vert`, `frag`). This generated stage
-runtime reads the stage inputs into the source-level input payload, calls the
-authored function, and writes the result across the stage boundary using the
-resolved interface metadata. The authored name is preserved for reflection and
-debugging.
-
-## Stage Builtins
-
-Stage built-ins (`gl_Position`, `gl_PointSize`, `gl_VertexIndex`, `gl_FragCoord`,
-`gl_FragDepth`, …) are delivered through a
-**builtin carrier struct passed by reference** as the entry's first parameter:
+Return boundaries describe payload fields crossing a stage boundary:
 
 ```rtsl
-@vertex
-fn main(RtVertex& b, Point p) -> Vertex {
-    b.position = mvp * vec4(p.position, 1.0);  // routes to gl_Position
-    return Vertex(p);
-}
+-> Vertex : position(clip), uv(smooth), material(flat)
 ```
 
-Each stage has a carrier type — `RtVertex`, `RtFragment` — whose members map to
-the stage's built-ins. Output members (e.g. `position` → `gl_Position`) are
-written by the shader; input members (e.g. `vertex_index` → `gl_VertexIndex`)
-are read-only. The carrier is passed by reference (`&`), so the generated stage
-runtime copies the used inputs in before the call and the used outputs back to
-the real `gl_*` globals after it. Built-ins the entry never touches are not
-copied.
+`clip` marks the clip-space position. `smooth` and `flat` select interpolation.
+The compiler assigns concrete locations.
 
-A linked `rtslp` must contain the entry points required by its program family:
+A fragment entry returning a bare `vec4` is the default single color target.
+It reflects as one output field named `color` at location `0`.
 
-- a **graphics** program must contain `vert` and `frag`.
+## Exports
 
-The linker reports a diagnostic when a graphics program is missing a required
-stage. Compute and advanced stage families are out of scope for v0.1 and are
-rejected with a clear diagnostic if encountered.
+`export` makes declarations visible through the emitted `.rtslm` interface.
+`export import <path>;` republishes the imported module's public interface.
+Stage entries do not need to be exported unless another module is meant to link
+to that function as a normal symbol.
 
-## Standard Library And Primitives
+## Builtins
 
-The standard library should be written in RTSL where possible. Functions such as
-`sample`, `normalize`, `saturate`, and `mix` are ordinary callable functions
-unless they need primitive backend behavior.
-
-Only operations that cannot be expressed in RTSL should use reserved primitives:
-texture sampling, barriers, derivatives, discard, and other backend-specific
-operations.
+Backend globals are not source syntax. Stage builtins are compiler-owned
+metadata produced during lowering and backend emission.

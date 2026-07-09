@@ -82,6 +82,7 @@ struct rtsl_module_t {
 			owned_uniform_names.push_back(uniform.scope_name.empty() ? uniform.name : uniform.scope_name + "." + uniform.name);
 			uniform_views.push_back(rtsl_uniform_info{
 				.qualified_name = owned_uniform_names.back().c_str(),
+				.type_name = uniform.type.c_str(),
 				.group = uniform.set,
 				.member = uniform.member,
 				.access = static_cast<rtsl_access>(uniform.access),
@@ -98,6 +99,7 @@ struct rtsl_module_t {
 			for (const auto& field : interface.fields) {
 				stage_views.push_back(rtsl_stage_variable{
 					.role = to_c_role(interface.role),
+					.payload_type = interface.type_name.c_str(),
 					.name = field.name.c_str(),
 					.interpolation = static_cast<rtsl_interpolation>(field.interpolation),
 					.builtin = static_cast<rtsl_builtin>(field.builtin),
@@ -378,12 +380,12 @@ int rtslLinkerAddBlob(rtsl_linker linker, const uint8_t* data, size_t size) {
 	return linker->linker.add_artifact_bytes(std::span<const rtsl::u08>(data, size)) ? 1 : 0;
 }
 
-rtsl_module rtslLinkProgram(rtsl_linker linker) {
+rtsl_module link_with(rtsl_linker linker, bool program) {
 	if (!linker) {
 		return nullptr;
 	}
 	try {
-		auto artifact = linker->linker.link_program();
+		auto artifact = program ? linker->linker.link_program() : linker->linker.link_library();
 		if (linker->ctx->compiler.diagnostics().has_error() || artifact.bytes.empty()) {
 			set_result(linker->ctx, RTSL_ERROR_LINK_FAILED, "link failed");
 			return nullptr;
@@ -394,6 +396,14 @@ rtsl_module rtslLinkProgram(rtsl_linker linker) {
 		set_result(linker->ctx, RTSL_ERROR_INTERNAL, "internal linker error");
 		return nullptr;
 	}
+}
+
+rtsl_module rtslLinkLibrary(rtsl_linker linker) {
+	return link_with(linker, false);
+}
+
+rtsl_module rtslLinkProgram(rtsl_linker linker) {
+	return link_with(linker, true);
 }
 
 void rtslDestroyLinker(rtsl_linker linker) {

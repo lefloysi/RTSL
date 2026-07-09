@@ -8,7 +8,7 @@ TEST_CASE("parser rejects dangling attribute markers") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"@vertex\n"
-		"fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(smooth), material(flat) {\n"
+		"fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth), material(flat) {\n"
 		"    return Vertex(p);\n"
 		"}\n"
 		"@\n",
@@ -23,10 +23,20 @@ TEST_CASE("parser rejects malformed statement fragments") {
 	auto artifact = compiler.compile_source(
 		"struct Point { vec3 position; }\n"
 		"struct Vertex { vec4 position; }\n"
-		"fn main(Point p) -> Vertex {\n"
+		"fn malformed(Point p) -> Vertex {\n"
 		"    ss return Vertex(p);\n"
 		"}\n",
 		CompilerInvocation{ .source_name = "bad_stmt.rtsl" }
+	);
+	(void)artifact;
+	REQUIRE(compiler.diagnostics().has_error());
+}
+
+TEST_CASE("parser rejects inout parameter qualifier") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn bad(inout vec4 color) {}\n",
+		CompilerInvocation{ .source_name = "bad_inout.rtsl" }
 	);
 	(void)artifact;
 	REQUIRE(compiler.diagnostics().has_error());
@@ -37,7 +47,7 @@ TEST_CASE("parser recovers after stray identifier before next declaration") {
 	auto artifact = compiler.compile_source(
 		"struct Point { vec3 position; }\n"
 		"struct Vertex { vec4 position; }\n"
-		"fn main(Point p) -> Vertex {\n"
+		"fn recover(Point p) -> Vertex {\n"
 		"    material = 0;\n"
 		"    s\n"
 		"    struct Fragment {\n"
@@ -55,7 +65,7 @@ TEST_CASE("parser stops at next declaration after missing semicolon") {
 	auto artifact = compiler.compile_source(
 		"struct Point { vec3 position; }\n"
 		"struct Vertex { vec4 position; }\n"
-		"fn main(Point p) -> Vertex {\n"
+		"fn sync(Point p) -> Vertex {\n"
 		"    material = 0;\n"
 		"    s\n"
 		"struct Fragment {\n"

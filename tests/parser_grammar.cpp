@@ -11,6 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <span>
 #include <string_view>
 
 using namespace rtsl;
@@ -39,12 +40,11 @@ ParseResult parse(std::string_view source, std::string_view name = "test.rtsl") 
 }
 
 // Locate the body statements of the first function-shape declaration.
-const std::vector<Decl::BodyStatement>& first_function_body(const TranslationUnit& unit) {
+std::span<const Decl::BodyStatement> first_function_body(const TranslationUnit& unit) {
 	for (const auto& decl : unit.declarations) {
 		if (decl.kind == DeclKind::function) return decl.body_statements;
 	}
-	static const std::vector<Decl::BodyStatement> empty;
-	return empty;
+	return {};
 }
 
 const Decl* find_function(const TranslationUnit& unit) {
@@ -325,12 +325,12 @@ TEST_CASE("bare identifier statement is diagnosed") {
 }
 
 TEST_CASE("dangling attribute marker is diagnosed") {
-	auto r = parse("@vertex\nfn main() {}\n@\n");
+	auto r = parse("@vertex\nfn vertex_entry() {}\n@\n");
 	REQUIRE(r.diagnostics.has_error());
 }
 
 TEST_CASE("unknown attribute name is diagnosed") {
-	auto r = parse("@nonsense\nfn main() {}\n");
+	auto r = parse("@nonsense\nfn entry() {}\n");
 	REQUIRE(r.diagnostics.has_error());
 }
 
@@ -344,7 +344,7 @@ TEST_CASE("do-while without semicolon is diagnosed") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("stage attribute records StageKind::vertex on the fn decl") {
-	auto r = parse("@vertex fn main() {}");
+	auto r = parse("@vertex fn vertex_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
@@ -352,7 +352,7 @@ TEST_CASE("stage attribute records StageKind::vertex on the fn decl") {
 }
 
 TEST_CASE("stage attribute records StageKind::fragment on the fn decl") {
-	auto r = parse("@fragment fn main() {}");
+	auto r = parse("@fragment fn fragment_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
@@ -387,6 +387,24 @@ TEST_CASE("struct member function declarations are collected") {
 	REQUIRE(r.unit.structs[0].member_functions[0].parameters.size() == 1);
 	REQUIRE(r.unit.structs[0].member_functions[1].name == "shade");
 	REQUIRE(r.unit.structs[0].member_functions[1].return_type == "vec4");
+}
+
+TEST_CASE("inline struct member body becomes qualified function declaration") {
+	auto r = parse(
+		"struct Vertex {\n"
+		"    vec4 position;\n"
+		"    fn Vertex(vec4 p) { position = p; }\n"
+		"};\n"
+	);
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.structs.size() == 1);
+	REQUIRE(r.unit.structs[0].member_functions.size() == 1);
+	const auto* fn = find_function(r.unit);
+	REQUIRE(fn != nullptr);
+	REQUIRE(fn->name == "Vertex::Vertex");
+	REQUIRE(fn->has_body);
+	REQUIRE(fn->parameters.size() == 1);
+	REQUIRE(fn->body_statements.size() == 1);
 }
 
 TEST_CASE("top-level named type variable declaration is rejected") {
@@ -445,15 +463,28 @@ TEST_CASE("layout with layout rule parses") {
 	REQUIRE(r.unit.layouts[0].rule == LayoutRule::std140);
 }
 
-TEST_CASE("using-alias with return boundary records varying interface") {
+TEST_CASE("layout cannot be used as a function name") {
+	auto r = parse("fn layout() {}");
+	REQUIRE(r.diagnostics.has_error());
+}
+
+TEST_CASE("contextual interpolation words remain valid identifiers") {
+	auto r = parse("fn smooth(flat clip) { flat = clip; }");
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	const auto* fn = find_function(r.unit);
+	REQUIRE(fn != nullptr);
+	REQUIRE(fn->name == "smooth");
+	REQUIRE(fn->parameters.size() == 1);
+	REQUIRE(fn->parameters[0].type == "flat");
+	REQUIRE(fn->parameters[0].name == "clip");
+}
+
+TEST_CASE("function return boundary records varying interface") {
 	auto r = parse(
 		"struct Vertex { vec4 position; vec2 uv; };\n"
-		"using RasterVertex = Vertex : position(clip), uv(smooth);\n"
+		"@vertex fn vertex_entry() -> Vertex : position(clip), uv(smooth) { return Vertex(); }\n"
 	);
 	REQUIRE_FALSE(r.diagnostics.has_error());
-	REQUIRE(r.unit.type_aliases.size() == 1);
-	REQUIRE(r.unit.type_aliases[0].name == "RasterVertex");
-	REQUIRE(r.unit.type_aliases[0].base == "Vertex");
 	bool found_varying = false;
 	for (const auto& iface : r.unit.stage_interfaces) {
 		if (iface.role == StageRole::varying && iface.type_name == "Vertex") {
@@ -466,6 +497,14 @@ TEST_CASE("using-alias with return boundary records varying interface") {
 		}
 	}
 	REQUIRE(found_varying);
+}
+
+TEST_CASE("using alias cannot declare stage boundary") {
+	auto r = parse(
+		"struct Vertex { vec4 position; };\n"
+		"using X = Vertex : position(clip);\n"
+	);
+	REQUIRE(r.diagnostics.has_error());
 }
 
 TEST_CASE("using import records symbol and scope imports") {
@@ -484,31 +523,46 @@ TEST_CASE("using import records symbol and scope imports") {
 	REQUIRE(r.unit.using_imports[2].kind == UsingImport::Kind::namespace_scope);
 }
 
-TEST_CASE("return boundary with unknown tag is diagnosed") {
+TEST_CASE("export import records imported module and exported decl") {
+	auto r = parse("export import <shared/math.rtsl>;");
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.imports.size() == 1);
+	REQUIRE(r.unit.imports[0] == "shared/math.rtsl");
+	REQUIRE(r.unit.exported_imports.size() == 1);
+	REQUIRE(r.unit.exported_imports[0] == "shared/math.rtsl");
+	REQUIRE(r.unit.declarations.size() == 1);
+	REQUIRE(r.unit.declarations[0].kind == DeclKind::import);
+	REQUIRE(r.unit.declarations[0].exported);
+}
+
+TEST_CASE("return boundary requires a tag list") {
 	auto r = parse(
 		"struct Vertex { vec4 position; };\n"
-		"using X = Vertex : position(weird_tag);\n"
+		"@vertex fn vertex_entry() -> Vertex : position { return Vertex(); }\n"
 	);
 	REQUIRE(r.diagnostics.has_error());
 }
 
-TEST_CASE("input stage interface with location qualifier parses") {
+TEST_CASE("return boundary with unknown tag is diagnosed") {
+	auto r = parse(
+		"struct Vertex { vec4 position; };\n"
+		"@vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
+	);
+	REQUIRE(r.diagnostics.has_error());
+}
+
+TEST_CASE("input stage interface declaration is not source syntax") {
 	auto r = parse(
 		"input Point {\n"
 		"    location(0) position;\n"
 		"    location(1) uv;\n"
 		"}\n"
 	);
-	REQUIRE_FALSE(r.diagnostics.has_error());
-	REQUIRE(r.unit.stage_interfaces.size() == 1);
-	REQUIRE(r.unit.stage_interfaces[0].role == StageRole::input);
-	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 2);
-	REQUIRE(r.unit.stage_interfaces[0].fields[0].location == 0);
-	REQUIRE(r.unit.stage_interfaces[0].fields[1].location == 1);
+	REQUIRE(r.diagnostics.has_error());
 }
 
 TEST_CASE("export marks declarations as exported") {
-	auto r = parse("export fn main() {}");
+	auto r = parse("export fn helper() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	REQUIRE(find_function(r.unit)->exported);
 }

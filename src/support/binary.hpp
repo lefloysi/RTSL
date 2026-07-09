@@ -105,7 +105,7 @@ namespace detail {
 
 // Push `name` onto the stream's diagnostic context for the RAII lifetime of
 // this scope. On failure, the context prefix gets prepended to the error
-// message so the caller sees `entry_table : entries[0] : name : ...`.
+// message so the caller sees `entries : entries[0] : name : ...`.
 template <typename Stream>
 struct context_scope {
 	Stream& stream;
@@ -191,8 +191,8 @@ struct read_stream {
 		return {};
 	}
 
-	// Zero-copy view into the remaining input. Advances the cursor. Used by
-	// section headers where the payload gets handed to a nested read_stream.
+	// Zero-copy view into the remaining input. Advances the cursor. Used when
+	// a payload is handed to a nested read_stream.
 	error take_view(std::span<const std::byte>& out, std::size_t count) {
 		if (count > remaining())
 			return error(std::format("view of {} bytes at offset {} exceeds input ({} bytes remain)", count, cursor_, remaining()));
@@ -206,7 +206,7 @@ struct read_stream {
 	std::size_t size() const { return input_.size(); }
 	bool at_end() const { return cursor_ >= input_.size(); }
 
-	const std::string& context_str() const { return context_; }
+	std::string_view context_str() const { return context_; }
 	void set_context(std::string c) { context_ = std::move(c); }
 
 	// Named-field entry point: `stream(field("name", value), field("y", y))`.
@@ -256,7 +256,7 @@ struct write_stream {
 	std::vector<u08> take_written() { return std::move(output_); }
 	std::size_t size() const { return output_.size(); }
 
-	const std::string& context_str() const { return context_; }
+	std::string_view context_str() const { return context_; }
 	void set_context(std::string c) { context_ = std::move(c); }
 
 	template <typename... Fields>

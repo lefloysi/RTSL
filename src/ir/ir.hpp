@@ -20,13 +20,13 @@ namespace rtsl {
 using IRId = u32;
 inline constexpr IRId IRId_None = 0;
 
-// String pool reference into the artifact's string_table.
+// String pool reference into the artifact's strings payload.
 struct StringId {
 	u32 value = 0;
 };
 
 // Source-debug origin for an instruction. file_id is a SourceManager file id
-// at compile time and a debug_table file id once serialized.
+// at compile time and a debug payload file id once serialized.
 struct DebugLocation {
 	u32 file_id = 0;
 	u32 line = 0;
@@ -80,8 +80,8 @@ struct IRInstruction {
 	DebugLocation loc{};
 };
 
-// Decoration kinds. Kept in a dedicated section so backends iterate them once
-// instead of scanning the SSA stream.
+// Decoration kinds. Kept separate from the SSA stream so backends iterate them
+// directly.
 enum class IRDecorationKind : u16 {
 	Location,
 	Binding,
@@ -136,8 +136,8 @@ struct IRFunction {
 	// importers; non-exported functions are private to the implementation.
 	bool exported = false;
 
-	StringId display_name{}; // authored, e.g. "main" (for `@vertex fn main`)
-	StringId mangled_name{}; // canonical identity, e.g. "vert_main"
+	StringId display_name{}; // authored entry/helper name
+	StringId mangled_name{}; // canonical identity
 
 	// Source-level identifier used by the inliner to match unresolved
 	// FunctionCall instructions to their target. The StringId-based pair above
@@ -167,10 +167,8 @@ struct IRModule {
 	std::vector<IRFunction> functions;
 	std::vector<IRFunctionDebugInfo> function_debug;
 
-	// Reflection bridges. Not part of SSA semantics; they let
-	// rtslModuleGetUniform / rtslModuleGetStageVariable / rtslModuleGetEntry
-	// answer queries directly. Persisted via the existing resource_table /
-	// stage_interface_table artifact sections.
+	// Reflection bridges. Not part of SSA semantics; they let the C API answer
+	// uniform, stage-variable, and entry queries directly.
 	std::vector<StructDecl> structs;
 	std::vector<UniformBinding> uniforms;
 	std::vector<StageInterface> stage_interfaces;

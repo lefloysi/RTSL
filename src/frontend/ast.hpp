@@ -15,8 +15,6 @@ enum class DeclKind {
 	struct_decl,
 	uniform,
 	varying,
-	input,
-	output,
 	namespace_decl,
 };
 
@@ -46,9 +44,9 @@ enum class StageRole : u08 {
 	output,
 };
 
-// Interpolation kind for a stage interface field. Encoded as u08 in the
-// serialized stage_interface_table; the source spellings ("smooth", "flat",
-// "clip") never reach the binary.
+// Interpolation kind for a stage interface field. Encoded as u08 in artifact
+// payload metadata; the source spellings ("smooth", "flat", "clip") never
+// reach the binary.
 enum class InterpolationKind : u08 {
 	none = 0,
 	smooth = 1,
@@ -58,8 +56,8 @@ enum class InterpolationKind : u08 {
 
 // Builtin pipeline slot (subset of SPIR-V BuiltIn) carried by a stage I/O
 // field. `none` means the field has a user-assigned location instead.
-// Generated from frontend/builtins.def; encodes as u08 in the serialized
-// stage_interface_table, so ordering there is wire format.
+// Generated from frontend/builtins.def; encodes as u08 in artifact payload
+// metadata, so ordering there is wire format.
 enum class BuiltinSlot : u08 {
 	none = 0,
 #define RTSL_BUILTIN(name, spelling) spelling,
@@ -108,8 +106,7 @@ struct StageIOField {
 	u32 location = kNoLocation;
 };
 
-// A declared stage interface: how a payload struct's fields cross a stage
-// boundary (input attributes, interpolated varyings, or stage outputs).
+// Reflected stage payload metadata.
 struct StageInterface {
 	StageRole role = StageRole::varying;
 	std::string type_name;
@@ -186,8 +183,7 @@ struct Decl {
 	// zero statements) from "no body" (forward decl the linker resolves).
 	bool has_body = false;
 	// Set by `@vertex` / `@fragment` attribute on the fn decl. Drives
-	// backend entry-point selection instead of name-matching on
-	// vert_*/frag_*, which lets overloaded `main` work per stage.
+	// backend entry-point selection instead of name-matching on vert_*/frag_*.
 	StageKind stage = StageKind::none;
 };
 
@@ -275,11 +271,7 @@ struct LayoutDecl {
 	SourceSpan span{};
 };
 
-// `using Alias = Base : intrinsic field, ...;` — records that source-level
-// uses of `Alias` in this translation unit refer to the base type `Base`. The
-// boundary spec itself is materialized as a StageInterface (role=varying) on
-// the base type; the alias name never leaks past parse. A `using Alias = Base;`
-// without a spec is a plain type alias.
+// `using Alias = Base;`
 struct TypeAlias {
 	std::string name;
 	std::string base;
@@ -301,6 +293,7 @@ struct TranslationUnit {
 	u32 file_id = 0;
 	std::vector<Decl> declarations;
 	std::vector<std::string> imports;
+	std::vector<std::string> exported_imports;
 	std::vector<ExportSymbol> exports;
 	std::vector<StructDecl> structs;
 	std::vector<UniformBinding> uniforms;

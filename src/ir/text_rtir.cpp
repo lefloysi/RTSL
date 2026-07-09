@@ -72,11 +72,4 @@ std::string disassemble_artifact(const Artifact& artifact) {
 	return out.str();
 }
 
-bool assemble_text_rtir(std::string_view, Artifact&, DiagnosticEngine* diagnostics) {
-	if (diagnostics) {
-		diagnostics->report(DiagnosticCode::text_rtir_unimplemented, DiagnosticSeverity::error, {}, "<rtir>", "text RTIR assembly is not implemented for the SSA format");
-	}
-	return false;
-}
-
 } // namespace rtsl

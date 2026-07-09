@@ -1,7 +1,6 @@
 #include "ir/ir.hpp"
 
 #include "sema/mangler.hpp"
-#include "sema/stage_builtins.hpp"
 #include "sema/uniform_lowering.hpp"
 #include "support/hashing.hpp"
 
@@ -149,10 +148,6 @@ class TypeRegistry {
 		matrix("mat3", info_["vec3"].id, 3);
 		matrix("mat2", info_["vec2"].id, 2);
 
-		// Stage entry wrappers accept ABI carrier parameters for stage-specific
-		// builtin access.
-		opaque("vert_globals", TypeInfo::Kind::Struct, IROp::TypeStruct);
-		opaque("frag_globals", TypeInfo::Kind::Struct, IROp::TypeStruct);
 	}
 
 	// Register an anonymous struct type built from a layout's inline fields.
@@ -411,11 +406,11 @@ struct Value {
 class FunctionLowerer {
   public:
 	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn,
-		const std::vector<UniformBinding>& uniforms,
+		std::span<const UniformBinding> uniforms,
 		const StringMap<std::string>& using_uniforms,
 		const StringMap<IRId>& uniform_var_ids,
 		const StringMap<IRId>& uniform_var_type_ids,
-		const std::vector<StageInterface>& stage_interfaces,
+		std::span<const StageInterface> stage_interfaces,
 		StageKind stage)
 		: builder_(builder), types_(types), fn_(fn), uniforms_(uniforms),
 		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids),
@@ -882,7 +877,7 @@ class FunctionLowerer {
 				builder_.diagnose(std::format("assignment to unknown name '{}'", head.text));
 				return;
 			}
-			std::vector<std::string> full_path = { head.text };
+			std::vector<std::string> full_path{ head.text };
 			full_path.insert(full_path.end(), path.begin(), path.end());
 			store_member(this_it->second, full_path, v);
 			return;
@@ -905,7 +900,7 @@ class FunctionLowerer {
 		}
 	}
 
-	void store_member(const Local& local, const std::vector<std::string>& path, const Value& v) {
+	void store_member(const Local& local, std::span<const std::string> path, const Value& v) {
 		// Resolve the member type and index chain.
 		IRId cur_type = local.type_id;
 		std::vector<IRId> indices;
@@ -1174,7 +1169,7 @@ class FunctionLowerer {
 		// Global uniform. The parser captures expression text into Decl::Expr
 		// before any uniform-name mangling, so `transform` reaches us as its
 		// source identifier rather than `u_..._h..`. Translate it here by
-		// matching against the uniform table; the mangled form is also accepted
+		// matching against reflected uniforms; the mangled form is also accepted
 		// so that downstream code paths that go through lower_uniform_references
 		// continue to work.
 		std::string lookup_name(name);
@@ -1279,7 +1274,7 @@ class FunctionLowerer {
 		return base;
 	}
 
-	Value emit_call(std::string_view callee, const std::vector<Value>& args) {
+	Value emit_call(std::string_view callee, std::span<const Value> args) {
 		// Constructor of a known type.
 		if (const IRId type_id = types_.find(callee); type_id) {
 			// Type construction is structural: first try a declared member-init
@@ -1381,7 +1376,7 @@ class FunctionLowerer {
 	// its result ids is replaced with a fresh id local to this function. The
 	// constructor's terminating ReturnValue is consumed: its operand becomes
 	// the call's result. Returns Value{} on no match.
-	[[nodiscard]] Value try_inline_constructor(IRId type_id, const std::vector<Value>& args) {
+	[[nodiscard]] Value try_inline_constructor(IRId type_id, std::span<const Value> args) {
 		const auto& functions = builder_.module().functions;
 		const IRFunction* ctor = nullptr;
 		for (const auto& candidate : functions) {
@@ -1506,11 +1501,11 @@ class FunctionLowerer {
 	IRBuilder& builder_;
 	TypeRegistry& types_;
 	IRFunction& fn_;
-	const std::vector<UniformBinding>& uniforms_;
-	const std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>>& using_uniforms_;
-	const std::unordered_map<std::string, IRId>& uniform_var_ids_;
-	const std::unordered_map<std::string, IRId>& uniform_var_type_ids_;
-	const std::vector<StageInterface>& stage_interfaces_;
+	std::span<const UniformBinding> uniforms_;
+	const StringMap<std::string>& using_uniforms_;
+	const StringMap<IRId>& uniform_var_ids_;
+	const StringMap<IRId>& uniform_var_type_ids_;
+	std::span<const StageInterface> stage_interfaces_;
 	StageKind stage_;
 	std::unordered_map<std::string, Local, TransparentStringHash, std::equal_to<>> locals_;
 
@@ -1522,26 +1517,10 @@ class FunctionLowerer {
 };
 
 // ----------------------------------------------------------------------------
-// Helpers from the old IR.cpp that are still useful for stage-wrapper synthesis.
+// Helpers for stage-interface synthesis.
 // ----------------------------------------------------------------------------
 
-std::string globals_type_name(StageKind stage) {
-	switch (stage) {
-	case StageKind::vertex:
-		return "vert_globals";
-	case StageKind::fragment:
-		return "frag_globals";
-	case StageKind::none:
-		return {};
-	}
-	return {};
-}
-
-bool is_stage_globals_type(StageKind stage, std::string_view type) {
-	return type == globals_type_name(stage);
-}
-
-const StageInterface* find_interface(const std::vector<StageInterface>& interfaces, std::string_view type_name) {
+const StageInterface* find_interface(std::span<const StageInterface> interfaces, std::string_view type_name) {
 	for (const auto& interface : interfaces) {
 		if (interface.type_name == type_name)
 			return &interface;
@@ -1561,7 +1540,7 @@ bool is_rasterizer_only(const StageIOField& field) {
 // and runs to a fixed point so chains of inlined calls expand fully.
 //
 // Calls whose target lives in another translation unit (no match in this
-// module's function table) are left alone: the linker handles cross-module
+// module's functions) are left alone: the linker handles cross-module
 // resolution in a later pass over rtslo/rtsll inputs.
 bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 	bool progress = false;
@@ -1592,7 +1571,7 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 			new_body.push_back(std::move(copy));
 			continue;
 		}
-		const std::string& callee_name = ir.call_target_names[name_index];
+		const std::string_view callee_name = ir.call_target_names[name_index];
 		const std::size_t arg_count = inst.operands.size() - 1; // operand[0] is the (unresolved) target id slot
 
 		const IRFunction* target = nullptr;
@@ -1681,8 +1660,8 @@ void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
 			break;
 	}
 	// Once nothing is left to inline against this module, drop the side
-	// table: any surviving FunctionCalls are cross-module and will get their
-	// names from the artifact's string section after linking.
+	// any surviving FunctionCalls are cross-module and will get their names
+	// from the artifact's strings payload after linking.
 	if (ir.call_target_names.empty())
 		return;
 	bool any_unresolved = false;
@@ -1842,7 +1821,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	ir.uniforms = module.uniforms;
 	ir.stage_interfaces = module.stage_interfaces;
 
-	std::unordered_set<std::string> callable_names;
+	StringSet callable_names;
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind == DeclKind::function) {
 			callable_names.insert(symbol.name);
@@ -1854,7 +1833,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 
-	IRBuilder builder(ir, std::move(callable_names), diagnostics);
+	IRBuilder builder{ ir, std::move(callable_names), diagnostics };
 	TypeRegistry types(builder);
 	for (const auto& decl : module.structs) {
 		types.register_struct(decl);
@@ -1932,7 +1911,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		uniform_by_qualified.emplace(qualified_name_of(ir.uniforms[i]), i);
 	}
 
-	const auto qualified_from_path = [](const std::vector<std::string>& path) {
+	const auto qualified_from_path = [](std::span<const std::string> path) {
 		std::string qn;
 		for (std::size_t p = 0; p < path.size(); ++p) {
 			if (p)
@@ -1989,8 +1968,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	// Emit one global Variable per uniform with the right storage class and
 	// a matching set/binding decoration pair. The mangled binding name is what
 	// the SSA body references.
-	std::unordered_map<std::string, IRId> uniform_var_ids;
-	std::unordered_map<std::string, IRId> uniform_var_type_ids;
+	StringMap<IRId> uniform_var_ids;
+	StringMap<IRId> uniform_var_type_ids;
 	for (std::size_t uidx = 0; uidx < ir.uniforms.size(); ++uidx) {
 		auto& uniform = ir.uniforms[uidx];
 		const std::string mangled = uniform_binding_name(uniform);
@@ -2097,8 +2076,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 
-	std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> using_uniforms;
-	const auto qualified_from_using_path = [](const std::vector<std::string>& path) {
+	StringMap<std::string> using_uniforms;
+	const auto qualified_from_using_path = [](std::span<const std::string> path) {
 		std::string qn;
 		for (std::size_t i = 0; i < path.size(); ++i) {
 			if (i) qn += "::";
@@ -2129,13 +2108,10 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		std::size_t function_index;
 		StageKind stage;
 		std::string user_name;
-		std::string carrier_type;
 		std::string input_type;
 		std::string output_type;
 	};
 	std::vector<PendingStage> pending_stages;
-
-	const Mangler mangler;
 
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind != DeclKind::function)
@@ -2166,17 +2142,10 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 		const bool is_constructor = !ctor_owner.empty();
 
-		const std::string stage_globals_type = is_stage_entry ? globals_type_name(stage) : std::string{};
-		bool has_explicit_globals = false;
 		std::vector<ParameterDecl> parameters;
 		parameters.reserve(symbol.parameters.size());
 		for (const auto& p : symbol.parameters) {
-			if (is_stage_entry && p.type == stage_globals_type)
-				has_explicit_globals = true;
 			parameters.push_back(p);
-		}
-		if (is_stage_entry && !has_explicit_globals) {
-			parameters.insert(parameters.begin(), ParameterDecl{ .type = stage_globals_type, .name = "g" });
 		}
 
 		IRFunction fn;
@@ -2189,7 +2158,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		ir.functions.push_back(std::move(fn));
 		const std::size_t fn_index = ir.functions.size() - 1;
 
-		FunctionLowerer lowerer(builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, ir.stage_interfaces, stage);
+		FunctionLowerer lowerer{ builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, ir.stage_interfaces, stage };
 		if (is_constructor) {
 			lowerer.begin_constructor(ctor_owner);
 		}
@@ -2197,7 +2166,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		lowerer.emit_function_parameters(parameters);
 		for (const auto& statement : symbol.body_statements) {
 			// Uniform identifiers in body expressions are resolved by name
-			// inside FunctionLowerer::emit_name against the uniforms table;
+			// inside FunctionLowerer::emit_name against reflected uniforms;
 			// no text-level mangling is needed here because the parser builds
 			// a Decl::Expr ahead of any text substitution we could do.
 			lowerer.lower_statement(statement);
@@ -2218,16 +2187,9 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 
 		if (is_stage_entry) {
-			std::string carrier_type;
 			std::string input_type;
 			for (const auto& p : symbol.parameters) {
-				if (is_stage_builtin_carrier(p.type)) {
-					if (carrier_type.empty()) {
-						carrier_type = p.type;
-					}
-				} else if (is_stage_globals_type(stage, p.type)) {
-					continue;
-				} else if (input_type.empty()) {
+				if (input_type.empty()) {
 					input_type = p.type;
 				}
 			}
@@ -2235,7 +2197,6 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 				.function_index = fn_index,
 				.stage = stage,
 				.user_name = symbol.name,
-				.carrier_type = std::move(carrier_type),
 				.input_type = std::move(input_type),
 				.output_type = symbol.return_type,
 			});
@@ -2284,7 +2245,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 								std::format("stage payload '{}' is {} and requires a 'varying' declaration to define interpolation", type, context));
 		}
 	};
-	// Fragment sugar: `@fragment fn main(...) -> vec4` (bare vector, not a
+	// Fragment sugar: `@fragment fn name(...) -> vec4` (bare vector, not a
 	// struct) means "single color output at location 0". Synthesize an output
 	// interface with one field so the wrapper has something to write to. If
 	// the user returns a struct, they must annotate its fields — no magic.
@@ -2322,9 +2283,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	// Generate the compiler-provided backend entry wrappers. For now the
 	// wrapper is the trivial form: ReadInput each input location into a local,
 	// call the user entry, write each output location via WriteOutput, write
-	// the clip-space builtin if applicable. The interesting work (carrier
-	// builtins, varying lowering) follows once the rest of the pipeline is
-	// wired through.
+	// the clip-space builtin if applicable.
 	(void)pending_stages;
 
 	inline_resolved_calls(ir, builder);

@@ -7,10 +7,9 @@
 //   RTSL_KEYWORD(name, spelling)      reserved word, token `kw_<name>`
 //   RTSL_PUNCTUATOR(name, spelling)   punctuation of any length
 //
-// Only true reserved words live here. Contextual words (input, output,
-// layout, inout, readonly, smooth, clip, std140, ...) are ordinary
-// identifiers that the parser recognizes by spelling where the grammar
-// allows them — they stay usable as names everywhere else.
+// Only true reserved words live here. Contextual words (readonly,
+// smooth, clip, std140, ...) are ordinary identifiers that the parser
+// recognizes by spelling where the grammar allows them.
 //
 // PUNCTUATOR ORDER IS MATCH PRIORITY: the lexer tries entries top to bottom
 // and takes the first prefix match, so longer spellings must precede any
@@ -29,6 +28,7 @@ RTSL_KEYWORD(Namespace, "namespace")
 RTSL_KEYWORD(Struct, "struct")
 RTSL_KEYWORD(Using, "using")
 RTSL_KEYWORD(Uniform, "uniform")
+RTSL_KEYWORD(Layout, "layout")
 RTSL_KEYWORD(Function, "fn")
 RTSL_KEYWORD(Const, "const")
 RTSL_KEYWORD(Auto, "auto")

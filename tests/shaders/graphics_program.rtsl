@@ -25,14 +25,12 @@ fn Fragment::Fragment(Vertex v) {
     color = vec4(v.uv, 0.0, 1.0);
 }
 
-using RasterVertex = Vertex : position(clip), uv(smooth), material(flat);
-
 @vertex
-fn main(Point p) -> RasterVertex {
+fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
     return Vertex(p);
 }
 
 @fragment
-fn main(Vertex v) -> Fragment {
+fn fragment_entry(Vertex v) -> Fragment {
     return Fragment(v);
 }

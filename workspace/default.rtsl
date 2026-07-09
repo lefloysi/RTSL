@@ -38,11 +38,11 @@ fn Fragment::Fragment(Vertex v) {
 
 
 @vertex
-fn main(vert_globals g, Point p) -> Vertex : position(clip), uv(clip), material(flat) {
+fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
     return Vertex(p);
 }
 @fragment
-fn main(frag_globals g, Vertex v) -> Fragment {
+fn fragment_entry(Vertex v) -> Fragment {
     return Fragment(v);
 }
 

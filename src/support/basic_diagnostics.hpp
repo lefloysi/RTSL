@@ -3,6 +3,7 @@
 #include "support/basic_source_manager.hpp"
 
 #include <ostream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,8 +46,6 @@ enum class DiagnosticCode : int {
 	link_empty_artifact = 6001,
 	link_no_inputs = 6002,
 	link_conflict = 6003,
-
-	text_rtir_unimplemented = 7001,
 };
 
 struct Diagnostic {
@@ -65,7 +64,7 @@ class DiagnosticEngine {
 	void render(std::ostream& out, const SourceManager* sources = nullptr) const;
 
 	[[nodiscard]] bool has_error() const;
-	[[nodiscard]] const std::vector<Diagnostic>& diagnostics() const { return diagnostics_; }
+	[[nodiscard]] std::span<const Diagnostic> diagnostics() const { return diagnostics_; }
 
   private:
 	std::vector<Diagnostic> diagnostics_;

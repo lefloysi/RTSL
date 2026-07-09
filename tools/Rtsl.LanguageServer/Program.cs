@@ -30,7 +30,7 @@ namespace Rtsl.LanguageServer
                     var text = ExtractDidOpenText(message);
                     if (uri != null)
                     {
-                        Documents[uri] = text ?? string.Empty;
+                        Documents[uri] = UnescapeJsonString(text ?? string.Empty);
                         PublishDiagnostics(stdout, uri, Documents[uri]);
                     }
                 }
@@ -40,7 +40,7 @@ namespace Rtsl.LanguageServer
                     var text = ExtractDidChangeText(message);
                     if (uri != null)
                     {
-                        Documents[uri] = text ?? string.Empty;
+                        Documents[uri] = UnescapeJsonString(text ?? string.Empty);
                         PublishDiagnostics(stdout, uri, Documents[uri]);
                     }
                 }
@@ -162,29 +162,57 @@ namespace Rtsl.LanguageServer
             var diagnostics = new List<string>();
             int line = 0;
             int column = 0;
-            bool inString = false;
+            int stringStartLine = -1;
+            int stringStartColumn = -1;
             for (int i = 0; i < text.Length; ++i)
             {
                 char c = text[i];
                 if (c == '\n')
                 {
+                    if (stringStartLine >= 0)
+                    {
+                        diagnostics.Add(BuildDiagnostic(stringStartLine, stringStartColumn, line, column, "unterminated string literal"));
+                        stringStartLine = -1;
+                        stringStartColumn = -1;
+                    }
                     line++;
                     column = 0;
-                    inString = false;
                     continue;
                 }
                 if (c == '"')
                 {
-                    inString = !inString;
+                    if (stringStartLine >= 0)
+                    {
+                        stringStartLine = -1;
+                        stringStartColumn = -1;
+                    }
+                    else
+                    {
+                        stringStartLine = line;
+                        stringStartColumn = column;
+                    }
                 }
-                if (!inString && c == '@')
+                else if (stringStartLine >= 0 && c == '\\' && i + 1 < text.Length)
                 {
-                    diagnostics.Add("{\"range\":{\"start\":{\"line\":" + line + ",\"character\":" + column + "},\"end\":{\"line\":" + line + ",\"character\":" + (column + 1) + "}},\"severity\":1,\"source\":\"RTSL\",\"message\":\"unexpected character '@'\"}");
+                    i++;
+                    column += 2;
+                    continue;
+                }
+                else if (stringStartLine < 0 && char.IsControl(c) && c != '\r' && c != '\t')
+                {
+                    diagnostics.Add(BuildDiagnostic(line, column, line, column + 1, "invalid control character"));
                 }
                 column++;
             }
+            if (stringStartLine >= 0)
+                diagnostics.Add(BuildDiagnostic(stringStartLine, stringStartColumn, line, column, "unterminated string literal"));
 
             WriteJson(output, "{\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + EscapeJson(uri) + "\",\"diagnostics\":[" + string.Join(",", diagnostics) + "]}}");
+        }
+
+        private static string BuildDiagnostic(int startLine, int startColumn, int endLine, int endColumn, string message)
+        {
+            return "{\"range\":{\"start\":{\"line\":" + startLine + ",\"character\":" + startColumn + "},\"end\":{\"line\":" + endLine + ",\"character\":" + endColumn + "}},\"severity\":1,\"source\":\"RTSL\",\"message\":\"" + EscapeJson(message) + "\"}";
         }
 
         private static string BuildSemanticTokens(string text)
@@ -334,11 +362,6 @@ namespace Rtsl.LanguageServer
                 case "writeonly":
                 case "true":
                 case "false":
-                case "inout":
-                case "input":
-                case "output":
-                case "location":
-                case "builtin":
                 case "layout":
                 case "std140":
                 case "std430":
@@ -352,6 +375,50 @@ namespace Rtsl.LanguageServer
         private static string EscapeJson(string text)
         {
             return text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        private static string UnescapeJsonString(string text)
+        {
+            var result = new StringBuilder(text.Length);
+            for (int i = 0; i < text.Length; ++i)
+            {
+                char c = text[i];
+                if (c != '\\' || i + 1 >= text.Length)
+                {
+                    result.Append(c);
+                    continue;
+                }
+
+                char escaped = text[++i];
+                switch (escaped)
+                {
+                    case '"': result.Append('"'); break;
+                    case '\\': result.Append('\\'); break;
+                    case '/': result.Append('/'); break;
+                    case 'b': result.Append('\b'); break;
+                    case 'f': result.Append('\f'); break;
+                    case 'n': result.Append('\n'); break;
+                    case 'r': result.Append('\r'); break;
+                    case 't': result.Append('\t'); break;
+                    case 'u':
+                        if (i + 4 < text.Length)
+                        {
+                            string hex = text.Substring(i + 1, 4);
+                            if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int value))
+                            {
+                                result.Append((char)value);
+                                i += 4;
+                                break;
+                            }
+                        }
+                        result.Append("\\u");
+                        break;
+                    default:
+                        result.Append(escaped);
+                        break;
+                }
+            }
+            return result.ToString();
         }
     }
 }

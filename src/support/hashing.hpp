@@ -22,9 +22,6 @@ struct TransparentStringHash {
 	[[nodiscard]] std::size_t operator()(std::string_view value) const noexcept {
 		return std::hash<std::string_view>{}(value);
 	}
-	[[nodiscard]] std::size_t operator()(const std::string& value) const noexcept {
-		return std::hash<std::string_view>{}(value);
-	}
 	[[nodiscard]] std::size_t operator()(const char* value) const noexcept {
 		return std::hash<std::string_view>{}(value);
 	}

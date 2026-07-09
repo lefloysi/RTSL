@@ -32,7 +32,12 @@ lighting/brdf.rtsl -> lighting/brdf.rtslm
 Module search paths preserve relative layout. If `-I build/rtsl` is provided,
 the compiler searches `build/rtsl/lighting/brdf.rtslm`.
 
-Importers consume `rtslm` data and do not reparse imported source files.
+Importers consume `rtslm` data. If a sidecar is missing, the compiler may fall
+back to compiling the matching source and extracting its interface, but build
+systems should treat the `.rtslm` as the dependency product.
+
+`export import <path>;` imports the interface and republishes its exports
+through the current module interface.
 
 ## Symbol Identity
 
@@ -68,7 +73,7 @@ resource metadata, and stage interfaces.
 
 For `rtslo` inputs, the linker:
 
-- merges string, type, symbol, constant, function, and debug tables
+- merges strings, types, symbols, constants, functions, and debug records
 - resolves imported symbols against exports from other inputs or libraries
 - rewrites resolved call references from symbol ids to function ids
 - preserves unresolved external references only when producing `rtsll`
@@ -77,7 +82,7 @@ For `rtslo` inputs, the linker:
 ## Library Linking
 
 An `rtsll` is a linked implementation package without a required entry point.
-It may contain exported symbols and may be used as an input to future links.
+It may contain exported symbols and may be used as a later link input.
 
 If a library exports symbols, a matching `rtslm` is emitted. The `rtslm` contains
 the public interface only; the `rtsll` contains implementation bodies.
@@ -91,11 +96,11 @@ point unless the caller explicitly requests a validation-only link mode.
 The program linker finalizes:
 
 - function ids
-- entry table
+- entry metadata
 - resource layout metadata
 - stage-interface metadata
 - debug/source maps
-- final symbol and type tables
+- final symbol and type metadata
 
 ## Stale Interface Validation
 

@@ -126,7 +126,7 @@ RTSL_IR_OP(ImageWrite, "OpImageWrite")
 // High-level RTSL primitives. The SPIR-V backend lowers these to Load/Store
 // against Input/Output storage class variables. Keeping them as first-class
 // ops means stage interface assignment can stay metadata-driven instead of
-// requiring the IR to spell out every input/output OpVariable up front.
+// requiring the IR to spell out every reflected stage variable up front.
 RTSL_IR_OP(ReadInput, "OpRTReadInput")           // literal: location
 RTSL_IR_OP(WriteOutput, "OpRTWriteOutput")       // operand[0]: value id; literal: location
 RTSL_IR_OP(ReadBuiltin, "OpRTReadBuiltin")       // literal: BuiltIn enum

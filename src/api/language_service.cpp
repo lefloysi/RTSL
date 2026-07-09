@@ -8,8 +8,6 @@ static LanguageSymbolKind symbol_kind_from_decl(DeclKind kind) {
 	case DeclKind::function: return LanguageSymbolKind::function;
 	case DeclKind::struct_decl: return LanguageSymbolKind::struct_decl;
 	case DeclKind::uniform: return LanguageSymbolKind::uniform;
-	case DeclKind::input: return LanguageSymbolKind::input;
-	case DeclKind::output: return LanguageSymbolKind::output;
 	case DeclKind::namespace_decl: return LanguageSymbolKind::namespace_decl;
 	default: return LanguageSymbolKind::unknown;
 	}

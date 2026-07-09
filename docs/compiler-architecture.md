@@ -1,7 +1,7 @@
 # RTSL Compiler Architecture
 
-RTSL is compiled by a C++ frontend with a stable C ABI. The runtime, command
-line tool, and future editor tooling should share the same implementation.
+RTSL is compiled by a C++ frontend with a stable C ABI. The runtime and command
+line tool share the same implementation.
 
 ## Pipeline
 
@@ -27,8 +27,8 @@ rtslo/rtsll inputs + rtslm interfaces
   -> rtsll or rtslp artifact writer
 ```
 
-Backends consume `rtslp`, inspect its tables and RTIR, then lower to SPIR-V,
-HLSL, MSL, or another target format.
+Backends consume `rtslp`, inspect its ordered payloads and RTIR, then lower to
+SPIR-V, HLSL, MSL, or another target format.
 
 ## Frontend Stages
 
@@ -62,7 +62,7 @@ destroyed.
 ## Diagnostics
 
 Diagnostics must include a stable code, severity, source file identity, byte
-offset, line, column, and human-readable text. The compiler should support both
+offset, line, column, and human-readable text. The compiler supports both
 recoverable diagnostics and fatal errors.
 
 Recoverable syntax or semantic errors should continue when doing so improves
@@ -86,18 +86,14 @@ backend-facing metadata.
 
 ## CLI Responsibilities
 
-For v0.1, the command line tool should support:
+For v0.1, the command line tool supports:
 
-- compiling source to `rtslo` and optional `rtslm`
+- compiling source to `rtslo` and `.rtslm` when the source exports symbols
 - linking objects and libraries into `rtsll` or `rtslp`
 - disassembling binary artifacts into textual RTIR
-- assembling textual RTIR for testing and inspection
+- import search paths for `.rtslm` module interfaces
 
-Import search paths and multi-file dependency resolution remain planned
-follow-up work after the graphics-only release.
-
-Exact option names are allowed to evolve while the artifact and semantic model
-is still settling.
+Exact option names are part of the v0.1 command-line contract.
 
 ## C ABI Responsibilities
 
@@ -114,14 +110,11 @@ The C ABI should expose the same logical pipeline:
 
 Reflection is available on any loaded artifact (`rtslo`, `rtslm`, `rtsll`,
 `rtslp`). Uniform queries report the scope, name, type, set, binding, and the
-mangled backend binding name. Stage-interface queries report each input/varying/
-output field with its role, payload type, interpolation, built-in slot, and
-assigned location. Entry queries report the generated 4-letter stage entry
-names and their stages.
+mangled backend binding name. Stage-interface queries report each varying field
+with its payload type, interpolation, built-in slot, and assigned location.
+Entry queries report the generated 4-letter stage entry names and their stages.
 
-For v0.1, this ABI is intentionally focused on compilation, linking, loading,
-and reflection. Search-path configuration and richer module dependency
-management are reserved for a later release.
+For v0.1, this ABI is focused on compilation, linking, loading, and reflection.
 
 The ABI should not expose C++ types, STL containers, exceptions, or ownership
 that depends on C++ destructors in user code.

@@ -3,4 +3,4 @@ uniform {
 }
 layout mvp : mat4;
 
-export fn main() {}
+fn uses_layout() {}

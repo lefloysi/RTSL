@@ -15,7 +15,7 @@ endif()
 #
 #   support/   shared plumbing: types, source manager, diagnostics, binary io
 #   frontend/  preprocessor, lexer, parser, AST (+ tokens/directives/builtins .def)
-#   sema/      semantic analysis, mangling, uniform lowering, stage builtins
+#   sema/      semantic analysis, mangling, uniform lowering
 #   ir/        SSA RTIR: lowering, verification, disassembly (+ ops.def)
 #   artifact/  artifact container serialization and the linker
 #   driver/    compiler orchestration and the rtslc CLI
@@ -32,7 +32,6 @@ set(RTSL_SOURCES
     ${_rtsl_src}/frontend/lexer.cpp
     ${_rtsl_src}/frontend/parser.cpp
     ${_rtsl_src}/sema/sema.cpp
-    ${_rtsl_src}/sema/stage_builtins.cpp
     ${_rtsl_src}/sema/mangler.cpp
     ${_rtsl_src}/sema/uniform_lowering.cpp
     ${_rtsl_src}/ir/ir.cpp

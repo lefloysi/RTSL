@@ -8,6 +8,7 @@
 #include <CLI/CLI.hpp>
 
 #include <filesystem>
+#include <span>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -24,7 +25,7 @@ void print_engine_diagnostics(const rtsl::DiagnosticEngine& diagnostics) {
 	diagnostics.render(std::cerr);
 }
 
-int compile_mode(const fs::path& input_path, const fs::path& output, const std::vector<std::string>& include_dirs, bool verbose) {
+int compile_mode(const fs::path& input_path, const fs::path& output, std::span<const std::string> include_dirs, bool verbose) {
 	const auto source = read_file(input_path);
 	if (source.empty()) {
 		std::cerr << "rtslc: failed to read " << input_path << '\n';
@@ -39,7 +40,10 @@ int compile_mode(const fs::path& input_path, const fs::path& output, const std::
 	}
 
 	rtsl::CompilerInstance compiler;
-	rtsl::CompilerInvocation invocation{ .source_name = input_path.string(), .import_paths = include_dirs };
+	rtsl::CompilerInvocation invocation{
+		.source_name = input_path.string(),
+		.import_paths = std::vector<std::string>{ include_dirs.begin(), include_dirs.end() },
+	};
 	rtsl::Artifact artifact;
 	compiler.compile_source_to(artifact, as_text(source), std::move(invocation));
 
@@ -63,7 +67,7 @@ int compile_mode(const fs::path& input_path, const fs::path& output, const std::
 	return 0;
 }
 
-int link_mode(const std::vector<std::string>& inputs, const fs::path& output, bool produce_program, bool verbose) {
+int link_mode(std::span<const std::string> inputs, const fs::path& output, bool produce_program, bool verbose) {
 	if (inputs.empty()) {
 		std::cerr << "rtslc: no inputs provided\n";
 		return 1;
@@ -122,22 +126,6 @@ int dump_mode(const fs::path& input_path) {
 	return 0;
 }
 
-int assemble_mode(const fs::path& input_path, const fs::path& output) {
-	const auto bytes = read_file(input_path);
-	rtsl::Artifact artifact;
-	rtsl::DiagnosticEngine diagnostics;
-	if (bytes.empty() || !rtsl::assemble_text_rtir(as_text(bytes), artifact, &diagnostics)) {
-		std::cerr << "rtslc: failed to assemble RTIR " << input_path << '\n';
-		print_engine_diagnostics(diagnostics);
-		return 1;
-	}
-	if (!write_file(output, artifact.bytes)) {
-		std::cerr << "rtslc: failed to write " << output << '\n';
-		return 1;
-	}
-	return 0;
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -173,12 +161,6 @@ int main(int argc, char** argv) {
 	std::string dump_input;
 	dump->add_option("input", dump_input, "Input artifact")->required();
 
-	auto assemble = app.add_subcommand("assemble", "Assemble textual RTIR to an object");
-	std::string assemble_input;
-	std::string assemble_output;
-	assemble->add_option("input", assemble_input, "Input .rtir file")->required();
-	assemble->add_option("-o,--output", assemble_output, "Output .rtslo file")->required();
-
 	if (argc <= 1) {
 		std::cout << app.help() << '\n';
 		return 1;
@@ -194,8 +176,6 @@ int main(int argc, char** argv) {
 		return link_mode(link_library_inputs, link_library_output, false, verbose);
 	if (*dump)
 		return dump_mode(dump_input);
-	if (*assemble)
-		return assemble_mode(assemble_input, assemble_output);
 	std::cout << app.help() << '\n';
 	return 1;
 }

@@ -41,12 +41,12 @@ std::string read_string(std::span<const std::uint8_t> data, size_t& cursor) {
 	return value;
 }
 
-// Keep in sync with rtsl::SectionKind in src/Serialization/Artifact.cpp.
-enum class SectionKind : u32 {
+// Keep in sync with rtsl::PayloadKind in src/artifact/artifact.cpp.
+enum class PayloadKind : u32 {
 	IrModule = 2,
-	StructTable = 6,
-	ResourceTable = 7,
-	StageInterfaceTable = 8,
+	Structs = 6,
+	Resources = 7,
+	StageInterfaces = 8,
 };
 
 instruction read_instruction(std::span<const std::uint8_t> data, size_t& cursor) {
@@ -88,142 +88,143 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 		throw std::runtime_error("unsupported RTSLP artifact");
 	}
 
-	const u32 section_count = read_u32(data, 20);
-	const u64 section_table_offset = read_u64(data, 24);
+	const u32 payload_count = read_u32(data, 20);
+	const u64 payload_record_offset = read_u64(data, 24);
 	artifact_module module;
 
-	for (u32 section_index = 0; section_index < section_count; ++section_index) {
-		const size_t entry = static_cast<size_t>(section_table_offset + section_index * 32);
-		const auto kind = static_cast<SectionKind>(read_u32(data, entry));
+	for (u32 payload_index = 0; payload_index < payload_count; ++payload_index) {
+		const size_t entry = static_cast<size_t>(payload_record_offset + payload_index * 32);
+		const auto kind = static_cast<PayloadKind>(read_u32(data, entry));
 		const size_t offset = static_cast<size_t>(read_u64(data, entry + 8));
 		const size_t size = static_cast<size_t>(read_u64(data, entry + 16));
 		if (offset + size > data.size()) {
-			throw std::runtime_error("RTSLP section out of bounds");
+			throw std::runtime_error("RTSLP payload out of bounds");
 		}
 
-		std::span<const std::uint8_t> section = data.subspan(offset, size);
+		std::span<const std::uint8_t> payload = data.subspan(offset, size);
 		size_t cursor = 0;
 		switch (kind) {
-		case SectionKind::IrModule: {
-			module.next_id = read_u32(section, cursor);
+		case PayloadKind::IrModule: {
+			module.next_id = read_u32(payload, cursor);
 			cursor += 4;
-			const u32 type_count = read_u32(section, cursor);
+			const u32 type_count = read_u32(payload, cursor);
 			cursor += 4;
 			module.type_constant_pool.reserve(type_count);
 			for (u32 i = 0; i < type_count; ++i) {
-				module.type_constant_pool.push_back(read_instruction(section, cursor));
+				module.type_constant_pool.push_back(read_instruction(payload, cursor));
 			}
-			const u32 global_count = read_u32(section, cursor);
+			const u32 global_count = read_u32(payload, cursor);
 			cursor += 4;
 			module.global_variables.reserve(global_count);
 			for (u32 i = 0; i < global_count; ++i) {
-				module.global_variables.push_back(read_instruction(section, cursor));
+				module.global_variables.push_back(read_instruction(payload, cursor));
 			}
-			const u32 function_count = read_u32(section, cursor);
+			const u32 function_count = read_u32(payload, cursor);
 			cursor += 4;
 			module.functions.reserve(function_count);
 			for (u32 i = 0; i < function_count; ++i) {
 				function fn;
-				fn.result_id = read_u32(section, cursor);
+				fn.result_id = read_u32(payload, cursor);
 				cursor += 4;
 				cursor += 4;
-				fn.return_type_id = read_u32(section, cursor);
+				fn.return_type_id = read_u32(payload, cursor);
 				cursor += 4;
-				fn.stage = static_cast<stage_kind>(section[cursor++]);
+				fn.stage = static_cast<stage_kind>(payload[cursor++]);
 				cursor += 1; // generated
 				cursor += 1; // exported
 				cursor += 8; // display_name, mangled_name (StringIds)
 				// Skip source_name (string). The runtime never resolves user
 				// functions — the linker has already inlined them — so this
 				// is pure linker metadata as far as Rutile is concerned.
-				(void)read_string(section, cursor);
-				const u32 parameter_count = read_u32(section, cursor);
+				(void)read_string(payload, cursor);
+				const u32 parameter_count = read_u32(payload, cursor);
 				cursor += 4;
 				fn.parameter_ids.reserve(parameter_count);
 				for (u32 p = 0; p < parameter_count; ++p) {
-					fn.parameter_ids.push_back(read_u32(section, cursor));
+					fn.parameter_ids.push_back(read_u32(payload, cursor));
 					cursor += 4;
 				}
-				const u32 body_count = read_u32(section, cursor);
+				const u32 body_count = read_u32(payload, cursor);
 				cursor += 4;
 				fn.body.reserve(body_count);
 				for (u32 b = 0; b < body_count; ++b) {
-					fn.body.push_back(read_instruction(section, cursor));
+					fn.body.push_back(read_instruction(payload, cursor));
 				}
 				module.functions.push_back(std::move(fn));
 			}
 			// call_target_names tail. A well-formed rtslp has no unresolved
 			// user-function calls (the inliner cleared them), so this count
 			// is typically zero - but we have to advance past it either way.
-			const u32 call_target_count = read_u32(section, cursor);
+			const u32 call_target_count = read_u32(payload, cursor);
 			cursor += 4;
 			for (u32 t = 0; t < call_target_count; ++t) {
-				(void)read_string(section, cursor);
+				(void)read_string(payload, cursor);
 			}
 			break;
 		}
-		case SectionKind::StructTable: {
-			const u32 count = read_u32(section, cursor);
+		case PayloadKind::Structs: {
+			const u32 count = read_u32(payload, cursor);
 			cursor += 4;
 			module.structs.reserve(count);
 			for (u32 i = 0; i < count; ++i) {
 				struct_decl decl;
-				decl.name = read_string(section, cursor);
-				const u32 field_count = read_u32(section, cursor);
+				decl.name = read_string(payload, cursor);
+				const u32 field_count = read_u32(payload, cursor);
 				cursor += 4;
 				decl.fields.reserve(field_count);
 				for (u32 f = 0; f < field_count; ++f) {
 					struct_field field;
-					field.type = read_string(section, cursor);
-					field.name = read_string(section, cursor);
+					field.type = read_string(payload, cursor);
+					field.name = read_string(payload, cursor);
 					decl.fields.push_back(std::move(field));
 				}
 				module.structs.push_back(std::move(decl));
 			}
 			break;
 		}
-		case SectionKind::ResourceTable: {
-			const u32 count = read_u32(section, cursor);
+		case PayloadKind::Resources: {
+			const u32 count = read_u32(payload, cursor);
 			cursor += 4;
 			module.uniforms.reserve(count);
 			for (u32 i = 0; i < count; ++i) {
 				uniform uniform;
-				uniform.scope_name = read_string(section, cursor);
-				uniform.name = read_string(section, cursor);
-				uniform.type_id = read_u32(section, cursor);
+				uniform.scope_name = read_string(payload, cursor);
+				uniform.name = read_string(payload, cursor);
+				uniform.type_id = read_u32(payload, cursor);
 				cursor += 4;
-				uniform.access_qualifier = section[cursor++];
-				uniform.set = read_u32(section, cursor);
+				uniform.access_qualifier = payload[cursor++];
+				uniform.set = read_u32(payload, cursor);
 				cursor += 4;
-				uniform.member = read_u32(section, cursor);
+				uniform.member = read_u32(payload, cursor);
 				cursor += 4;
 				cursor += 1;
 				cursor += 4;
-				const u32 field_count = read_u32(section, cursor);
+				const u32 field_count = read_u32(payload, cursor);
 				cursor += 4;
 				for (u32 f = 0; f < field_count; ++f) {
-					(void)read_string(section, cursor);
+					(void)read_string(payload, cursor);
 				}
 				module.uniforms.push_back(std::move(uniform));
 			}
 			break;
 		}
-		case SectionKind::StageInterfaceTable: {
-			const u32 count = read_u32(section, cursor);
+		case PayloadKind::StageInterfaces: {
+			const u32 count = read_u32(payload, cursor);
 			cursor += 4;
 			module.stage_interfaces.reserve(count);
 			for (u32 i = 0; i < count; ++i) {
 				stage_interface stage_interface;
-				stage_interface.role = static_cast<stage_role>(section[cursor++]);
-				const u32 field_count = read_u32(section, cursor);
+				stage_interface.role = static_cast<stage_role>(payload[cursor++]);
+				stage_interface.type_name = read_string(payload, cursor);
+				const u32 field_count = read_u32(payload, cursor);
 				cursor += 4;
 				stage_interface.fields.reserve(field_count);
 				for (u32 f = 0; f < field_count; ++f) {
 					stage_field field;
-					field.name = read_string(section, cursor);
-					field.interpolation = section[cursor++];
-					field.builtin = section[cursor++];
-					field.location = read_u32(section, cursor);
+					field.name = read_string(payload, cursor);
+					field.interpolation = payload[cursor++];
+					field.builtin = payload[cursor++];
+					field.location = read_u32(payload, cursor);
 					cursor += 4;
 					stage_interface.fields.push_back(std::move(field));
 				}

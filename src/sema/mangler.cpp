@@ -1,31 +1,11 @@
 #include "sema/mangler.hpp"
 
-#include <cstdint>
-#include <string_view>
+#include <format>
+#include <vector>
 
 namespace rtsl {
 
-static std::string sanitize_identifier(std::string_view text) {
-	std::string out;
-	for (const char c : text) {
-		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-			out.push_back(c);
-		} else if (c == ':') {
-			if (!out.ends_with("__")) {
-				out += "__";
-			}
-		} else {
-			out.push_back('_');
-		}
-	}
-
-	if (out.empty() || (out.front() >= '0' && out.front() <= '9')) {
-		out.insert(out.begin(), '_');
-	}
-	return out;
-}
-
-std::vector<std::string_view> split_qualified_name(std::string_view name) {
+static std::vector<std::string_view> split_qualified_name(std::string_view name) {
 	std::vector<std::string_view> parts;
 	while (!name.empty()) {
 		const auto scope = name.find("::");
@@ -39,53 +19,41 @@ std::vector<std::string_view> split_qualified_name(std::string_view name) {
 	return parts;
 }
 
-std::string encode_source_name(std::string_view name) {
-	std::string out;
-	out += std::to_string(name.size());
-	out += name;
-	return out;
+static std::string encode_source_name(std::string_view name) {
+	return std::format("{}{}", name.size(), name);
 }
 
-std::string encode_name_part(std::string_view name) {
+static std::string encode_name_part(std::string_view name) {
 	if (name.starts_with("~")) {
 		return "D1";
 	}
 	return encode_source_name(name);
 }
 
-// Itanium-style single-letter codes for the language's primitive types.
-// Anything not in the table is encoded as a length-prefixed identifier.
-std::string encode_type(std::string_view type) {
-	static constexpr std::pair<std::string_view, std::string_view> table[] = {
-		{ "void", "v" }, { "bool", "b" },
-		{ "f32", "f" }, { "f64", "d" },
-		{ "i32", "i" }, { "u32", "j" },
-	};
-	for (const auto& [name, code] : table) {
-		if (type == name) return std::string(code);
-	}
+static std::string encode_type(std::string_view type) {
+	if (type == "void") return "v";
+	if (type == "bool") return "b";
+	if (type == "f32") return "f";
+	if (type == "f64") return "d";
+	if (type == "i32") return "i";
+	if (type == "u32") return "j";
 	return encode_source_name(type);
 }
 
-std::string Mangler::mangle_rtsl(const MangleInput& input) const {
-	if (input.stage != StageKind::none) {
-		// Stage entries used to be name-detected (`vert_*`/`frag_*`), so the
-		// mangled form equalled the source name. With attribute-driven stages
-		// two overloads of `main` can differ only by stage — we prefix with the
-		// stage tag to keep mangled identity unique. Names that already carry
-		// the prefix pass through unchanged.
-		const auto prefix = stage_entry_name(input.stage);
-		if (input.name.starts_with(prefix)) {
-			return std::string(input.name);
+std::string mangle_rtsl(std::string_view name, StageKind stage, std::span<const std::string_view> parameter_types) {
+	if (stage != StageKind::none) {
+		const auto prefix = stage_entry_name(stage);
+		if (name.starts_with(prefix)) {
+			return std::string(name);
 		}
-		std::string out(prefix);
+		std::string out{ prefix };
 		out.push_back('_');
-		out.append(input.name);
+		out.append(name);
 		return out;
 	}
 
 	std::string out = "_Z";
-	const auto parts = split_qualified_name(input.name);
+	const auto parts = split_qualified_name(name);
 	if (parts.size() > 1) {
 		out += "N";
 		for (const auto part : parts) {
@@ -93,13 +61,13 @@ std::string Mangler::mangle_rtsl(const MangleInput& input) const {
 		}
 		out += "E";
 	} else {
-		out += encode_name_part(input.name);
+		out += encode_name_part(name);
 	}
 
-	if (input.parameter_types.empty()) {
+	if (parameter_types.empty()) {
 		out += "v";
 	} else {
-		for (const auto& parameter_type : input.parameter_types) {
+		for (const auto parameter_type : parameter_types) {
 			out += encode_type(parameter_type);
 		}
 	}

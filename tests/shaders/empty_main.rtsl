@@ -1,1 +1,1 @@
-export fn main() {}
+fn empty() {}
