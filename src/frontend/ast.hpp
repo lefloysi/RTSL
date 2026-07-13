@@ -54,10 +54,9 @@ enum class InterpolationKind : u08 {
 	clip = 3,
 };
 
-// Builtin pipeline slot (subset of SPIR-V BuiltIn) carried by a stage I/O
-// field. `none` means the field has a user-assigned location instead.
-// Generated from frontend/builtins.def; encodes as u08 in artifact payload
-// metadata, so ordering there is wire format.
+// Internal pipeline placement slot carried by stage I/O metadata. This is not
+// source syntax for stage globals; `clip` maps the vertex position output to
+// the backend position slot. Other stage globals are ordinary entry parameters.
 enum class BuiltinSlot : u08 {
 	none = 0,
 #define RTSL_BUILTIN(name, spelling) spelling,
@@ -71,23 +70,7 @@ enum class AccessKind : u08 {
 	write_only = 2,
 };
 
-// Encode/decode helpers — strings live in the source language only.
-[[nodiscard]] inline InterpolationKind parse_interpolation(std::string_view text) {
-	if (text == "smooth")
-		return InterpolationKind::smooth;
-	if (text == "flat")
-		return InterpolationKind::flat;
-	if (text == "clip")
-		return InterpolationKind::clip;
-	return InterpolationKind::none;
-}
-[[nodiscard]] inline BuiltinSlot parse_builtin_slot(std::string_view text) {
-	// Spelling table generated from the same builtins.def the enum came from.
-#define RTSL_BUILTIN(name, spelling) \
-	if (text == #spelling) return BuiltinSlot::spelling;
-#include "frontend/builtins.def"
-	return BuiltinSlot::none;
-}
+// Encode/decode helper — strings live in the source language only.
 [[nodiscard]] inline AccessKind parse_access(std::string_view text) {
 	if (text == "readonly")
 		return AccessKind::read_only;
@@ -97,13 +80,22 @@ enum class AccessKind : u08 {
 }
 
 // One field of a stage interface payload, with its ABI placement.
-// location == kNoLocation means "no explicit location" (e.g. builtin-driven).
+// location == kNoLocation means "no user location" (for example clip-space
+// placement driven by the `clip` interpolation tag).
+// member_index is the index of the struct member this field maps to, so a
+// backend can extract/insert it (`OpTypeStruct` carries no member names).
+// member_index == kNoMember means the field is not a struct member — the
+// entry's whole parameter/return value is the payload (e.g. a bare `vec4`
+// fragment color).
 struct StageIOField {
 	static constexpr u32 kNoLocation = static_cast<u32>(-1);
+	static constexpr u32 kNoMember = static_cast<u32>(-1);
 	std::string name;
+	std::vector<std::string> tags;
 	InterpolationKind interpolation = InterpolationKind::none;
 	BuiltinSlot builtin = BuiltinSlot::none;
 	u32 location = kNoLocation;
+	u32 member_index = kNoMember;
 };
 
 // Reflected stage payload metadata.
@@ -118,6 +110,11 @@ struct ParameterDecl {
 	std::string name;
 	bool is_const = false;
 	bool is_reference = false;
+};
+
+struct Attribute {
+	std::string name;
+	SourceSpan span{};
 };
 
 struct Decl {
@@ -182,9 +179,9 @@ struct Decl {
 	// they leave this false. Downstream distinguishes "empty body" (valid,
 	// zero statements) from "no body" (forward decl the linker resolves).
 	bool has_body = false;
-	// Set by `@vertex` / `@fragment` attribute on the fn decl. Drives
-	// backend entry-point selection instead of name-matching on vert_*/frag_*.
-	StageKind stage = StageKind::none;
+	// Authored `@name` attributes. The parser records syntax; semantic
+	// analysis resolves language-known attributes such as `@vertex`.
+	std::vector<Attribute> attributes;
 };
 
 struct StructField {
@@ -202,6 +199,7 @@ struct ExportSymbol {
 	std::string name;
 	std::string kind;
 	std::string type;
+	u64 interface_hash = 0;
 };
 
 struct StructDecl {
@@ -280,7 +278,6 @@ struct TypeAlias {
 struct UsingImport {
 	enum class Kind {
 		symbol,
-		uniform_scope,
 		namespace_scope,
 	};
 	Kind kind = Kind::symbol;

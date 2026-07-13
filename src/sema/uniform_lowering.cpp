@@ -2,22 +2,21 @@
 
 #include "support/basic_types.hpp"
 
+#include <array>
 #include <functional>
-#include <unordered_map>
 #include <string>
 
 namespace rtsl {
 
-static const std::unordered_map<std::string_view, ResourceBindingKind>& resource_binding_kinds() {
-	static const std::unordered_map<std::string_view, ResourceBindingKind> kinds{
-		{ "UniformBuffer", ResourceBindingKind::uniform_buffer },
-		{ "StorageBuffer", ResourceBindingKind::storage_buffer },
-		{ "Sampler", ResourceBindingKind::sampler },
-		{ "Sampler2D", ResourceBindingKind::sampled_image },
-		{ "Image2D", ResourceBindingKind::image },
-	};
-	return kinds;
-}
+struct ResourceBindingEntry {
+	std::string_view spelling;
+	ResourceBindingKind kind = ResourceBindingKind::none;
+};
+
+constexpr std::array kResourceBindingKinds{
+#define RTSL_RESOURCE_TYPE(spelling, binding_kind) ResourceBindingEntry{ #spelling, ResourceBindingKind::binding_kind },
+#include "frontend/resource_types.def"
+};
 
 static bool is_identifier_char(char c) {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
@@ -83,9 +82,12 @@ bool is_resource_uniform_type(std::string_view type) {
 }
 
 ResourceBindingKind resource_binding_kind(std::string_view spelling) {
-	const auto& kinds = resource_binding_kinds();
-	const auto found = kinds.find(spelling);
-	return found == kinds.end() ? ResourceBindingKind::none : found->second;
+	for (const auto& entry : kResourceBindingKinds) {
+		if (entry.spelling == spelling) {
+			return entry.kind;
+		}
+	}
+	return ResourceBindingKind::none;
 }
 
 bool is_buffer_binding(ResourceBindingKind kind) {

@@ -31,8 +31,9 @@ fn fragment_entry(Vertex v) -> vec4 {
 }
 ```
 
-Entry functions are selected by `@vertex` and `@fragment`. Their names are
-ordinary function names; `main` is only a convention.
+Entry functions are selected by function attributes. v0.1 recognizes `@vertex`
+and `@fragment`; their function names are ordinary names, and `main` is only a
+convention.
 
 The bare fragment `vec4` return is the default single color target. Structured
 vertex returns use a return boundary to mark clip-space position and

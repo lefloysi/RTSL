@@ -76,6 +76,26 @@ TEST_CASE("artifact round trips stage interface type names") {
 	REQUIRE(artifact.stage_interfaces[0].fields[0].name == "color");
 }
 
+TEST_CASE("artifact round trips function display names") {
+	IRModule module{ .source_name = "names.rtsl" };
+	module.functions.push_back(IRFunction{
+		.result_id = 1,
+		.exported = true,
+		.source_name = "_Z6helperv",
+		.display_name_text = "helper",
+	});
+
+	Artifact artifact;
+	REQUIRE(read_artifact(write_artifact(ArtifactKind::object, module), artifact));
+	REQUIRE(artifact.module.functions.size() == 1);
+	REQUIRE(artifact.module.functions[0].display_name.value < artifact.strings.size());
+	REQUIRE(artifact.strings[artifact.module.functions[0].display_name.value] == "helper");
+	REQUIRE(artifact.module.functions[0].display_name_text == "helper");
+	REQUIRE(artifact.module.functions[0].mangled_name.value < artifact.strings.size());
+	REQUIRE(artifact.strings[artifact.module.functions[0].mangled_name.value] == "_Z6helperv");
+	REQUIRE(artifact.module.functions[0].source_name == "_Z6helperv");
+}
+
 TEST_CASE("mangler emits stable rtsl names") {
 	const std::array<std::string_view, 1> parameter_types{ "Point" };
 	REQUIRE(mangle_rtsl("Vertex::Vertex", StageKind::none, parameter_types) == "_ZN6Vertex6VertexE5Point");

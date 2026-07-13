@@ -12,6 +12,9 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // Lower the SemanticModule into the typed SSA IR described in docs/rtir.md.
 //
@@ -22,13 +25,40 @@
 
 namespace rtsl {
 
-std::optional<BuiltIn> builtin_from_name(std::string_view name) {
-	// Spelling table generated from the same builtins.def as the enum.
-#define RTSL_BUILTIN(builtin, spelling) \
-	if (name == #spelling) return BuiltIn::builtin;
-#include "frontend/builtins.def"
-	return std::nullopt;
+namespace {
+
+struct CallableTarget {
+	std::string name;
+	std::vector<std::string> value_parameter_types;
+	std::string mangled_name;
+};
+
+bool is_scalar_value_type(std::string_view type) {
+#define RTSL_SCALAR_TYPE(spelling, semantic_kind, width, ir_op) \
+	if (type == #spelling) { return true; }
+#include "frontend/value_types.def"
+	return false;
 }
+
+bool call_argument_compatible(std::string_view target, std::string_view value) {
+	if (target.empty() || value.empty()) return true;
+	if (target == value) return true;
+	return is_scalar_value_type(target) && is_scalar_value_type(value);
+}
+
+std::string parameter_identity(const ParameterDecl& parameter) {
+	std::string identity;
+	if (parameter.is_const) {
+		identity += "const ";
+	}
+	identity += parameter.type;
+	if (parameter.is_reference) {
+		identity += "&";
+	}
+	return identity;
+}
+
+} // namespace
 
 // ----------------------------------------------------------------------------
 // IRBuilder: id allocation, type/constant pool with dedup, local instruction
@@ -39,8 +69,9 @@ class IRBuilder {
   public:
 	explicit IRBuilder(IRModule& module,
 		StringSet callable_names = {},
+		std::vector<CallableTarget> callable_targets = {},
 		DiagnosticEngine* diagnostics = nullptr)
-		: module_(module), callable_names_(std::move(callable_names)), diagnostics_(diagnostics) {}
+		: module_(module), callable_names_(std::move(callable_names)), callable_targets_(std::move(callable_targets)), diagnostics_(diagnostics) {}
 
 	[[nodiscard]] IRId fresh_id() { return module_.next_id++; }
 
@@ -84,6 +115,29 @@ class IRBuilder {
 
 	IRModule& module() { return module_; }
 	bool is_known_callable(std::string_view name) const { return callable_names_.contains(name); }
+	[[nodiscard]] const CallableTarget* resolve_call_target(std::string_view name, std::span<const std::string> argument_types) const {
+		const CallableTarget* selected = nullptr;
+		for (const auto& target : callable_targets_) {
+			if (target.name != name || target.value_parameter_types.size() != argument_types.size()) {
+				continue;
+			}
+			bool compatible = true;
+			for (std::size_t i = 0; i < argument_types.size(); ++i) {
+				if (!call_argument_compatible(target.value_parameter_types[i], argument_types[i])) {
+					compatible = false;
+					break;
+				}
+			}
+			if (!compatible) {
+				continue;
+			}
+			if (selected) {
+				return nullptr;
+			}
+			selected = &target;
+		}
+		return selected;
+	}
 	void diagnose(std::string_view message) const {
 		if (diagnostics_) {
 			diagnostics_->report(DiagnosticCode::ir_expression_error, DiagnosticSeverity::error, {}, module_.source_name, message);
@@ -94,6 +148,7 @@ class IRBuilder {
 	IRModule& module_;
 	StringMap<IRId> type_cache_;
 	StringSet callable_names_;
+	std::vector<CallableTarget> callable_targets_;
 	DiagnosticEngine* diagnostics_ = nullptr;
 };
 
@@ -127,27 +182,10 @@ class TypeRegistry {
 		// Prime the registry with the language's builtin scalars and the
 		// common vec/mat aggregates. Anything not registered here is looked up
 		// by name against user struct decls.
-		const IRId f32 = scalar("f32", TypeInfo::Kind::Float, 32, IROp::TypeFloat);
-		const IRId i32 = scalar("i32", TypeInfo::Kind::Int, 32, IROp::TypeInt);
-		const IRId u32_ty = scalar("u32", TypeInfo::Kind::UInt, 32, IROp::TypeUInt);
-		scalar("bool", TypeInfo::Kind::Bool, 1, IROp::TypeBool);
-		scalar("void", TypeInfo::Kind::Void, 0, IROp::TypeVoid);
-
-		vector("vec2", f32, 2);
-		vector("vec3", f32, 3);
-		vector("vec4", f32, 4);
-		vector("ivec2", i32, 2);
-		vector("ivec3", i32, 3);
-		vector("ivec4", i32, 4);
-		vector("uvec2", u32_ty, 2);
-		vector("uvec3", u32_ty, 3);
-		vector("uvec4", u32_ty, 4);
-
-		const IRId vec4_id = info_["vec4"].id;
-		matrix("mat4", vec4_id, 4);
-		matrix("mat3", info_["vec3"].id, 3);
-		matrix("mat2", info_["vec2"].id, 2);
-
+#define RTSL_SCALAR_TYPE(spelling, semantic_kind, width, ir_op) scalar(#spelling, TypeInfo::Kind::semantic_kind, width, IROp::ir_op);
+#define RTSL_VECTOR_TYPE(spelling, element, components) vector(#spelling, find(#element), components);
+#define RTSL_MATRIX_TYPE(spelling, column_type, columns) matrix(#spelling, find(#column_type), columns);
+#include "frontend/value_types.def"
 	}
 
 	// Register an anonymous struct type built from a layout's inline fields.
@@ -795,39 +833,6 @@ class FunctionLowerer {
 	void lower_assign(std::string_view lhs, const Decl::Expr& rhs) {
 		const std::string lhs_t = trim(lhs);
 
-		// Stage-I/O write target (synthesized by the wrapper):
-		//   __rt_write_output(N) = expr
-		//   __rt_write_builtin("name") = expr
-		if (lhs_t.starts_with("__rt_write_output(")) {
-			const auto open = lhs_t.find('(');
-			const auto close = lhs_t.rfind(')');
-			const u32 location = static_cast<u32>(std::stoul(lhs_t.substr(open + 1, close - open - 1)));
-			const Value v = lower_expr(rhs);
-			IRInstruction inst;
-			inst.op = IROp::WriteOutput;
-			inst.operands = { v.id };
-			inst.literals = { location };
-			fn_.body.push_back(std::move(inst));
-			return;
-		}
-		if (lhs_t.starts_with("__rt_write_builtin(")) {
-			const auto first_q = lhs_t.find('"');
-			const auto last_q = lhs_t.rfind('"');
-			const std::string name = lhs_t.substr(first_q + 1, last_q - first_q - 1);
-			const auto slot = builtin_from_name(name);
-			if (!slot) {
-				builder_.diagnose(std::format("unknown builtin slot '{}'", name));
-				return;
-			}
-			const Value v = lower_expr(rhs);
-			IRInstruction inst;
-			inst.op = IROp::WriteBuiltin;
-			inst.operands = { v.id };
-			inst.literals = { static_cast<u32>(*slot) };
-			fn_.body.push_back(std::move(inst));
-			return;
-		}
-
 		// Plain assignment to a local or a member of a struct local.
 		// We support: `name = expr` and `name.member = expr` and `this.member = expr`.
 		const Value v = lower_expr(rhs);
@@ -1307,19 +1312,6 @@ class FunctionLowerer {
 			fn_.body.push_back(std::move(construct));
 			return Value{ fn_.body.back().result_id, type_id };
 		}
-		// Stage-I/O reads (synthesized by the wrapper):
-		//   __rt_read_input(N) and __rt_read_builtin("name")
-		if (callee == "__rt_read_input" && args.size() == 1) {
-			// The arg id is a constant uint; pull it through the literal.
-			// Find the constant value from the type/constant pool.
-			IRInstruction inst;
-			inst.op = IROp::ReadInput;
-			inst.result_id = builder_.fresh_id();
-			inst.type_id = IRId_None; // backend infers from decoration target
-			inst.literals = { literal_from_const(args.front().id) };
-			fn_.body.push_back(std::move(inst));
-			return Value{ inst.result_id, IRId_None };
-		}
 		// Texture / sample primitive.
 		if (callee == "sample" && args.size() == 2) {
 			IRInstruction inst;
@@ -1349,25 +1341,26 @@ class FunctionLowerer {
 		for (const auto& a : args) {
 			call.operands.push_back(a.id);
 		}
-		// literal[0] indexes into IRModule::call_target_names where the
-		// source-level callee identifier lives. Cleared by the inliner once
-		// every call in the module is resolved.
-		auto& targets = builder_.module().call_target_names;
+		// literal[0] indexes into IRModule::call_targets. Cleared by the
+		// inliner once every call in the module is resolved.
+		std::vector<std::string_view> argument_types;
+		std::vector<std::string> argument_type_storage;
+		argument_types.reserve(args.size());
+		argument_type_storage.reserve(args.size());
+		for (const auto& arg : args) {
+			argument_type_storage.emplace_back(types_.name_by_id(arg.type_id));
+			argument_types.push_back(argument_type_storage.back());
+		}
+		const CallableTarget* target = builder_.resolve_call_target(callee, argument_type_storage);
+		auto& targets = builder_.module().call_targets;
 		const u32 name_index = static_cast<u32>(targets.size());
-		targets.emplace_back(callee);
+		targets.push_back(IRCallTarget{
+			.display_name = std::string(callee),
+			.mangled_name = target ? target->mangled_name : mangle_rtsl(callee, StageKind::none, argument_types),
+		});
 		call.literals = { name_index };
 		fn_.body.push_back(std::move(call));
 		return Value{ call.result_id, IRId_None };
-	}
-
-	u32 literal_from_const(IRId const_id) const {
-		for (const auto& inst : builder_.module().type_constant_pool) {
-			if (inst.result_id == const_id &&
-				(inst.op == IROp::ConstantUInt || inst.op == IROp::ConstantInt)) {
-				return inst.literals.empty() ? 0u : inst.literals.front();
-			}
-		}
-		return 0;
 	}
 
 	// If a previously-lowered IRFunction matches `Type::Type(args...)` for
@@ -1520,16 +1513,12 @@ class FunctionLowerer {
 // Helpers for stage-interface synthesis.
 // ----------------------------------------------------------------------------
 
-const StageInterface* find_interface(std::span<const StageInterface> interfaces, std::string_view type_name) {
+const StageInterface* find_interface(std::span<const StageInterface> interfaces, std::string_view type_name, StageRole role) {
 	for (const auto& interface : interfaces) {
-		if (interface.type_name == type_name)
+		if (interface.type_name == type_name && interface.role == role)
 			return &interface;
 	}
 	return nullptr;
-}
-
-bool is_rasterizer_only(const StageIOField& field) {
-	return field.interpolation == InterpolationKind::clip || field.builtin == BuiltinSlot::position;
 }
 
 // Resolve every IROp::FunctionCall against the functions defined in this
@@ -1565,20 +1554,20 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 			continue;
 		}
 		const u32 name_index = inst.literals[0];
-		if (name_index >= ir.call_target_names.size()) {
+		if (name_index >= ir.call_targets.size()) {
 			IRInstruction copy = inst;
 			apply_remap(copy);
 			new_body.push_back(std::move(copy));
 			continue;
 		}
-		const std::string_view callee_name = ir.call_target_names[name_index];
+		const IRCallTarget& callee = ir.call_targets[name_index];
 		const std::size_t arg_count = inst.operands.size() - 1; // operand[0] is the (unresolved) target id slot
 
 		const IRFunction* target = nullptr;
 		for (const auto& candidate : ir.functions) {
 			if (&candidate == &fn)
 				continue;
-			if (candidate.source_name != callee_name)
+			if (candidate.source_name != callee.mangled_name)
 				continue;
 			if (candidate.parameter_ids.size() != arg_count)
 				continue;
@@ -1662,7 +1651,7 @@ void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
 	// Once nothing is left to inline against this module, drop the side
 	// any surviving FunctionCalls are cross-module and will get their names
 	// from the artifact's strings payload after linking.
-	if (ir.call_target_names.empty())
+	if (ir.call_targets.empty())
 		return;
 	bool any_unresolved = false;
 	for (const auto& fn : ir.functions) {
@@ -1676,7 +1665,7 @@ void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
 			break;
 	}
 	if (!any_unresolved) {
-		ir.call_target_names.clear();
+		ir.call_targets.clear();
 	}
 }
 
@@ -1822,9 +1811,24 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	ir.stage_interfaces = module.stage_interfaces;
 
 	StringSet callable_names;
+	std::vector<CallableTarget> callable_targets;
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind == DeclKind::function) {
 			callable_names.insert(symbol.name);
+			CallableTarget target;
+			target.name = symbol.name;
+			target.value_parameter_types.reserve(symbol.parameters.size());
+			std::vector<std::string> parameter_identity_storage;
+			std::vector<std::string_view> parameter_identities;
+			parameter_identity_storage.reserve(symbol.parameters.size());
+			parameter_identities.reserve(symbol.parameters.size());
+			for (const auto& parameter : symbol.parameters) {
+				target.value_parameter_types.push_back(parameter.type);
+				parameter_identity_storage.push_back(parameter_identity(parameter));
+				parameter_identities.push_back(parameter_identity_storage.back());
+			}
+			target.mangled_name = mangle_rtsl(symbol.name, symbol.stage, parameter_identities);
+			callable_targets.push_back(std::move(target));
 		}
 	}
 	for (const auto& export_symbol : module.imported_exports) {
@@ -1833,7 +1837,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 
-	IRBuilder builder{ ir, std::move(callable_names), diagnostics };
+	IRBuilder builder{ ir, std::move(callable_names), std::move(callable_targets), diagnostics };
 	TypeRegistry types(builder);
 	for (const auto& decl : module.structs) {
 		types.register_struct(decl);
@@ -2093,7 +2097,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			}
 			continue;
 		}
-		if (use.kind == UsingImport::Kind::uniform_scope) {
+		if (use.kind == UsingImport::Kind::namespace_scope) {
 			const auto scope = qualified_from_using_path(use.path);
 			for (const auto& uniform : ir.uniforms) {
 				if (!uniform.is_anonymous && uniform.scope_name == scope) {
@@ -2124,8 +2128,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		if (!symbol.has_body)
 			continue;
 
-		// Stage role is driven by the `@vertex` / `@fragment` attribute, set on
-		// the Decl at parse time and forwarded through Sema.
+		// Stage role is resolved by sema from language-known function
+		// attributes and forwarded as normalized metadata.
 		const StageKind stage = symbol.stage;
 		const bool is_stage_entry = stage != StageKind::none;
 		// Detect a struct member-init constructor: a function named
@@ -2154,7 +2158,16 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		fn.stage = stage;
 		fn.exported = symbol.exported;
 		fn.is_constructor = is_constructor;
-		fn.source_name = symbol.name;
+		std::vector<std::string> parameter_identity_storage;
+		std::vector<std::string_view> parameter_types;
+		parameter_identity_storage.reserve(parameters.size());
+		parameter_types.reserve(parameters.size());
+		for (const auto& parameter : parameters) {
+			parameter_identity_storage.push_back(parameter_identity(parameter));
+			parameter_types.push_back(parameter_identity_storage.back());
+		}
+		fn.source_name = mangle_rtsl(symbol.name, stage, parameter_types);
+		fn.display_name_text = symbol.name;
 		ir.functions.push_back(std::move(fn));
 		const std::size_t fn_index = ir.functions.size() - 1;
 
@@ -2210,7 +2223,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		if (type.empty() || type == "void") {
 			return;
 		}
-		if (find_interface(ir.stage_interfaces, type)) {
+		if (find_interface(ir.stage_interfaces, type, role)) {
 			return;
 		}
 		for (const auto& decl : ir.structs) {
@@ -2221,10 +2234,11 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			derived.role = role;
 			derived.type_name = type;
 			u32 location = 0;
-			for (const auto& field : decl.fields) {
+			for (u32 index = 0; index < decl.fields.size(); ++index) {
 				StageIOField f;
-				f.name = field.name;
+				f.name = decl.fields[index].name;
 				f.location = location++;
+				f.member_index = index;
 				derived.fields.push_back(std::move(f));
 			}
 			ir.stage_interfaces.push_back(std::move(derived));
@@ -2253,7 +2267,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		if (type != "vec4") {
 			return;
 		}
-		if (find_interface(ir.stage_interfaces, type)) {
+		if (find_interface(ir.stage_interfaces, type, StageRole::output)) {
 			return;
 		}
 		StageInterface derived;
@@ -2280,10 +2294,13 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 
-	// Generate the compiler-provided backend entry wrappers. For now the
-	// wrapper is the trivial form: ReadInput each input location into a local,
-	// call the user entry, write each output location via WriteOutput, write
-	// the clip-space builtin if applicable.
+	// Stage input/output is deliberately NOT represented in RTIR. A stage entry
+	// stays a plain typed function (e.g. `vert(Point) -> Vertex`) carrying its
+	// stage tag; the serialized stage-interface metadata describes how each
+	// struct field maps to a location and interpolation mode.
+	// Synthesizing the target's actual input/output variables (SPIR-V Input/
+	// Output storage, HLSL semantics, MSL attributes, ...) is backend policy and
+	// lives in the Rutile backend that consumes the rtslp — not here.
 	(void)pending_stages;
 
 	inline_resolved_calls(ir, builder);
@@ -2291,6 +2308,65 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	return ir;
 }
 
-bool verify_ir(const IRModule&) { return true; }
+bool verify_ir(const IRModule& module, DiagnosticEngine* diagnostics) {
+	const auto fail = [&](const std::string& message) {
+		if (diagnostics) {
+			diagnostics->report(DiagnosticCode::ir_verification_failed, DiagnosticSeverity::error, {}, module.source_name, message);
+		}
+		return false;
+	};
+
+	// SSA invariant: every defined result id is unique across the whole module.
+	std::unordered_set<IRId> defined;
+	const auto define = [&](IRId id, std::string_view what) -> bool {
+		if (id == IRId_None) {
+			return true;
+		}
+		if (!defined.insert(id).second) {
+			return fail(std::format("duplicate SSA result id %{} ({})", id, what));
+		}
+		return true;
+	};
+	for (const auto& inst : module.type_constant_pool) {
+		if (!define(inst.result_id, "type/constant")) return false;
+	}
+	for (const auto& inst : module.global_variables) {
+		if (!define(inst.result_id, "global")) return false;
+	}
+	for (const auto& fn : module.functions) {
+		if (!define(fn.result_id, "function")) return false;
+		for (const IRId pid : fn.parameter_ids) {
+			if (!define(pid, "parameter")) return false;
+		}
+		for (const auto& inst : fn.body) {
+			// A parameter is listed in parameter_ids and also appears as a
+			// FunctionParameter instruction in the body; count it once.
+			if (inst.op == IROp::FunctionParameter) {
+				continue;
+			}
+			if (!define(inst.result_id, "instruction")) return false;
+		}
+	}
+
+	// Every function is a well-formed block sequence: it opens with a Label and
+	// closes with a terminator.
+	for (const auto& fn : module.functions) {
+		if (fn.body.empty()) {
+			return fail("function has an empty body");
+		}
+		if (fn.body.front().op != IROp::Label) {
+			return fail("function body does not begin with a label");
+		}
+		switch (fn.body.back().op) {
+		case IROp::Return:
+		case IROp::ReturnValue:
+		case IROp::Branch:
+			break;
+		default:
+			return fail("function body does not end with a terminator");
+		}
+	}
+	return true;
+}
 
 } // namespace rtsl

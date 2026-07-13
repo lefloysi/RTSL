@@ -314,6 +314,34 @@ TEST_CASE("function with malformed parameter type is diagnosed") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
+TEST_CASE("pointer types are not source syntax") {
+	auto r = parse("fn t(vec4* color) { }");
+	REQUIRE(r.diagnostics.has_error());
+}
+
+TEST_CASE("reference parameters preserve their qualifier") {
+	auto r = parse("fn t(const vec4& color) { }");
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	const auto* fn = find_function(r.unit);
+	REQUIRE(fn != nullptr);
+	REQUIRE(fn->parameters.size() == 1);
+	REQUIRE(fn->parameters[0].type == "vec4");
+	REQUIRE(fn->parameters[0].is_const);
+	REQUIRE(fn->parameters[0].is_reference);
+}
+
+TEST_CASE("reference return types are rejected") {
+	auto r = parse("fn t(vec4& color) -> vec4& { return color; }");
+	REQUIRE(r.diagnostics.has_error());
+}
+
+TEST_CASE("reference fields and locals are rejected") {
+	auto field = parse("struct S { vec4& color; };");
+	REQUIRE(field.diagnostics.has_error());
+	auto local = parse("fn t() { vec4& color; }");
+	REQUIRE(local.diagnostics.has_error());
+}
+
 TEST_CASE("stray '@' with no fn following is diagnosed") {
 	auto r = parse("@vertex\nstruct S { vec3 p; };");
 	REQUIRE(r.diagnostics.has_error());
@@ -329,9 +357,13 @@ TEST_CASE("dangling attribute marker is diagnosed") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
-TEST_CASE("unknown attribute name is diagnosed") {
+TEST_CASE("unknown function attribute spelling is recorded for sema") {
 	auto r = parse("@nonsense\nfn entry() {}\n");
-	REQUIRE(r.diagnostics.has_error());
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	const auto* fn = find_function(r.unit);
+	REQUIRE(fn != nullptr);
+	REQUIRE(fn->attributes.size() == 1);
+	REQUIRE(fn->attributes[0].name == "nonsense");
 }
 
 TEST_CASE("do-while without semicolon is diagnosed") {
@@ -343,20 +375,22 @@ TEST_CASE("do-while without semicolon is diagnosed") {
 // Declaration surface: stage attributes, structs, uniforms, layouts, aliases
 // ---------------------------------------------------------------------------
 
-TEST_CASE("stage attribute records StageKind::vertex on the fn decl") {
+TEST_CASE("function attribute records authored vertex spelling on the fn decl") {
 	auto r = parse("@vertex fn vertex_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
-	REQUIRE(fn->stage == StageKind::vertex);
+	REQUIRE(fn->attributes.size() == 1);
+	REQUIRE(fn->attributes[0].name == "vertex");
 }
 
-TEST_CASE("stage attribute records StageKind::fragment on the fn decl") {
+TEST_CASE("function attribute records authored fragment spelling on the fn decl") {
 	auto r = parse("@fragment fn fragment_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
-	REQUIRE(fn->stage == StageKind::fragment);
+	REQUIRE(fn->attributes.size() == 1);
+	REQUIRE(fn->attributes[0].name == "fragment");
 }
 
 TEST_CASE("function body flag distinguishes body from forward decl") {
@@ -491,9 +525,11 @@ TEST_CASE("function return boundary records varying interface") {
 			found_varying = true;
 			REQUIRE(iface.fields.size() == 2);
 			REQUIRE(iface.fields[0].name == "position");
-			REQUIRE(iface.fields[0].interpolation == InterpolationKind::clip);
+			REQUIRE(iface.fields[0].tags.size() == 1);
+			REQUIRE(iface.fields[0].tags[0] == "clip");
 			REQUIRE(iface.fields[1].name == "uv");
-			REQUIRE(iface.fields[1].interpolation == InterpolationKind::smooth);
+			REQUIRE(iface.fields[1].tags.size() == 1);
+			REQUIRE(iface.fields[1].tags[0] == "smooth");
 		}
 	}
 	REQUIRE(found_varying);
@@ -507,10 +543,10 @@ TEST_CASE("using alias cannot declare stage boundary") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
-TEST_CASE("using import records symbol and scope imports") {
+TEST_CASE("using import records symbol and namespace-scope imports") {
 	auto r = parse(
 		"using albedo::tint;\n"
-		"export using uniform albedo;\n"
+		"export using namespace albedo;\n"
 		"using namespace math;\n"
 	);
 	REQUIRE_FALSE(r.diagnostics.has_error());
@@ -518,9 +554,14 @@ TEST_CASE("using import records symbol and scope imports") {
 	REQUIRE(r.unit.using_imports[0].kind == UsingImport::Kind::symbol);
 	REQUIRE(r.unit.using_imports[0].imported_name == "tint");
 	REQUIRE_FALSE(r.unit.using_imports[0].exported);
-	REQUIRE(r.unit.using_imports[1].kind == UsingImport::Kind::uniform_scope);
+	REQUIRE(r.unit.using_imports[1].kind == UsingImport::Kind::namespace_scope);
 	REQUIRE(r.unit.using_imports[1].exported);
 	REQUIRE(r.unit.using_imports[2].kind == UsingImport::Kind::namespace_scope);
+}
+
+TEST_CASE("using uniform is not source syntax") {
+	auto r = parse("using uniform albedo;\n");
+	REQUIRE(r.diagnostics.has_error());
 }
 
 TEST_CASE("export import records imported module and exported decl") {
@@ -543,12 +584,27 @@ TEST_CASE("return boundary requires a tag list") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
-TEST_CASE("return boundary with unknown tag is diagnosed") {
+TEST_CASE("return boundary records unknown tag spelling for sema") {
 	auto r = parse(
 		"struct Vertex { vec4 position; };\n"
 		"@vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
 	);
-	REQUIRE(r.diagnostics.has_error());
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.stage_interfaces.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags[0] == "weird_tag");
+}
+
+TEST_CASE("stage-global-looking boundary tag is syntax and resolved by sema") {
+	auto r = parse(
+		"struct Vertex { vec4 position; u32 index; };\n"
+		"@vertex fn vertex_entry() -> Vertex : position(clip), index(vertex_index) { return Vertex(); }\n"
+	);
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.stage_interfaces.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 2);
+	REQUIRE(r.unit.stage_interfaces[0].fields[1].tags[0] == "vertex_index");
 }
 
 TEST_CASE("input stage interface declaration is not source syntax") {
@@ -578,4 +634,29 @@ TEST_CASE("multiple top-level declarations parse in order") {
 	REQUIRE(r.unit.declarations[0].kind == DeclKind::struct_decl);
 	REQUIRE(r.unit.declarations[1].kind == DeclKind::struct_decl);
 	REQUIRE(r.unit.declarations[2].kind == DeclKind::function);
+}
+
+TEST_CASE("namespace declarations qualify contained symbols") {
+	auto r = parse(
+		"namespace math {\n"
+		"    struct Point { vec3 position; };\n"
+		"    fn make(Point p) -> Point { return p; }\n"
+		"    uniform camera { UniformBuffer data; }\n"
+		"    layout camera::data : mat4;\n"
+		"}\n"
+	);
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.structs.size() == 1);
+	REQUIRE(r.unit.structs[0].name == "math::Point");
+	const auto* fn = find_function(r.unit);
+	REQUIRE(fn != nullptr);
+	REQUIRE(fn->name == "math::make");
+	REQUIRE(fn->parameters.size() == 1);
+	REQUIRE(fn->parameters[0].type == "math::Point");
+	REQUIRE(fn->return_type == "math::Point");
+	REQUIRE(r.unit.uniforms.size() == 1);
+	REQUIRE(r.unit.uniforms[0].scope_name == "math::camera");
+	REQUIRE(r.unit.layouts.size() == 1);
+	REQUIRE(r.unit.layouts[0].path.size() == 2);
+	REQUIRE(r.unit.layouts[0].path[0] == "math::camera");
 }

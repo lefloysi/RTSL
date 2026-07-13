@@ -115,14 +115,7 @@ typedef enum rtsl_interpolation {
 } rtsl_interpolation;
 
 typedef enum rtsl_builtin {
-    RTSL_BUILTIN_NONE = 0,
-    RTSL_BUILTIN_POSITION = 1,
-    RTSL_BUILTIN_POINT_SIZE = 2,
-    RTSL_BUILTIN_VERTEX_INDEX = 3,
-    RTSL_BUILTIN_INSTANCE_INDEX = 4,
-    RTSL_BUILTIN_FRAG_COORD = 5,
-    RTSL_BUILTIN_FRONT_FACING = 6,
-    RTSL_BUILTIN_FRAG_DEPTH = 7
+    RTSL_BUILTIN_NONE = 0
 } rtsl_builtin;
 
 #define RTSL_NO_LOCATION 0xffffffffu
@@ -134,7 +127,7 @@ typedef struct rtsl_stage_variable {
     const char* name;             /* field name */
     rtsl_interpolation interpolation;
     rtsl_builtin builtin;
-    uint32_t location;            /* RTSL_NO_LOCATION when a builtin drives placement */
+    uint32_t location;            /* RTSL_NO_LOCATION when clip-space placement drives placement */
 } rtsl_stage_variable;
 
 /* Reflected backend entry point. */

@@ -19,6 +19,9 @@ enum class ArtifactKind : u16 {
 	program = 4,
 };
 
+inline constexpr u16 ArtifactVersionMajor = 0;
+inline constexpr u16 ArtifactVersionMinor = 6;
+
 struct Artifact {
 	ArtifactKind kind = ArtifactKind::object;
 	std::vector<std::string> strings;

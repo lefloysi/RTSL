@@ -95,10 +95,9 @@ enum class ir_op : u16 {
 	image_sample_explicit_lod,
 	image_read,
 	image_write,
-	read_input,
-	write_output,
-	read_builtin,
-	write_builtin,
+	// Stage input/output is not represented in RTIR; the runtime reconstructs it
+	// from stage-interface metadata. Keep this enum in lockstep with
+	// src/ir/ops.def (opcode values are wire format).
 	ext_inst,
 };
 
@@ -158,13 +157,6 @@ enum class interpolation_kind : std::uint8_t {
 // Mirrors rtsl::BuiltinSlot. Encoded as u08.
 enum class builtin_slot : std::uint8_t {
 	none = 0,
-	position = 1,
-	point_size = 2,
-	vertex_index = 3,
-	instance_index = 4,
-	frag_coord = 5,
-	front_facing = 6,
-	frag_depth = 7,
 };
 
 struct uniform {
@@ -185,9 +177,13 @@ struct uniform {
 struct stage_field {
 	std::string name;
 	std::uint8_t interpolation = 0; // interpolation_kind value
-	std::uint8_t builtin = 0;		// builtin_slot value
-	// UINT32_MAX = no location (builtin slot drives placement instead).
+	std::uint8_t builtin = 0;		// reserved; v0.1 writes none
+	// UINT32_MAX = no user location (clip-space placement drives placement).
 	u32 location = static_cast<u32>(-1);
+	// Index of the struct member this field maps to (extract/insert target).
+	// UINT32_MAX = not a struct member (the whole payload value, e.g. a bare
+	// vec4 fragment color).
+	u32 member_index = static_cast<u32>(-1);
 };
 
 struct stage_interface {

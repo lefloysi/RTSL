@@ -4,6 +4,7 @@
 #include "driver/compiler.hpp"
 #include "ir/ir.hpp"
 #include "artifact/linker.hpp"
+#include "sema/uniform_lowering.hpp"
 
 #include <cstring>
 #include <exception>
@@ -34,11 +35,16 @@ rtsl_stage_role to_c_role(rtsl::StageRole role) {
 }
 
 rtsl_uniform_kind uniform_kind_from_type(const rtsl::IRModule& module, std::string_view uniform_type, rtsl::IRId type_id) {
-	if (uniform_type == "UniformBuffer") {
+	switch (rtsl::resource_binding_kind(uniform_type)) {
+	case rtsl::ResourceBindingKind::uniform_buffer:
 		return RTSL_UNIFORM_KIND_UNIFORM_BUFFER;
-	}
-	if (uniform_type == "StorageBuffer") {
+	case rtsl::ResourceBindingKind::storage_buffer:
 		return RTSL_UNIFORM_KIND_STORAGE_BUFFER;
+	case rtsl::ResourceBindingKind::sampler:
+	case rtsl::ResourceBindingKind::sampled_image:
+	case rtsl::ResourceBindingKind::image:
+	case rtsl::ResourceBindingKind::none:
+		break;
 	}
 	for (const auto& inst : module.type_constant_pool) {
 		if (inst.result_id != type_id) {

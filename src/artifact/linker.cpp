@@ -1,6 +1,7 @@
 #include "artifact/linker.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rtsl {
 
@@ -43,12 +44,12 @@ void merge_module(IRModule& dst, IRModule src) {
 		dst.decorations.push_back(std::move(decoration));
 	}
 
-	// FunctionCall.literals[0] is an index into call_target_names; shift it
+	// FunctionCall.literals[0] is an index into call_targets; shift it
 	// by the existing target count so cross-module call resolution still
 	// works after the merge.
-	const u32 name_offset = static_cast<u32>(dst.call_target_names.size());
-	for (auto& name : src.call_target_names) {
-		dst.call_target_names.push_back(std::move(name));
+	const u32 name_offset = static_cast<u32>(dst.call_targets.size());
+	for (auto& target : src.call_targets) {
+		dst.call_targets.push_back(std::move(target));
 	}
 
 	for (auto fn : src.functions) {
@@ -109,20 +110,20 @@ bool inline_one_module_pass(IRModule& ir) {
 				continue;
 			}
 			const u32 name_index = inst.literals[0];
-			if (name_index >= ir.call_target_names.size()) {
+			if (name_index >= ir.call_targets.size()) {
 				IRInstruction copy = inst;
 				apply_remap(copy);
 				new_body.push_back(std::move(copy));
 				continue;
 			}
-			const std::string_view callee_name = ir.call_target_names[name_index];
+			const IRCallTarget& callee = ir.call_targets[name_index];
 			const std::size_t arg_count = inst.operands.size() - 1;
 
 			const IRFunction* target = nullptr;
 			for (const auto& candidate : ir.functions) {
 				if (&candidate == &fn)
 					continue;
-				if (candidate.source_name != callee_name)
+				if (candidate.source_name != callee.mangled_name)
 					continue;
 				if (candidate.parameter_ids.size() != arg_count)
 					continue;
@@ -197,13 +198,74 @@ bool report_unresolved_program_calls(const IRModule& ir, DiagnosticEngine& diagn
 				continue;
 			}
 			std::string name = "<unknown>";
-			if (!inst.literals.empty() && inst.literals[0] < ir.call_target_names.size()) {
-				name = ir.call_target_names[inst.literals[0]];
+			if (!inst.literals.empty() && inst.literals[0] < ir.call_targets.size()) {
+				name = ir.call_targets[inst.literals[0]].display_name;
 			}
-			diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+			diagnostics.report(DiagnosticCode::link_unresolved_call, DiagnosticSeverity::error, {}, "<link>",
 							   "unresolved function call '" + name + "' in program link");
 			found = true;
 		}
+	}
+	return found;
+}
+
+std::string_view string_from_id(const Artifact& artifact, StringId id) {
+	if (id.value >= artifact.strings.size()) {
+		return {};
+	}
+	return artifact.strings[id.value];
+}
+
+std::string exported_function_identity(const Artifact& artifact, const IRFunction& fn) {
+	if (!fn.exported) {
+		return {};
+	}
+	if (const std::string_view mangled = string_from_id(artifact, fn.mangled_name); !mangled.empty()) {
+		return std::string(mangled);
+	}
+	return fn.source_name;
+}
+
+bool report_duplicate_exported_functions(const Artifact& artifact, DiagnosticEngine& diagnostics) {
+	std::unordered_set<std::string> identities;
+	bool found = false;
+	for (const auto& fn : artifact.module.functions) {
+		std::string identity = exported_function_identity(artifact, fn);
+		if (identity.empty()) {
+			continue;
+		}
+		if (!identities.insert(identity).second) {
+			diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+							   "duplicate exported function identity '" + identity + "'");
+			found = true;
+		}
+	}
+	return found;
+}
+
+bool report_stale_imported_exports(const Artifact& artifact, DiagnosticEngine& diagnostics) {
+	std::unordered_map<std::string, u64> export_hashes;
+	for (const auto& exported : artifact.module.exports) {
+		if (exported.interface_hash == 0) {
+			continue;
+		}
+		const std::string key = exported.kind + ":" + exported.name;
+		export_hashes.emplace(key, exported.interface_hash);
+	}
+
+	bool found = false;
+	for (const auto& imported : artifact.module.imported_exports) {
+		if (imported.interface_hash == 0) {
+			continue;
+		}
+		const std::string key = imported.kind + ":" + imported.name;
+		const auto it = export_hashes.find(key);
+		if (it == export_hashes.end() || it->second == imported.interface_hash) {
+			continue;
+		}
+		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+						   "stale imported interface for '" + imported.name + "'");
+		found = true;
 	}
 	return found;
 }
@@ -240,6 +302,8 @@ Artifact Linker::link_program() {
 		program.kind = ArtifactKind::program;
 		program.bytes.clear();
 		const auto error_count = diagnostics_.diagnostics().size();
+		report_duplicate_exported_functions(program, diagnostics_);
+		report_stale_imported_exports(program, diagnostics_);
 		report_unresolved_program_calls(program.module, diagnostics_);
 		validate_program_stages(program);
 		if (diagnostics_.diagnostics().size() != error_count) {
@@ -271,6 +335,8 @@ Artifact Linker::link_program() {
 
 	program.bytes.clear();
 	const auto error_count = diagnostics_.diagnostics().size();
+	report_duplicate_exported_functions(program, diagnostics_);
+	report_stale_imported_exports(program, diagnostics_);
 	report_unresolved_program_calls(program.module, diagnostics_);
 	validate_program_stages(program);
 	if (diagnostics_.diagnostics().size() != error_count) {
@@ -305,6 +371,13 @@ Artifact Linker::link_library() {
 	// FunctionCalls - that's fine for a library; the program linker will
 	// resolve them later when more inputs are available.
 	for (int iteration = 0; iteration < 64 && inline_one_module_pass(library.module); ++iteration) {}
+
+	const bool invalid_exports = report_duplicate_exported_functions(library, diagnostics_);
+	const bool stale_imports = report_stale_imported_exports(library, diagnostics_);
+	if (invalid_exports || stale_imports) {
+		library.bytes.clear();
+		return library;
+	}
 
 	library.bytes = write_artifact(ArtifactKind::library, library.module);
 	return library;
@@ -372,7 +445,7 @@ static ProgramKind classify_program(const Artifact& program) {
 
 void Linker::validate_program_stages(const Artifact& program) {
 	if (program.entries.empty()) {
-		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+		diagnostics_.report(DiagnosticCode::link_missing_entry, DiagnosticSeverity::error, {}, "<link>",
 							"program link requires at least one stage entry point");
 		return;
 	}
@@ -383,25 +456,25 @@ void Linker::validate_program_stages(const Artifact& program) {
 	for (const auto& entry : program.entries) {
 		if (entry.stage == StageKind::vertex) {
 			if (has_vertex) {
-				diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
 									"graphics program has more than one vertex stage entry point");
 			}
 			has_vertex = true;
 		}
 		if (entry.stage == StageKind::fragment) {
 			if (has_fragment) {
-				diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
 									"graphics program has more than one fragment stage entry point");
 			}
 			has_fragment = true;
 		}
 	}
 	if (!has_vertex) {
-		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>",
 							"graphics program is missing a vertex stage (vert)");
 	}
 	if (!has_fragment) {
-		diagnostics_.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>",
 							"graphics program is missing a fragment stage (frag)");
 	}
 }

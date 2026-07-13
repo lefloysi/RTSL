@@ -1,26 +1,12 @@
-// builtins.def — the pipeline builtin slots RTSL exposes.
+// builtins.def — intentionally empty for v0.1.
 //
 //   RTSL_BUILTIN(name, spelling)
 //
-// `name` is the PascalCase enumerator used by the IR-level BuiltIn enum;
-// `spelling` is the snake_case identifier written in RTSL source (also the
-// enumerator name of ast-level BuiltinSlot). Builtins are never global
-// variables — source code reaches them through explicit boundary tags such as
-// `-> Vertex : position(clip)`, and backends map the slot to their target ABI.
+// Stage globals are explicit entry parameters, not return-boundary tags.
+// `clip` is interpolation/placement metadata, not a builtin named `position`.
 //
-// Order matters: BuiltinSlot encodes as (index + 1) in serialized stage
-// interface metadata (0 is reserved for "none"), so append only.
-
 #ifndef RTSL_BUILTIN
 #define RTSL_BUILTIN(name, spelling)
 #endif
-
-RTSL_BUILTIN(Position, position)
-RTSL_BUILTIN(PointSize, point_size)
-RTSL_BUILTIN(VertexIndex, vertex_index)
-RTSL_BUILTIN(InstanceIndex, instance_index)
-RTSL_BUILTIN(FragCoord, frag_coord)
-RTSL_BUILTIN(FrontFacing, front_facing)
-RTSL_BUILTIN(FragDepth, frag_depth)
 
 #undef RTSL_BUILTIN

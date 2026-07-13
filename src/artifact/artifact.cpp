@@ -10,8 +10,6 @@
 namespace rtsl {
 
 constexpr u32 Magic = 0x4c535452;
-constexpr u16 VersionMajor = 0;
-constexpr u16 VersionMinor = 4;
 constexpr u32 HeaderSize = 48;
 constexpr u32 PayloadRecordSize = 32;
 
@@ -72,7 +70,8 @@ bin::error process(Stream& stream, Sym& sym) {
 	return stream(
 		bin::field("name", sym.name),
 		bin::field("kind", sym.kind),
-		bin::field("type", sym.type));
+		bin::field("type", sym.type),
+		bin::field("interface_hash", sym.interface_hash));
 }
 
 template <bin::byte_stream Stream, bin::data<StructField> Field>
@@ -95,7 +94,8 @@ bin::error process(Stream& stream, Field& f) {
 		bin::field("name", f.name),
 		bin::field("interpolation", f.interpolation),
 		bin::field("builtin", f.builtin),
-		bin::field("location", f.location));
+		bin::field("location", f.location),
+		bin::field("member_index", f.member_index));
 }
 
 template <bin::byte_stream Stream, bin::data<StageInterface> Iface>
@@ -164,7 +164,24 @@ StringPool build_string_pool(const IRModule& module, std::span<const Artifact::E
 		pool.intern(entry.name);
 		pool.intern(entry.mangled_name);
 	}
+	for (const auto& fn : module.functions) {
+		pool.intern(fn.source_name);
+		pool.intern(fn.display_name_text);
+	}
 	return pool;
+}
+
+IRModule with_serialized_string_ids(IRModule module, const StringPool& pool) {
+	const auto find = [&](std::string_view value) -> StringId {
+		const auto it = pool.ids.find(value);
+		return it == pool.ids.end() ? StringId{} : StringId{ .value = it->second };
+	};
+	for (auto& fn : module.functions) {
+		const std::string_view display_name = fn.display_name_text.empty() ? std::string_view(fn.source_name) : std::string_view(fn.display_name_text);
+		fn.display_name = find(display_name);
+		fn.mangled_name = find(fn.source_name);
+	}
+	return module;
 }
 
 // ---- Payload builders ---------------------------------------------------
@@ -218,9 +235,16 @@ Payload make_ir_module_payload(const IRModule& module, bool linked_program) {
 			bin::field("body", fn.body));
 	}
 
-	// Pending FunctionCall target names. Linked programs carry none.
-	std::vector<std::string> target_names = linked_program ? std::vector<std::string>{} : module.call_target_names;
-	(void)stream(bin::field("call_target_names", target_names));
+	// Pending FunctionCall target identities. Linked programs carry none.
+	const u32 call_target_count = linked_program ? 0 : static_cast<u32>(module.call_targets.size());
+	(void)stream(bin::field("call_target_count", call_target_count));
+	if (!linked_program) {
+		for (const auto& target : module.call_targets) {
+			(void)stream(
+				bin::field("display_name", target.display_name),
+				bin::field("mangled_name", target.mangled_name));
+		}
+	}
 
 	const u32 debug_count = static_cast<u32>(module.function_debug.size());
 	(void)stream(bin::field("debug_count", debug_count));
@@ -305,15 +329,14 @@ Payload make_resource_payload(const IRModule& module) {
 }
 
 Payload make_stage_interface_payload(const IRModule& module) {
-	// Only reflected host-visible stage variables reach the artifact.
+	// All stage interfaces are serialized, including `varying`: it is the
+	// vertex-output / fragment-input contract a backend needs to emit connected
+	// stages (interpolation, locations, member mapping). Host reflection hides
+	// varyings on its own side (see the C API), so this does not widen the
+	// host-visible surface.
 	Payload payload{ .kind = PayloadKind::stage_interfaces };
 	bin::write_stream stream;
-	std::vector<StageInterface> emit;
-	emit.reserve(module.stage_interfaces.size());
-	for (const auto& iface : module.stage_interfaces) {
-		if (iface.role == StageRole::varying) continue;
-		emit.push_back(iface);
-	}
+	std::vector<StageInterface> emit(module.stage_interfaces.begin(), module.stage_interfaces.end());
 	(void)stream(bin::field("interfaces", emit));
 	payload.bytes = stream.take_written();
 	return payload;
@@ -351,8 +374,8 @@ std::vector<u08> write_container(ArtifactKind kind, std::vector<Payload> payload
 	const u32 reserved32 = 0;
 	(void)stream(
 		bin::field("magic", Magic),
-		bin::field("version_major", VersionMajor),
-		bin::field("version_minor", VersionMinor),
+		bin::field("version_major", ArtifactVersionMajor),
+		bin::field("version_minor", ArtifactVersionMinor),
 		bin::field("kind", kind_val),
 		bin::field("endian", endian),
 		bin::field("reserved_a", reserved8),
@@ -417,18 +440,19 @@ std::vector<u08> write_artifact(ArtifactKind kind, const IRModule& module) {
 	// payloads leaves just the reflection surface the runtime actually reads.
 	const bool linked_program = kind == ArtifactKind::program;
 	const auto strings = build_string_pool(module, entries, linked_program);
+	const IRModule serialized_module = with_serialized_string_ids(module, strings);
 	std::vector<Payload> payloads;
 	payloads.push_back(make_string_payload(strings));
-	payloads.push_back(make_ir_module_payload(module, linked_program));
+	payloads.push_back(make_ir_module_payload(serialized_module, linked_program));
 	if (!linked_program) {
-		payloads.push_back(make_import_payload(module));
-		payloads.push_back(make_export_payload(module));
-		payloads.push_back(make_imported_export_payload(module));
-		payloads.push_back(make_struct_payload(module));
+		payloads.push_back(make_import_payload(serialized_module));
+		payloads.push_back(make_export_payload(serialized_module));
+		payloads.push_back(make_imported_export_payload(serialized_module));
+		payloads.push_back(make_struct_payload(serialized_module));
 	}
-	payloads.push_back(make_decoration_payload(module));
-	payloads.push_back(make_resource_payload(module));
-	payloads.push_back(make_stage_interface_payload(module));
+	payloads.push_back(make_decoration_payload(serialized_module));
+	payloads.push_back(make_resource_payload(serialized_module));
+	payloads.push_back(make_stage_interface_payload(serialized_module));
 	payloads.push_back(make_entry_payload(entries));
 	return write_container(kind, std::move(payloads));
 }
@@ -481,7 +505,7 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 		report_read_error(diagnostics, "invalid RTSL artifact magic");
 		return false;
 	}
-	if (version_major != VersionMajor) {
+	if (version_major != ArtifactVersionMajor) {
 		report_read_error(diagnostics, "unsupported RTSL artifact version");
 		return false;
 	}
@@ -565,10 +589,23 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 					"ir_module.function")) return false;
 				fn.generated = generated != 0;
 				fn.exported = exported != 0;
+				if (fn.display_name.value < artifact.strings.size()) {
+					fn.display_name_text = artifact.strings[fn.display_name.value];
+				}
 				artifact.module.functions.push_back(std::move(fn));
 			}
-			if (!propagate(r(bin::field("call_target_names", artifact.module.call_target_names)),
-				"ir_module.call_target_names")) return false;
+			u32 call_target_count = 0;
+			if (!propagate(r(bin::field("call_target_count", call_target_count)),
+				"ir_module.call_target_count")) return false;
+			artifact.module.call_targets.reserve(call_target_count);
+			for (u32 t = 0; t < call_target_count; ++t) {
+				IRCallTarget target;
+				if (!propagate(r(
+						bin::field("display_name", target.display_name),
+						bin::field("mangled_name", target.mangled_name)),
+					"ir_module.call_target")) return false;
+				artifact.module.call_targets.push_back(std::move(target));
+			}
 			u32 debug_count = 0;
 			if (!propagate(r(bin::field("debug_count", debug_count)), "ir_module.debug_count")) return false;
 			artifact.module.function_debug.reserve(debug_count);

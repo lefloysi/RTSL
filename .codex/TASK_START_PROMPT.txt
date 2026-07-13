@@ -1,0 +1,13 @@
+Read AGENTS.md and .codex/TASK.md before acting.
+
+For this RTSL task, treat the reported file, function, test, diagnostic, or line
+number as a starting clue, not a scope boundary. Infer the general architectural
+rule, consult docs/language.md, docs/backend-contract.md, and
+docs/compiler-architecture.md, then inspect the full repository for the defect
+class before editing.
+
+Populate .codex/TASK.md with the objective, architectural rule, impact map,
+invariants, checklist, and verification plan. Maintain the checklist and
+verification evidence as work proceeds. Continue until the ledger reaches DONE
+or a genuine documented blocker exists. Do not claim completion while
+scripts/task_validate.ps1 fails.

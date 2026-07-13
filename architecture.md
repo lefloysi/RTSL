@@ -5,96 +5,93 @@ RTSL compiles source files into backend-neutral binary artifacts that the
 
 ```
 .rtsl  source        --[ compiler ]--> .rtslo  object
-                                        .rtslm  module/interface (optional)
+                                        .rtslm  module/interface (when it exports)
 .rtslo + .rtsll      --[ linker  ]--> .rtsll  library
                                         .rtslp  final program (consumed by Rutile backends)
 ```
 
-`rtslc` is the CLI driver wrapping the library.
+`rtslc` is the CLI driver wrapping the compiler/linker library.
 
 ## Repository layout
 
+Sources are grouped by pipeline layer under `src/`; includes are rooted at
+`src/` (e.g. `#include "frontend/lexer.hpp"`). The public C ABI header is the
+only split-out surface and lives at `bindings/c/include/rtsl.h`.
+
 ```
 RTSL/
-  bindings/c/             # public C ABI surface (header today, lib later)
-    include/rtsl.h
-    CMakeLists.txt
-  src/                    # clang-style internal layout
-    Basic/                # diagnostics, source manager, types
-    Lex/                  # lexer, tokens
-    AST/                  # AST node types (header-only today)
-    Parse/                # parser
-    Sema/                 # semantic analysis
-    IR/                   # RTIR data model + lowering passes
-    Mangle/               # name mangling
-    Serialization/        # rtslo/rtsll/rtslm/rtslp + text RTIR
-    Compiler/             # orchestrates source -> rtslo
-    Link/                 # rtslo + rtsll -> rtslp
-    Backend/              # compiler-side backends (currently GlslBackend)
-    Driver/               # rtslc CLI entry
-    rtsl.cpp              # public C ABI implementation
+  bindings/c/             # public C ABI: include/rtsl.h (+ CMakeLists)
+  src/
+    support/              # shared plumbing: types, source manager, diagnostics, binary io
+    frontend/             # preprocessor, lexer, parser, AST
+                          #   (+ tokens.def, directives.def, builtins.def, resource_types.def)
+    sema/                 # semantic analysis + type checking, mangling, uniform lowering
+    ir/                   # SSA RTIR: lowering, verification, disassembly (+ ops.def)
+    artifact/             # artifact container serialization and the linker
+    driver/               # compiler orchestration (compiler.cpp) and the rtslc CLI (rtslc.cpp)
+    api/                  # the C ABI implementation (rtsl.cpp) and the language service
+    runtime/              # .rtslp reader for Rutile backends (NOT built by this repo)
   tests/                  # rtsl-tests + workspace shaders
-  cmake/                  # RunGlslE2E.cmake helper
-  docs/                   # language, RTIR, artifacts, linking specs
+  cmake/                  # Rtsl.cmake integration helpers
+  docs/                   # language, RTIR, artifacts, linking, backend-contract specs
   scripts/                # build.{sh,bat}, test.{sh,bat}
-  tools/                  # vs-rtsl-ext, etc.
   workspace/              # scratch shaders for development
 ```
 
-## CMake target split
+## Build graph
 
-The monolithic `rtsl` static library has been split into focused sub-libs.
-Source files keep their existing locations under `src/`; only the build
-graph is split. Each library declares its dependencies explicitly so
-boundary violations cause link errors rather than silent regressions.
+The build is intentionally simple: one static library plus the CLI and tests.
 
 ```
-rtsl-frontend       Basic + Lex + Parse + Sema       no internal deps
-rtsl-ir             IR + Mangle                       -> rtsl-frontend  (see note)
-rtsl-serialization  Serialization                     -> rtsl-ir
-rtsl-linker         Link                              -> rtsl-serialization
-rtsl-backend-glsl   Backend/GlslBackend               -> rtsl-serialization
-rtsl-compiler       Compiler                          -> rtsl-frontend, rtsl-serialization
-rtsl                rtsl.cpp (public ABI impl)        -> everything above
-rtslc               Driver/rtslc.cpp                  -> rtsl
+rtsl        STATIC   support + frontend + sema + ir + artifact + driver + api
+rtslc       EXE      driver/rtslc.cpp                -> rtsl (+ CLI11)
+rtsl-tests  EXE      tests/*.cpp                     -> rtsl (+ Catch2)
 ```
 
-### Why `rtsl-ir` depends on `rtsl-frontend` today
+`src/runtime/package.{hpp,cpp}` is deliberately **excluded** from this build. It
+is a standalone `.rtslp` reader that Rutile backends compile themselves against
+their own `rutile.h`; keeping it out of the RTSL library inverts the dependency
+correctly — RTSL knows nothing about Rutile. Its `ir_op` enum mirrors
+`src/ir/ops.def` and must be kept in lockstep (opcode values are wire format).
 
-The IR currently includes `AST/AST.h` and `Sema/Sema.h` directly, so it
-cannot be a "pure" IR library yet. Long-term we want the IR to stand alone
-so the in-memory model and the rtslp reader/writer can be linked by Rutile
-backends and tools without dragging in the parser. The refactor target:
+## Pipeline
 
-1. Move IR-relevant types out of `AST/Sema` into `IR/` (or split AST into
-   `AST-syntax` vs `AST-ir-bridge`).
-2. Strip `#include "AST/AST.h"` and `#include "Sema/Sema.h"` from
-   `IR/*.h`.
-3. Drop `target_link_libraries(rtsl-ir PUBLIC rtsl-frontend)`.
+```
+RTSL source
+  -> preprocessor        (#define / #ifdef)
+  -> lexer               (tokens + source offsets)
+  -> parser              (AST; owns syntax only)
+  -> semantic analysis   (name/type resolution, type checking, resource + stage
+                          layout assignment, exports)
+  -> RTIR generation     (typed SSA, backend-neutral)
+  -> artifact writer     (.rtslo, and .rtslm when the source exports)
+```
 
-Once that lands, `rtsl-ir` + `rtsl-serialization` form a clean contract
-that the Rutile repo can link against without pulling in the RTSL frontend.
+The linker merges `.rtslo`/`.rtsll` inputs (id-remapping + cross-module
+inlining) and emits `.rtsll` or a final `.rtslp` program.
+
+## Layer ownership
+
+- **frontend** owns syntax (lexing, parsing).
+- **sema** owns source-language meaning: name/type resolution, type checking,
+  overload/stage validation, and the resource/stage layout assignment.
+- **ir** owns the backend-neutral program model and its verification.
+- **artifact** owns the serialized container format.
+- **api** owns the C-compatible handles, errors, and lifetime bridges.
+
+There are **no backends in this repository.** Turning an `.rtslp` into SPIR-V,
+HLSL, MSL, or WGSL — including synthesizing each target's stage input/output
+variables from the stage-interface metadata — is backend policy that lives in
+Rutile. RTIR therefore never represents stage input/output as instructions; a
+stage entry is a plain typed function carrying only its stage tag.
 
 ## Boundary rules
 
-- Backends in Rutile must **never** depend on `rtsl-compiler`,
-  `rtsl-frontend`, or `rtsl-linker`. They only consume `.rtslp` packages.
-- `rtsl-ir` and `rtsl-serialization` are the only RTSL libs that should
-  ever be linked by code outside this repo.
+- Rutile backends consume `.rtslp` (and reflect other artifacts) only. They must
+  never link the RTSL compiler, frontend, or linker.
+- `src/runtime/` and the serialized artifact format are the only RTSL surfaces
+  code outside this repo should depend on.
 - Nothing in `bindings/` may include from `src/`.
-
-## Build strategy
-
-CMake stays scoped to the C/C++ library + CLI. Top-level orchestration
-lives in `scripts/`:
-
-- `scripts/build.sh` / `build.bat` — configures and builds via CMake.
-- `scripts/test.sh` / `test.bat` — runs ctest (`rtsl-tests` and the
-  glslangValidator end-to-end check).
-
-Future language bindings (`bindings/zig/`, `bindings/rust/`, ...) bring
-their own build systems and slot into `scripts/build.{sh,bat}` as
-additional phases.
 
 ## Related specs
 

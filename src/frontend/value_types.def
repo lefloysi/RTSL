@@ -1,0 +1,40 @@
+// value_types.def — builtin non-resource value types RTSL exposes.
+//
+// Scalar rows provide the IR scalar opcode and semantic kind. Vector rows name
+// their scalar element type. Matrix rows name their column vector type.
+
+#ifndef RTSL_SCALAR_TYPE
+#define RTSL_SCALAR_TYPE(spelling, semantic_kind, width, ir_op)
+#endif
+
+#ifndef RTSL_VECTOR_TYPE
+#define RTSL_VECTOR_TYPE(spelling, element, components)
+#endif
+
+#ifndef RTSL_MATRIX_TYPE
+#define RTSL_MATRIX_TYPE(spelling, column_type, columns)
+#endif
+
+RTSL_SCALAR_TYPE(void, Void, 0, TypeVoid)
+RTSL_SCALAR_TYPE(bool, Bool, 1, TypeBool)
+RTSL_SCALAR_TYPE(f32, Float, 32, TypeFloat)
+RTSL_SCALAR_TYPE(i32, Int, 32, TypeInt)
+RTSL_SCALAR_TYPE(u32, UInt, 32, TypeUInt)
+
+RTSL_VECTOR_TYPE(vec2, f32, 2)
+RTSL_VECTOR_TYPE(vec3, f32, 3)
+RTSL_VECTOR_TYPE(vec4, f32, 4)
+RTSL_VECTOR_TYPE(ivec2, i32, 2)
+RTSL_VECTOR_TYPE(ivec3, i32, 3)
+RTSL_VECTOR_TYPE(ivec4, i32, 4)
+RTSL_VECTOR_TYPE(uvec2, u32, 2)
+RTSL_VECTOR_TYPE(uvec3, u32, 3)
+RTSL_VECTOR_TYPE(uvec4, u32, 4)
+
+RTSL_MATRIX_TYPE(mat2, vec2, 2)
+RTSL_MATRIX_TYPE(mat3, vec3, 3)
+RTSL_MATRIX_TYPE(mat4, vec4, 4)
+
+#undef RTSL_SCALAR_TYPE
+#undef RTSL_VECTOR_TYPE
+#undef RTSL_MATRIX_TYPE

@@ -38,8 +38,10 @@ RTSL v0.1 target:
 
 ## Release Discipline
 
-- Keep the implementation aligned with the documented v0.1 scope in
+- Keep implementation and documentation aligned with the intended v0.1 scope in
   `docs/language.md`, `docs/backend-contract.md`, and `docs/compiler-architecture.md`.
+  When user-directed design changes conflict with current docs, update the docs
+  or the implementation so they converge on the intended behavior.
 - When a feature is listed as part of v0.1, treat missing support as a bug.
 - When a feature is documented as a goal but not a v0.1 guarantee, do not add
   it unless it helps complete the release surface or unblocks a required path.
@@ -47,6 +49,54 @@ RTSL v0.1 target:
   extra stage families or backend-specific expansion.
 - Keep tests on the released path dense enough to catch regressions in syntax,
   lowering, reflection, and linking.
+
+## Codex Operating Workflow
+
+For every nontrivial implementation or bug-fix task, treat a user-provided
+file, function, test, diagnostic, or line number as a starting clue, not a
+scope boundary. Before editing, infer the general rule or invariant implicated
+by the example, read the relevant v0.1 documentation, inspect the named
+location, search the full repository for analogous implementations and
+violations, and inspect both upstream and downstream layers.
+
+Create or update `.codex/TASK.md` for nontrivial work. The ledger must record
+the objective, architectural rule, documentation consulted, impact map,
+pre-change and post-change invariants, checklist, verification commands and
+results, final repository search, blockers, and continuation notes. Keep the
+impact map separated into confirmed violations, suspicious related locations,
+and inspected locations ruled out.
+
+Prefer structural fixes over symptom patches. Before adding feature-specific
+conditionals, flags, parser branches, enum cases, or isolated workarounds,
+determine whether the behavior should follow from a more general
+representation, named semantic rule, corrected phase boundary, centralized
+classification, shared table, earlier invariant, or normalization before later
+compiler stages. Direct checks for individual surface-language feature names in
+generic code are suspicious; if the next related feature would require another
+parallel branch, redesign first.
+
+Maintain the compiler ownership boundary explicitly: syntax is preserved by the
+parser rather than prematurely interpreted; contextual language meaning belongs
+to semantic analysis; lowering consumes validated meaning; backend code receives
+normalized backend-neutral information and must not reconstruct frontend
+policy. A stage-specific semantic decision may live in semantic analysis when it
+represents a real language distinction, but not in generic syntax parsing merely
+because the parser sees the token.
+
+For nontrivial work, the checklist must include the architectural search,
+affected layers and files, important invariants, coherent implementation items,
+tests for the general rule with at least one case beyond the motivating example
+where appropriate, a repeated repository search after implementation, final
+diff review for newly introduced special-case logic, repository-defined
+verification, and ledger evidence.
+
+Do not claim completion while known checklist items remain. A task is complete
+only when all accepted checklist items are complete, relevant verification
+succeeds, the final architectural search is recorded, the diff has been
+reviewed, no known required stub/TODO/bypass/temporary workaround remains, and
+the task ledger records the result. If genuinely blocked, state the exact
+blocker, preserve evidence, complete every independent item first, and mark the
+ledger `BLOCKED`, never `DONE`.
 
 ## Language And Documentation
 

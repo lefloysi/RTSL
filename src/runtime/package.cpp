@@ -8,11 +8,29 @@ namespace rtsl {
 
 constexpr u32 kRtslMagic = 0x4c535452;
 
+// Every scalar read is bounds-checked. `.rtslp` reaches Rutile as untrusted
+// bytes (files on disk, network, mods), so a truncated or hostile artifact must
+// fault cleanly instead of reading out of bounds. The subtraction form avoids
+// the integer overflow a naive `offset + count > size` check would have when a
+// corrupt header supplies a huge offset.
+void require_bytes(std::span<const std::uint8_t> data, size_t offset, size_t count) {
+	if (offset > data.size() || data.size() - offset < count) {
+		throw std::runtime_error("truncated or malformed RTSLP artifact");
+	}
+}
+
+u08 read_u8(std::span<const std::uint8_t> data, size_t& cursor) {
+	require_bytes(data, cursor, 1);
+	return data[cursor++];
+}
+
 u16 read_u16(std::span<const std::uint8_t> data, size_t offset) {
+	require_bytes(data, offset, 2);
 	return static_cast<u16>(data[offset] | (data[offset + 1] << 8));
 }
 
 u32 read_u32(std::span<const std::uint8_t> data, size_t offset) {
+	require_bytes(data, offset, 4);
 	return static_cast<u32>(data[offset]) |
 		   (static_cast<u32>(data[offset + 1]) << 8) |
 		   (static_cast<u32>(data[offset + 2]) << 16) |
@@ -20,6 +38,7 @@ u32 read_u32(std::span<const std::uint8_t> data, size_t offset) {
 }
 
 u64 read_u64(std::span<const std::uint8_t> data, size_t offset) {
+	require_bytes(data, offset, 8);
 	u64 value = 0;
 	for (int i = 0; i < 8; ++i) {
 		value |= static_cast<u64>(data[offset + i]) << (i * 8);
@@ -97,9 +116,7 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 		const auto kind = static_cast<PayloadKind>(read_u32(data, entry));
 		const size_t offset = static_cast<size_t>(read_u64(data, entry + 8));
 		const size_t size = static_cast<size_t>(read_u64(data, entry + 16));
-		if (offset + size > data.size()) {
-			throw std::runtime_error("RTSLP payload out of bounds");
-		}
+		require_bytes(data, offset, size); // overflow-safe; also guards the subspan below
 
 		std::span<const std::uint8_t> payload = data.subspan(offset, size);
 		size_t cursor = 0;
@@ -129,7 +146,7 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 				cursor += 4;
 				fn.return_type_id = read_u32(payload, cursor);
 				cursor += 4;
-				fn.stage = static_cast<stage_kind>(payload[cursor++]);
+				fn.stage = static_cast<stage_kind>(read_u8(payload, cursor));
 				cursor += 1; // generated
 				cursor += 1; // exported
 				cursor += 8; // display_name, mangled_name (StringIds)
@@ -152,12 +169,13 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 				}
 				module.functions.push_back(std::move(fn));
 			}
-			// call_target_names tail. A well-formed rtslp has no unresolved
+			// call_targets tail. A well-formed rtslp has no unresolved
 			// user-function calls (the inliner cleared them), so this count
 			// is typically zero - but we have to advance past it either way.
 			const u32 call_target_count = read_u32(payload, cursor);
 			cursor += 4;
 			for (u32 t = 0; t < call_target_count; ++t) {
+				(void)read_string(payload, cursor);
 				(void)read_string(payload, cursor);
 			}
 			break;
@@ -192,7 +210,7 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 				uniform.name = read_string(payload, cursor);
 				uniform.type_id = read_u32(payload, cursor);
 				cursor += 4;
-				uniform.access_qualifier = payload[cursor++];
+				uniform.access_qualifier = read_u8(payload, cursor);
 				uniform.set = read_u32(payload, cursor);
 				cursor += 4;
 				uniform.member = read_u32(payload, cursor);
@@ -214,7 +232,7 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 			module.stage_interfaces.reserve(count);
 			for (u32 i = 0; i < count; ++i) {
 				stage_interface stage_interface;
-				stage_interface.role = static_cast<stage_role>(payload[cursor++]);
+				stage_interface.role = static_cast<stage_role>(read_u8(payload, cursor));
 				stage_interface.type_name = read_string(payload, cursor);
 				const u32 field_count = read_u32(payload, cursor);
 				cursor += 4;
@@ -222,9 +240,11 @@ artifact_module read_rtslp_module(u64 program_size, const void* program_source) 
 				for (u32 f = 0; f < field_count; ++f) {
 					stage_field field;
 					field.name = read_string(payload, cursor);
-					field.interpolation = payload[cursor++];
-					field.builtin = payload[cursor++];
+					field.interpolation = read_u8(payload, cursor);
+					field.builtin = read_u8(payload, cursor);
 					field.location = read_u32(payload, cursor);
+					cursor += 4;
+					field.member_index = read_u32(payload, cursor);
 					cursor += 4;
 					stage_interface.fields.push_back(std::move(field));
 				}

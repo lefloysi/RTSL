@@ -171,7 +171,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 	}
 	auto ir = lower_to_ir(semantic_module, &diagnostics_);
 
-	if (!diagnostics_.has_error() && verify_ir(ir)) {
+	if (!diagnostics_.has_error() && verify_ir(ir, &diagnostics_)) {
 		artifact.bytes = write_artifact(ArtifactKind::object, ir);
 		artifact.module = ir;
 		artifact.strings.clear();

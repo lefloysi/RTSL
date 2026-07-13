@@ -15,11 +15,14 @@ struct SemanticSymbol {
 	std::string return_type;
 	std::vector<Decl::BodyStatement> body_statements;
 	bool exported = false;
-	// Copied from the Decl's `@vertex`/`@fragment` attribute.
+	std::vector<Attribute> attributes;
+	// Resolved from language-known function attributes.
 	StageKind stage = StageKind::none;
 	// True when the source-level decl had a `{ ... }` body — as opposed to a
 	// `;`-terminated forward declaration.
 	bool has_body = false;
+	// Source span of the originating declaration, for diagnostics.
+	SourceSpan span{};
 };
 
 struct SemanticModule {
@@ -32,6 +35,7 @@ struct SemanticModule {
 	std::vector<UniformBinding> uniforms;
 	std::vector<LayoutDecl> layouts;
 	std::vector<StageInterface> stage_interfaces;
+	std::vector<TypeAlias> type_aliases;
 	std::vector<UsingImport> using_imports;
 };
 

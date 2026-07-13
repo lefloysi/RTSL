@@ -1,0 +1,15 @@
+// stdlib.def — v0.1 standard-library function signatures.
+//
+//   RTSL_STDLIB_FN(name, return_type, parameter_count)
+//
+// Parameter types are checked by the operation-specific semantic rules until
+// the stdlib grows a richer signature model. This table owns the callable names
+// and return types that are part of the language surface.
+
+#ifndef RTSL_STDLIB_FN
+#define RTSL_STDLIB_FN(name, return_type, parameter_count)
+#endif
+
+RTSL_STDLIB_FN(sample, vec4, 2)
+
+#undef RTSL_STDLIB_FN

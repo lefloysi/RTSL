@@ -8,7 +8,6 @@
 #include "sema/sema.hpp"
 
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,19 +56,6 @@ enum class IROp : u16 {
 // Human-readable SPIR-V-style mnemonic for an opcode (used by the
 // disassembler). Generated from the same ops.def table.
 [[nodiscard]] const char* ir_op_name(IROp op);
-
-// SPIR-V-aligned builtin slots referenced by ReadBuiltin / WriteBuiltin and
-// BuiltIn decorations. Generated from frontend/builtins.def; the enumerators
-// line up with ast-level BuiltinSlot (which is this list shifted by one to
-// make room for its `none = 0`).
-enum class BuiltIn : u16 {
-#define RTSL_BUILTIN(name, spelling) name,
-#include "frontend/builtins.def"
-};
-
-// Map an RTSL builtin slot spelling (e.g. "position") to its IR-level slot.
-// Generated from builtins.def; returns nullopt for unrecognized names.
-[[nodiscard]] std::optional<BuiltIn> builtin_from_name(std::string_view name);
 
 struct IRInstruction {
 	IROp op = IROp::Nop;
@@ -140,15 +126,20 @@ struct IRFunction {
 	StringId mangled_name{}; // canonical identity
 
 	// Source-level identifier used by the inliner to match unresolved
-	// FunctionCall instructions to their target. The StringId-based pair above
-	// is for the artifact's string pool; this is the raw resolution key the
-	// IR pipeline uses before the string pool is built.
+	// FunctionCall instructions to their target. After lowering this stores the
+	// canonical mangled identity; display_name_text keeps the authored spelling.
 	std::string source_name;
+	std::string display_name_text;
 };
 
 struct IRFunctionDebugInfo {
 	StringId display_name{};
 	std::vector<StringId> parameter_names;
+};
+
+struct IRCallTarget {
+	std::string display_name;
+	std::string mangled_name;
 };
 
 struct IRModule {
@@ -173,18 +164,17 @@ struct IRModule {
 	std::vector<UniformBinding> uniforms;
 	std::vector<StageInterface> stage_interfaces;
 
-	// Pending call targets, indexed by FunctionCall.literals[0]. Each entry is
-	// the source-level identifier the call site asked for. The IR inliner
-	// (single-module pass) and the linker (cross-module pass) resolve these
-	// against function source_name + argument count. Cleared once all calls
-	// in the module are inlined.
-	std::vector<std::string> call_target_names;
+	// Pending call targets, indexed by FunctionCall.literals[0]. Each entry
+	// carries both the source-facing callee spelling and its canonical mangled
+	// identity. The inliner/linker use the canonical identity when available
+	// and keep the display name for diagnostics.
+	std::vector<IRCallTarget> call_targets;
 
 	// Monotonic id allocator. Backends remap to their own id space.
 	IRId next_id = 1;
 };
 
 [[nodiscard]] IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics = nullptr);
-[[nodiscard]] bool verify_ir(const IRModule& module);
+[[nodiscard]] bool verify_ir(const IRModule& module, DiagnosticEngine* diagnostics = nullptr);
 
 } // namespace rtsl

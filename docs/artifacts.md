@@ -88,6 +88,14 @@ it back directly.
 That means the artifact carries the values the runtime needs, not the raw source
 syntax that produced them.
 
+Each stage-interface field records its name, interpolation, assigned location,
+and the index of the struct member it maps to. Because the
+RTIR type pool carries no member names, that member index is what lets a backend
+extract or insert the field when synthesizing the target's stage I/O. A member
+index of `0xFFFFFFFF` means the field is not a struct member — the entry's whole
+parameter or return value is the payload (for example a bare `vec4` fragment
+color).
+
 ## Versioning
 
 Changes to the byte layout require a version bump. Additive changes bump the

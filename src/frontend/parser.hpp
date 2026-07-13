@@ -45,6 +45,7 @@ class Parser {
 		std::vector<ParameterDecl> constructor_parameters; // body `fn T(...)`
 		bool is_reference = false;
 		bool is_const = false;
+		bool has_pointer = false;
 
 		[[nodiscard]] bool empty() const { return spelling.empty(); }
 	};
@@ -68,7 +69,7 @@ class Parser {
 	Decl parse_declaration();
 	Decl parse_import(bool exported);
 	Decl parse_namespace(bool exported);
-	Decl parse_function(bool exported, StageKind stage);
+	Decl parse_function(bool exported, std::vector<Attribute> attributes);
 	// `struct ...;` at top scope: a type expression used as a declaration.
 	Decl parse_type_declaration(bool exported);
 	Decl parse_invalid_global_declaration(bool exported);
@@ -76,11 +77,12 @@ class Parser {
 	void parse_layout();
 	void parse_using(bool exported);
 
-	// `@vertex` / `@fragment` prefix; StageKind::none when absent.
-	StageKind parse_stage_attribute();
+	// Authored `@name` attributes. The parser records spelling only; sema owns
+	// the meaning of known attributes.
+	std::vector<Attribute> parse_attributes();
 
 	// The single type rule. Consumes:
-	//   'const'? type_atom ('&' | '*')?
+	//   'const'? type_atom '&'?
 	//   type_atom := 'struct' scoped_name? ('{' struct_body '}' )?
 	//              | (ident | 'void' | 'auto') ('::' ident)* ('<' ... '>')?
 	// A struct body registers the type in the translation unit (generated name
@@ -93,8 +95,7 @@ class Parser {
 	void parse_function_signature(Decl& decl);
 	void parse_parameter_list(std::vector<ParameterDecl>& out);
 	// Return boundary (post `-> T`, consumed `:`): `field(tag, ...) , ...`.
-	// Tags are looked up in a fixed data table (clip/smooth/flat + builtin
-	// slot names).
+	// Tags are recorded by spelling; sema owns their contextual meaning.
 	void parse_return_boundary(std::string base_type);
 	void maybe_parse_return_boundary(std::string_view base_type);
 
@@ -146,6 +147,7 @@ class Parser {
 	std::string source_between(std::size_t begin_cursor, std::size_t end_cursor) const;
 
 	[[nodiscard]] std::string resolve_alias(std::string_view name) const;
+	bool reject_non_parameter_type_qualifiers(const ParsedType& type, std::string_view context);
 
 	// Recovery.
 	void skip_to_declaration_boundary(bool consume_right_brace = false);

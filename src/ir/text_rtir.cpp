@@ -44,7 +44,7 @@ const char* ir_op_name(IROp op) {
 
 std::string disassemble_artifact(const Artifact& artifact) {
 	std::ostringstream out;
-	out << "artifact " << kind_name(artifact.kind) << " 2.0\n";
+	out << "artifact " << kind_name(artifact.kind) << " " << ArtifactVersionMajor << "." << ArtifactVersionMinor << "\n";
 	out << "source \"" << artifact.module.source_name << "\"\n\n";
 	if (!artifact.module.imports.empty()) {
 		out << "; imports\n";

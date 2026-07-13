@@ -74,30 +74,63 @@ else()
     set_target_properties(rtslc PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
-find_package(Catch2 CONFIG REQUIRED)
+enable_testing()
+find_package(Catch2 CONFIG QUIET)
+if(Catch2_FOUND)
+    add_executable(rtsl-tests
+        tests/basic.cpp
+        tests/compiler.cpp
+        tests/artifact.cpp
+        tests/parser_grammar.cpp
+        tests/parser_negative.cpp
+    )
+    target_link_libraries(rtsl-tests PRIVATE rtsl)
+    target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)
+    target_compile_features(rtsl-tests PRIVATE cxx_std_23)
+    set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
+    # Smoke tests iterate tests/shaders/*.rtsl; the path is baked in at build
+    # time so the test binary works no matter where CTest launches it from.
+    target_compile_definitions(rtsl-tests PRIVATE
+        RTSL_TEST_SHADERS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
+    )
 
-add_executable(rtsl-tests
-    tests/basic.cpp
-    tests/compiler.cpp
-    tests/artifact.cpp
-    tests/parser_grammar.cpp
-    tests/parser_negative.cpp
-)
-target_link_libraries(rtsl-tests PRIVATE rtsl)
-target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)
-target_compile_features(rtsl-tests PRIVATE cxx_std_23)
-set_target_properties(rtsl-tests PROPERTIES CXX_EXTENSIONS OFF)
-# Smoke tests iterate tests/shaders/*.rtsl; the path is baked in at build
-# time so the test binary works no matter where CTest launches it from.
-target_compile_definitions(rtsl-tests PRIVATE
-    RTSL_TEST_SHADERS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders"
-)
+    if(MSVC)
+        set_target_properties(rtsl-tests PROPERTIES
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        )
+    endif()
+
+    add_test(NAME rtsl-tests COMMAND rtsl-tests)
+else()
+    message(WARNING "Catch2 not found; skipping rtsl-tests target")
+endif()
+
+if(TARGET rtslc)
+    set(_rtsl_smoke_dir "${CMAKE_CURRENT_BINARY_DIR}/smoke")
+    add_test(NAME rtslc-smoke-prepare
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_rtsl_smoke_dir}"
+    )
+    add_test(NAME rtslc-smoke-compile
+        COMMAND rtslc compile
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/graphics_program.rtsl"
+            -o "${_rtsl_smoke_dir}/graphics_program.rtslo"
+    )
+    add_test(NAME rtslc-smoke-link
+        COMMAND rtslc link-program
+            "${_rtsl_smoke_dir}/graphics_program.rtslo"
+            -o "${_rtsl_smoke_dir}/graphics_program.rtslp"
+    )
+    add_test(NAME rtslc-smoke-dump
+        COMMAND rtslc dump "${_rtsl_smoke_dir}/graphics_program.rtslp"
+    )
+    set_tests_properties(rtslc-smoke-prepare PROPERTIES FIXTURES_SETUP rtslc_smoke)
+    set_tests_properties(rtslc-smoke-compile PROPERTIES FIXTURES_REQUIRED rtslc_smoke FIXTURES_SETUP rtslc_smoke_object)
+    set_tests_properties(rtslc-smoke-link PROPERTIES FIXTURES_REQUIRED rtslc_smoke_object FIXTURES_SETUP rtslc_smoke_program)
+    set_tests_properties(rtslc-smoke-dump PROPERTIES FIXTURES_REQUIRED rtslc_smoke_program)
+endif()
 
 if(MSVC)
-    set_target_properties(rtslc rtsl-tests PROPERTIES
+    set_target_properties(rtslc PROPERTIES
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
     )
 endif()
-
-enable_testing()
-add_test(NAME rtsl-tests COMMAND rtsl-tests)

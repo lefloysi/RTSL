@@ -122,15 +122,10 @@ RTSL_IR_OP(ImageSampleExplicitLod, "OpImageSampleExplicitLod")   // operand[0]: 
 RTSL_IR_OP(ImageRead, "OpImageRead")
 RTSL_IR_OP(ImageWrite, "OpImageWrite")
 
-// --- Stage I/O primitives ---
-// High-level RTSL primitives. The SPIR-V backend lowers these to Load/Store
-// against Input/Output storage class variables. Keeping them as first-class
-// ops means stage interface assignment can stay metadata-driven instead of
-// requiring the IR to spell out every reflected stage variable up front.
-RTSL_IR_OP(ReadInput, "OpRTReadInput")           // literal: location
-RTSL_IR_OP(WriteOutput, "OpRTWriteOutput")       // operand[0]: value id; literal: location
-RTSL_IR_OP(ReadBuiltin, "OpRTReadBuiltin")       // literal: BuiltIn enum
-RTSL_IR_OP(WriteBuiltin, "OpRTWriteBuiltin")     // operand[0]: value id; literal: BuiltIn enum
+// Stage input/output is intentionally absent from RTIR. A stage entry is a
+// plain typed function; how its parameter/return struct fields become target
+// input/output variables is described by serialized stage-interface metadata
+// and synthesized by the backend, not spelled out as IR ops here.
 
 // --- Standard library / extended set ---
 RTSL_IR_OP(ExtInst, "OpExtInst") // literal[0]: ext set id (0 = rt.std.450); literal[1]: ext op number; operands: arg ids

@@ -1,0 +1,33 @@
+// resource_types.def — the opaque resource binding types RTSL exposes.
+//
+//   RTSL_RESOURCE_TYPE(spelling, binding_kind)
+//
+// `spelling` is the identifier written in RTSL source for a resource binding's
+// value type (e.g. `uniform { UniformBuffer mvp; }` or `Sampler2D albedo;`).
+// These are the non-scalar, non-vector, non-struct types the type checker
+// accepts as known type spellings; backends map each to a descriptor/binding
+// kind. Unlike scalars and structs they carry no field layout of their own —
+// a `layout` declaration attaches the payload type for buffer resources.
+// `binding_kind` is the ResourceBindingKind enumerator suffix used by semantic
+// analysis and IR lowering. This is the canonical v0.1 set.
+
+#ifndef RTSL_RESOURCE_TYPE
+#define RTSL_RESOURCE_TYPE(spelling, binding_kind)
+#endif
+
+// Buffer resources (payload type supplied by a `layout` declaration).
+RTSL_RESOURCE_TYPE(UniformBuffer, uniform_buffer)
+RTSL_RESOURCE_TYPE(StorageBuffer, storage_buffer)
+
+// Sampled textures.
+RTSL_RESOURCE_TYPE(Sampler2D, sampled_image)
+RTSL_RESOURCE_TYPE(Sampler3D, sampled_image)
+RTSL_RESOURCE_TYPE(SamplerCube, sampled_image)
+RTSL_RESOURCE_TYPE(Sampler2DArray, sampled_image)
+
+// Separate sampler / storage image.
+RTSL_RESOURCE_TYPE(Sampler, sampler)
+RTSL_RESOURCE_TYPE(Image2D, image)
+RTSL_RESOURCE_TYPE(Image3D, image)
+
+#undef RTSL_RESOURCE_TYPE

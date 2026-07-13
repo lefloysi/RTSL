@@ -31,6 +31,14 @@ static std::string encode_name_part(std::string_view name) {
 }
 
 static std::string encode_type(std::string_view type) {
+	if (type.ends_with("&")) {
+		type.remove_suffix(1);
+		return "R" + encode_type(type);
+	}
+	if (type.starts_with("const ")) {
+		type.remove_prefix(6);
+		return "K" + encode_type(type);
+	}
 	if (type == "void") return "v";
 	if (type == "bool") return "b";
 	if (type == "f32") return "f";

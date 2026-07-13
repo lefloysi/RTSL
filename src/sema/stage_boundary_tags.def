@@ -1,0 +1,11 @@
+// stage_boundary_tags.def — return-boundary tags with stage-interface meaning.
+
+#ifndef RTSL_STAGE_BOUNDARY_TAG
+#define RTSL_STAGE_BOUNDARY_TAG(tag, interpolation)
+#endif
+
+RTSL_STAGE_BOUNDARY_TAG(clip, clip)
+RTSL_STAGE_BOUNDARY_TAG(smooth, smooth)
+RTSL_STAGE_BOUNDARY_TAG(flat, flat)
+
+#undef RTSL_STAGE_BOUNDARY_TAG

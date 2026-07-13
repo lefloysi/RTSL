@@ -31,6 +31,14 @@ enum class DiagnosticCode : int {
 	sema_reserved_namespace = 3001,
 	sema_duplicate_namespace_decl = 3002,
 	sema_duplicate_export_decl = 3003,
+	sema_unknown_type = 3004,
+	sema_unknown_name = 3005,
+	sema_type_mismatch = 3006,
+	sema_argument_mismatch = 3007,
+	sema_unknown_member = 3008,
+	sema_not_callable = 3009,
+	sema_member_fn_unknown_owner = 3010,
+	sema_member_fn_no_declaration = 3011,
 
 	ir_lowering_failed = 3100,
 	layout_duplicate = 3101,
@@ -40,12 +48,17 @@ enum class DiagnosticCode : int {
 	layout_invalid_uniform_kind = 3105,
 	ir_expression_error = 3201,
 	ir_invalid_stage_signature = 3202,
+	ir_verification_failed = 3203,
 
 	artifact_error = 5001,
 
 	link_empty_artifact = 6001,
 	link_no_inputs = 6002,
 	link_conflict = 6003,
+	link_unresolved_call = 6004,
+	link_missing_entry = 6005,
+	link_duplicate_stage = 6006,
+	link_missing_stage = 6007,
 };
 
 struct Diagnostic {
