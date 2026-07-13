@@ -50,10 +50,9 @@ interpolated fields.
 
 ## SDK
 
-`rtsl-sdk` is shared code for the compiler and backend/transpiler code that
-consumes RTSL artifacts. Its public header is C; its implementation is C++.
-It exposes artifact data backend headers need; it does not choose or implement
-a backend.
+`rtsl-sdk` owns the shared artifact model used by the compiler and by
+backend/transpiler code that consumes RTSL artifacts. Its public headers live
+under `include/rtsl/`; it does not choose or implement a backend.
 
 ## Documentation
 

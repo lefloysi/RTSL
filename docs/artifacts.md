@@ -4,7 +4,7 @@ RTSL artifacts are binary files produced by the compiler and linker. They are
 the interchange format between compilation, linking, loading, and reflection.
 
 This document describes the container and the ordered payloads it carries. The
-file format is fixed by the shared SDK artifact contract and
+file format is fixed by the shared SDK artifact model and
 `rtsl/artifact/artifact.cpp`.
 
 ## Artifact Kinds

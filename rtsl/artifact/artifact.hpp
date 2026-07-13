@@ -2,7 +2,7 @@
 
 #include "support/basic_diagnostics.hpp"
 #include "ir/ir.hpp"
-#include "rtsl_sdk.h"
+#include "rtsl/artifact.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,16 +12,6 @@
 #include <vector>
 
 namespace rtsl {
-
-enum class ArtifactKind : u16 {
-	object = 1,
-	module = 2,
-	library = 3,
-	program = 4,
-};
-
-inline constexpr u16 ArtifactVersionMajor = 0;
-inline constexpr u16 ArtifactVersionMinor = 7;
 
 struct Artifact {
 	ArtifactKind kind = ArtifactKind::object;

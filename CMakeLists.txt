@@ -13,7 +13,7 @@ endif()
 #
 #   rtsl/       compiler library implementation
 #   rtslc/      command line tool
-#   rtsl-sdk/   shared SDK code for compiler and backend/transpiler code
+#   rtsl-sdk/   shared SDK artifact model headers
 
 set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/rtsl")
 set(_rtslc_src "${CMAKE_CURRENT_SOURCE_DIR}/rtslc")
@@ -53,23 +53,12 @@ target_include_directories(rtsl
         "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
 )
 
-add_library(rtsl-sdk STATIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/rtsl-sdk/src/artifact.cpp"
-)
-target_compile_features(rtsl-sdk PUBLIC cxx_std_23)
-set_target_properties(rtsl-sdk PROPERTIES CXX_EXTENSIONS OFF)
+add_library(rtsl-sdk INTERFACE)
 target_include_directories(rtsl-sdk
-    PUBLIC
+    INTERFACE
         "${_rtsl_sdk_include}"
 )
-if(MSVC)
-    set_target_properties(rtsl-sdk PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-    )
-    target_compile_options(rtsl-sdk PRIVATE /FS)
-endif()
 target_link_libraries(rtsl PUBLIC rtsl-sdk)
-
 add_executable(rtslc ${_rtslc_src}/rtslc.cpp)
 find_package(CLI11 CONFIG QUIET)
 if(CLI11_FOUND)

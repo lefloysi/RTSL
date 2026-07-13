@@ -11,10 +11,6 @@
 
 namespace rtsl {
 
-constexpr u32 Magic = RTSL_SDK_ARTIFACT_MAGIC;
-constexpr u32 HeaderSize = RTSL_SDK_ARTIFACT_HEADER_SIZE;
-constexpr u32 PayloadRecordSize = RTSL_SDK_PAYLOAD_RECORD_SIZE;
-
 enum class PayloadKind : u32 {
 	strings = 1,
 	ir_module = 2,
@@ -360,8 +356,8 @@ Payload make_entry_payload(std::span<const Artifact::EntryPoint> entries) {
 
 std::vector<u08> write_container(ArtifactKind kind, std::vector<Payload> payloads) {
 	const u32 payload_count = static_cast<u32>(payloads.size());
-	const u64 payload_record_offset = HeaderSize;
-	u64 data_offset = HeaderSize + static_cast<u64>(PayloadRecordSize) * payload_count;
+	const u64 payload_record_offset = ArtifactHeaderSize;
+	u64 data_offset = ArtifactHeaderSize + static_cast<u64>(PayloadRecordSize) * payload_count;
 	std::vector<u64> offsets;
 	offsets.reserve(payloads.size());
 	for (const auto& payload : payloads) {
@@ -375,22 +371,22 @@ std::vector<u08> write_container(ArtifactKind kind, std::vector<Payload> payload
 	const u08 reserved8 = 0;
 	const u32 reserved32 = 0;
 	(void)stream(
-		bin::field("magic", Magic),
+		bin::field("magic", ArtifactMagic),
 		bin::field("version_major", ArtifactVersionMajor),
 		bin::field("version_minor", ArtifactVersionMinor),
 		bin::field("kind", kind_val),
 		bin::field("endian", endian),
 		bin::field("reserved_a", reserved8),
 		bin::field("reserved_b", reserved32),
-		bin::field("header_size", HeaderSize),
+		bin::field("header_size", ArtifactHeaderSize),
 		bin::field("payload_count", payload_count),
 		bin::field("payload_record_offset", payload_record_offset),
 		bin::field("file_size", data_offset));
 
 	auto out = stream.take_written();
 	// Header is fixed-size; pad any trailing bytes so payload records land at
-	// HeaderSize regardless of how many fields the header actually spent.
-	out.resize(HeaderSize, u08{ 0 });
+	// ArtifactHeaderSize regardless of how many fields the header actually spent.
+	out.resize(ArtifactHeaderSize, u08{ 0 });
 
 	// Payload records: 32 bytes each, fixed layout.
 	bin::write_stream records;
@@ -472,16 +468,56 @@ std::vector<u08> write_linked_program(std::span<const Artifact> inputs) {
 // ---- Reader -------------------------------------------------------------
 
 bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngine* diagnostics) {
-	rtsl_sdk_artifact_view view{};
-	const rtsl_sdk_result header = rtslSdkReadArtifactHeader(data.data(), data.size(), &view);
-	if (!header.ok) {
-		report_read_error(diagnostics, header.error ? header.error : "invalid RTSL artifact header");
+	if (data.size() < ArtifactHeaderSize) {
+		report_read_error(diagnostics, "artifact is smaller than the header");
 		return false;
 	}
-	const auto payload_count = static_cast<u32>(view.header.payload_count);
-	const auto payload_record_offset = static_cast<u64>(view.header.payload_record_offset);
+	bin::read_stream header_stream(data.subspan(0, ArtifactHeaderSize));
+	u32 magic = 0;
+	u16 version_major = 0;
+	u16 version_minor = 0;
+	u16 kind = 0;
+	u08 endian = 0;
+	u08 reserved8 = 0;
+	u32 reserved32 = 0;
+	u32 header_size = 0;
+	u32 payload_count = 0;
+	u64 payload_record_offset = 0;
+	u64 file_size = 0;
+	if (auto err = header_stream(
+			bin::field("magic", magic),
+			bin::field("version_major", version_major),
+			bin::field("version_minor", version_minor),
+			bin::field("kind", kind),
+			bin::field("endian", endian),
+			bin::field("reserved_a", reserved8),
+			bin::field("reserved_b", reserved32),
+			bin::field("header_size", header_size),
+			bin::field("payload_count", payload_count),
+			bin::field("payload_record_offset", payload_record_offset),
+			bin::field("file_size", file_size));
+		err) {
+		report_read_error(diagnostics, "artifact header: " + err.message);
+		return false;
+	}
+	if (magic != ArtifactMagic) {
+		report_read_error(diagnostics, "invalid RTSL artifact magic");
+		return false;
+	}
+	if (version_major != ArtifactVersionMajor) {
+		report_read_error(diagnostics, "unsupported RTSL artifact version");
+		return false;
+	}
+	if (kind < static_cast<u16>(ArtifactKind::object) || kind > static_cast<u16>(ArtifactKind::program)) {
+		report_read_error(diagnostics, "invalid RTSL artifact kind");
+		return false;
+	}
+	if (endian != 1 || header_size != ArtifactHeaderSize || payload_record_offset != ArtifactHeaderSize || file_size != data.size()) {
+		report_read_error(diagnostics, "invalid RTSL artifact header");
+		return false;
+	}
 	artifact = Artifact{};
-	artifact.kind = static_cast<ArtifactKind>(view.header.kind);
+	artifact.kind = static_cast<ArtifactKind>(kind);
 	artifact.bytes.assign(data.begin(), data.end());
 
 	for (u32 i = 0; i < payload_count; ++i) {

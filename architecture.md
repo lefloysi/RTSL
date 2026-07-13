@@ -18,7 +18,7 @@ backend headers need for target-specific lowering.
 
 The repository is split into three top-level project folders. The compiler
 library implementation lives under `rtsl/`, the CLI lives under `rtslc/`, and
-shared SDK code lives under `rtsl-sdk/`. The public C ABI header remains in
+shared SDK model headers live under `rtsl-sdk/`. The public C ABI header remains in
 `bindings/c/include/rtsl.h`.
 
 ```
@@ -35,8 +35,7 @@ RTSL/
     api/                  # the C ABI implementation (rtsl.cpp) and the language service
   rtslc/                  # CLI executable sources
   rtsl-sdk/
-    include/              # C SDK headers shared by compiler and transpilers
-    src/                  # C++ SDK implementation
+    include/rtsl/         # SDK model headers shared by compiler and backends
   tests/                  # rtsl-tests + workspace shaders
   cmake/                  # Rtsl.cmake integration helpers
   docs/                   # language, RTIR, artifacts, linking, backend-contract specs
@@ -50,14 +49,14 @@ The build is intentionally layered: compiler library, SDK, CLI, and tests.
 
 ```
 rtsl        STATIC   support + frontend + sema + ir + artifact + driver + api
-rtsl-sdk    STATIC   rtsl-sdk/src/*.cpp             -> shared SDK headers
+rtsl-sdk    INTERFACE rtsl-sdk/include/rtsl/*.hpp   -> shared SDK headers
 rtslc       EXE      rtslc/rtslc.cpp                -> rtsl (+ CLI11)
 rtsl-tests  EXE      tests/*.cpp                     -> rtsl (+ Catch2)
 ```
 
-Ad hoc runtime package readers are not part of this repository. SDK-facing
-artifact inspection belongs in `rtsl-sdk`; target-specific transpilation
-belongs in backend headers that consume the SDK instead of compiler internals.
+Ad hoc runtime package readers are not part of this repository. Shared artifact
+model definitions belong in `rtsl-sdk`; target-specific transpilation belongs
+in backend headers that consume the SDK instead of compiler internals.
 
 ## Pipeline
 
@@ -96,6 +95,8 @@ stage entry is a plain typed function carrying only its stage tag.
   never link the RTSL compiler, frontend, or linker.
 - The public C ABI, CLI, SDK, CMake helpers, and serialized artifact format are
   the intended RTSL surfaces for code outside this repo.
+- Artifact wire-format constants live in `rtsl-sdk`; compiler artifact code
+  and backend/transpiler code consume that shared SDK model.
 - Nothing in `bindings/` may include from `rtsl/`.
 
 ## Related specs
