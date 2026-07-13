@@ -95,12 +95,6 @@ typedef struct rtsl_uniform_info {
     rtsl_uniform_kind kind;
 } rtsl_uniform_info;
 
-typedef enum rtsl_stage {
-    RTSL_STAGE_NONE = 0,
-    RTSL_STAGE_VERTEX = 1,
-    RTSL_STAGE_FRAGMENT = 2
-} rtsl_stage;
-
 typedef enum rtsl_stage_role {
     RTSL_STAGE_ROLE_INPUT = 0,
     RTSL_STAGE_ROLE_VARYING = 1,
@@ -110,13 +104,13 @@ typedef enum rtsl_stage_role {
 typedef enum rtsl_interpolation {
     RTSL_INTERP_NONE = 0,
     RTSL_INTERP_SMOOTH = 1,
-    RTSL_INTERP_FLAT = 2,
-    RTSL_INTERP_CLIP = 3
+    RTSL_INTERP_FLAT = 2
 } rtsl_interpolation;
 
-typedef enum rtsl_builtin {
-    RTSL_BUILTIN_NONE = 0
-} rtsl_builtin;
+typedef enum rtsl_stage_field_placement {
+    RTSL_STAGE_FIELD_USER = 0,
+    RTSL_STAGE_FIELD_CLIP_POSITION = 1
+} rtsl_stage_field_placement;
 
 #define RTSL_NO_LOCATION 0xffffffffu
 
@@ -126,14 +120,14 @@ typedef struct rtsl_stage_variable {
     const char* payload_type;       /* stage payload type containing this field */
     const char* name;             /* field name */
     rtsl_interpolation interpolation;
-    rtsl_builtin builtin;
-    uint32_t location;            /* RTSL_NO_LOCATION when clip-space placement drives placement */
+    rtsl_stage_field_placement placement;
+    uint32_t location;            /* RTSL_NO_LOCATION when routed through a built-in */
 } rtsl_stage_variable;
 
 /* Reflected backend entry point. */
 typedef struct rtsl_entry_info {
-    const char* name;  /* 4-letter backend entry name (vert/frag) or user name */
-    rtsl_stage stage;
+    const char* name;  /* backend entry name */
+    const char* stage; /* authored stage identifier, e.g. vertex or fragment */
 } rtsl_entry_info;
 
 RTSL_API rtsl_context rtslCreateContext(void);

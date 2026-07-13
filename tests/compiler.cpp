@@ -98,8 +98,8 @@ TEST_CASE("linker emits program") {
 	auto object = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "test.rtsl" }
 	);
 	Linker linker(compiler.diagnostics());
@@ -126,8 +126,8 @@ TEST_CASE("linker resolves calls to reference-qualified functions") {
 		"struct Vertex { vec4 position; vec2 uv; fn Vertex(const Point& p); };\n"
 		"fn Vertex::Vertex(const Point& p) { position = vec4(p.position, 1.0); uv = p.uv; }\n"
 		"fn make_vertex(const Point& p) -> Vertex { return Vertex(p); }\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return make_vertex(p); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return make_vertex(p); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "reference_call_targets.rtsl" }
 	);
 	Linker linker(compiler.diagnostics());
@@ -152,8 +152,8 @@ TEST_CASE("compiler rejects reference parameters on stage entries") {
 	auto artifact = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(const Point& p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
+		"@stage : vertex fn vertex_entry(const Point& p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "stage_reference_param.rtsl" }
 	);
 	(void)artifact;
@@ -181,7 +181,7 @@ TEST_CASE("program link rejects incomplete graphics pipelines") {
 	auto object = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n",
 		CompilerInvocation{ .source_name = "vertex_only.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -198,9 +198,9 @@ TEST_CASE("program link rejects duplicate stage entries") {
 	auto object = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_a(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@vertex fn vertex_b(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
+		"@stage : vertex fn vertex_a(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : vertex fn vertex_b(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "duplicate_vertex.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -246,8 +246,8 @@ TEST_CASE("program link rejects unresolved imported calls") {
 		"import <helper.rtsl>;\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return tint(); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return tint(); }\n",
 		CompilerInvocation{
 			.source_name = (dir / "root.rtsl").string(),
 			.import_paths = { dir.string() },
@@ -283,8 +283,8 @@ TEST_CASE("linker rejects stale imported module interfaces") {
 		"import <helper.rtsl>;\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return tint(); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return tint(); }\n",
 		CompilerInvocation{
 			.source_name = (dir / "root.rtsl").string(),
 			.import_paths = { dir.string() },
@@ -311,8 +311,8 @@ TEST_CASE("fragment bare vec4 reflects as default color output") {
 	auto object = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn shade(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn shade(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "fragment_color.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -336,8 +336,8 @@ TEST_CASE("compiler lowers namespaced graphics program") {
 		"    struct Point { vec3 position; vec2 uv; };\n"
 		"    struct Vertex { vec4 position; vec2 uv; };\n"
 		"    fn make_vertex(Point p) -> Vertex { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
-		"    @vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return make_vertex(p); }\n"
-		"    @fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n"
+		"    @stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return make_vertex(p); }\n"
+		"    @stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n"
 		"}\n",
 		CompilerInvocation{ .source_name = "namespaced_graphics.rtsl" }
 	);
@@ -358,8 +358,8 @@ TEST_CASE("C ABI lifetime and errors") {
 	const char* source =
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n";
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n";
 	rtsl_module object = rtslCompileSource(ctx, source, std::strlen(source), "abi.rtsl");
 	REQUIRE(object);
 	REQUIRE(rtslModuleGetBytecode(object).size > 0);
@@ -417,8 +417,8 @@ TEST_CASE("C ABI reflects uniforms from loaded linked program") {
 		"    UniformBuffer tint;\n"
 		"}\n"
 		"layout albedo::tint : vec4;\n"
-		"@vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
-		"@fragment fn fragment_entry(Vertex v) -> vec4 { return sample(albedo::texture, v.uv) * albedo::tint; }\n";
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return sample(albedo::texture, v.uv) * albedo::tint; }\n";
 	rtsl_module object = rtslCompileSource(ctx, source, std::strlen(source), "abi_uniforms.rtsl");
 	REQUIRE(object);
 	rtsl_linker linker = rtslCreateLinker(ctx);
@@ -578,7 +578,7 @@ TEST_CASE("compiler rejects invalid stage payload boundary tag") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry() -> Vertex : position(random_tag) { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
+		"@stage : vertex fn vertex_entry() -> Vertex : position(random_tag) { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
 		CompilerInvocation{ .source_name = "bad_boundary_tag.rtsl" }
 	);
 	(void)artifact;
@@ -810,8 +810,8 @@ TEST_CASE("fragment output interface is distinct from same-named varying input")
 	auto object = compiler.compile_source(
 		"struct Point { vec3 position; };\n"
 		"struct Payload { vec4 position; vec4 color; };\n"
-		"@vertex fn vertex_entry(Point p) -> Payload : position(clip), color(smooth) { return Payload(vec4(p.position, 1.0), vec4(1.0, 0.0, 0.0, 1.0)); }\n"
-		"@fragment fn fragment_entry(Payload p) -> Payload { return p; }\n",
+		"@stage : vertex fn vertex_entry(Point p) -> Payload : position(clip), color(smooth) { return Payload(vec4(p.position, 1.0), vec4(1.0, 0.0, 0.0, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Payload p) -> Payload { return p; }\n",
 		CompilerInvocation{ .source_name = "same_payload_output.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -831,7 +831,7 @@ TEST_CASE("stage interface fields carry their struct member index") {
 		"struct Point { vec3 position; vec2 uv; };\n"
 		"struct Vertex { vec4 position; vec2 uv; u32 material; fn Vertex(Point p); };\n"
 		"fn Vertex::Vertex(Point p) { position = vec4(p.position, 1.0); uv = p.uv; material = 0; }\n"
-		"@vertex fn vs(Point p) -> Vertex : position(clip), uv(smooth), material(flat) { return Vertex(p); }\n",
+		"@stage : vertex fn vs(Point p) -> Vertex : position(clip), uv(smooth), material(flat) { return Vertex(p); }\n",
 		CompilerInvocation{ .source_name = "member_index.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -843,13 +843,13 @@ TEST_CASE("stage interface fields carry their struct member index") {
 		REQUIRE(find_field(*input, "position")->member_index == 0);
 		REQUIRE(find_field(*input, "uv")->member_index == 1);
 
-		// Return boundary (sema-resolved): clip placement still maps to its
-		// member, and the rest keep their struct positions.
+		// Return boundary (sema-resolved): clip placement maps to a built-in
+		// position slot, while interpolation remains a varying decoration.
 		const StageInterface* varying = find_interface_by(art, "Vertex", StageRole::varying);
 		REQUIRE(varying != nullptr);
 		const StageIOField* position = find_field(*varying, "position");
-		REQUIRE(position->interpolation == InterpolationKind::clip);
-		REQUIRE(position->builtin == BuiltinSlot::none);
+		REQUIRE(position->interpolation == InterpolationKind::none);
+		REQUIRE(position->placement == StageFieldPlacement::clip_position);
 		REQUIRE(position->member_index == 0);
 		REQUIRE(find_field(*varying, "uv")->member_index == 1);
 		REQUIRE(find_field(*varying, "material")->member_index == 2);

@@ -14,7 +14,7 @@ fn Vertex::Vertex(Point p) {
     uv = p.uv;
 }
 
-@vertex
+@stage : vertex
 fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {
     return Vertex(p);
 }

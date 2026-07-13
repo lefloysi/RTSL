@@ -37,11 +37,11 @@ fn Fragment::Fragment(Vertex v) {
 }
 
 
-@vertex
+@stage : vertex
 fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth), material(flat) {
     return Vertex(p);
 }
-@fragment
+@stage : fragment
 fn fragment_entry(Vertex v) -> Fragment {
     return Fragment(v);
 }

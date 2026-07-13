@@ -1,7 +1,8 @@
 # RTSL Backend Contract
 
-Rutile backends consume linked `rtslp` artifacts. Backends do not parse RTSL
-source and do not consume textual RTIR in production paths.
+Rutile backends consume linked `rtslp` artifacts directly or through the RTSL
+SDK artifact views. Backends do not parse RTSL source and do not consume
+textual RTIR in production paths.
 
 ## Backend Inputs
 
@@ -16,7 +17,7 @@ A backend receives a binary `rtslp` containing:
 - symbol names and debug metadata
 - primitive call references
 
-The backend may reject an `rtslp` if it uses unsupported stage families,
+The backend may reject an `rtslp` if it uses unsupported stage identifiers,
 resource kinds, primitive operations, type layouts, or target capabilities.
 
 ## Entry Metadata
@@ -26,7 +27,7 @@ Each entry point record includes:
 - preserved authored name
 - canonical symbol identity
 - function id
-- stage family
+- stage identifier
 - parameter and return types
 - source/debug origin
 - required resource and stage-interface references
@@ -53,8 +54,9 @@ buffers, or other target-specific binding systems.
 Stage metadata includes:
 
 - `varying` declarations
-- interpolation qualifiers such as `clip`, `smooth`, and `flat`
-- stage-family-specific payload data
+- interpolation qualifiers such as `smooth` and `flat`
+- built-in placement such as clip-space position
+- stage-identifier-specific payload data
 - compatibility information between connected stages
 
 Backends use this metadata to lower stage inputs and outputs to the target
@@ -90,8 +92,9 @@ instruction origins, preserved display names, and generated temporary names.
 ## Backend Outputs
 
 A backend may lower `rtslp` to SPIR-V, HLSL, MSL, WGSL, or another
-backend-specific representation. Backend output is outside the RTSL artifact
-family and may have target-specific reflection or packaging.
+backend-specific representation. The SDK provides artifact data to backend
+headers; it does not own target-specific lowering. Backend output is outside
+the RTSL artifact family and may have target-specific reflection or packaging.
 
 The backend contract is intentionally based on RTIR, metadata payloads, and
 primitive identities so new target formats can be added without changing the

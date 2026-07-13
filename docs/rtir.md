@@ -1,8 +1,8 @@
 # RTSL Intermediate Representation
 
-RTIR is the compiler's backend-neutral, typed SSA representation. It is the
-internal form produced by lowering and the form consumed by artifact writing,
-linking, and backend emission.
+RTIR is the compiler's backend-neutral, typed SSA representation. It is produced
+by lowering and consumed by artifact writing, linking, and backend emission.
+RTIR is not RTSL source syntax.
 
 ## What RTIR Contains
 
@@ -19,18 +19,18 @@ source language, and it is not a backend-specific shader dialect.
 Types, constants, and SSA values all live in one id space. A module's ids are
 unique within that module. Id `0` means "no id".
 
-Types are built from a small set of operations:
+RTIR values are built from a small set of operations:
 
 - scalar types
 - vector types
 - matrix types
-- pointer types
 - struct types
 - function types
-- opaque resource types
+- backend storage/resource handles
 
-The source language does not need separate syntax for all of these shapes. The
-lowerer resolves source declarations to the appropriate RTIR types.
+The source language does not expose pointer types. If lowering needs a storage
+handle for variables or resources, that is an implementation detail of the IR
+and backend contract, not an RTSL type-system feature.
 
 ## Instructions
 

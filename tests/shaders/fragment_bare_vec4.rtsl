@@ -11,12 +11,12 @@ fn Vertex::Vertex(Point p) {
     position = vec4(p.position, 1.0);
 }
 
-@vertex
+@stage : vertex
 fn vertex_entry(Point p) -> Vertex : position(clip) {
     return Vertex(p);
 }
 
-@fragment
+@stage : fragment
 fn fragment_entry(Vertex v) -> vec4 {
     return vec4(1.0, 0.0, 0.0, 1.0);
 }

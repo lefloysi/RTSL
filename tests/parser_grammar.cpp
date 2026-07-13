@@ -343,7 +343,7 @@ TEST_CASE("reference fields and locals are rejected") {
 }
 
 TEST_CASE("stray '@' with no fn following is diagnosed") {
-	auto r = parse("@vertex\nstruct S { vec3 p; };");
+	auto r = parse("@stage : vertex\nstruct S { vec3 p; };");
 	REQUIRE(r.diagnostics.has_error());
 }
 
@@ -353,7 +353,7 @@ TEST_CASE("bare identifier statement is diagnosed") {
 }
 
 TEST_CASE("dangling attribute marker is diagnosed") {
-	auto r = parse("@vertex\nfn vertex_entry() {}\n@\n");
+	auto r = parse("@stage : vertex\nfn vertex_entry() {}\n@\n");
 	REQUIRE(r.diagnostics.has_error());
 }
 
@@ -375,22 +375,24 @@ TEST_CASE("do-while without semicolon is diagnosed") {
 // Declaration surface: stage attributes, structs, uniforms, layouts, aliases
 // ---------------------------------------------------------------------------
 
-TEST_CASE("function attribute records authored vertex spelling on the fn decl") {
-	auto r = parse("@vertex fn vertex_entry() {}");
+TEST_CASE("function attribute records authored stage value on the fn decl") {
+	auto r = parse("@stage : vertex fn vertex_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
 	REQUIRE(fn->attributes.size() == 1);
-	REQUIRE(fn->attributes[0].name == "vertex");
+	REQUIRE(fn->attributes[0].name == "stage");
+	REQUIRE(fn->attributes[0].value == "vertex");
 }
 
-TEST_CASE("function attribute records authored fragment spelling on the fn decl") {
-	auto r = parse("@fragment fn fragment_entry() {}");
+TEST_CASE("function attribute records arbitrary stage values on the fn decl") {
+	auto r = parse("@stage : fragment fn fragment_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
 	REQUIRE(fn != nullptr);
 	REQUIRE(fn->attributes.size() == 1);
-	REQUIRE(fn->attributes[0].name == "fragment");
+	REQUIRE(fn->attributes[0].name == "stage");
+	REQUIRE(fn->attributes[0].value == "fragment");
 }
 
 TEST_CASE("function body flag distinguishes body from forward decl") {
@@ -516,7 +518,7 @@ TEST_CASE("contextual interpolation words remain valid identifiers") {
 TEST_CASE("function return boundary records varying interface") {
 	auto r = parse(
 		"struct Vertex { vec4 position; vec2 uv; };\n"
-		"@vertex fn vertex_entry() -> Vertex : position(clip), uv(smooth) { return Vertex(); }\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position(clip), uv(smooth) { return Vertex(); }\n"
 	);
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	bool found_varying = false;
@@ -579,7 +581,7 @@ TEST_CASE("export import records imported module and exported decl") {
 TEST_CASE("return boundary requires a tag list") {
 	auto r = parse(
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry() -> Vertex : position { return Vertex(); }\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position { return Vertex(); }\n"
 	);
 	REQUIRE(r.diagnostics.has_error());
 }
@@ -587,7 +589,7 @@ TEST_CASE("return boundary requires a tag list") {
 TEST_CASE("return boundary records unknown tag spelling for sema") {
 	auto r = parse(
 		"struct Vertex { vec4 position; };\n"
-		"@vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
 	);
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	REQUIRE(r.unit.stage_interfaces.size() == 1);
@@ -599,7 +601,7 @@ TEST_CASE("return boundary records unknown tag spelling for sema") {
 TEST_CASE("stage-global-looking boundary tag is syntax and resolved by sema") {
 	auto r = parse(
 		"struct Vertex { vec4 position; u32 index; };\n"
-		"@vertex fn vertex_entry() -> Vertex : position(clip), index(vertex_index) { return Vertex(); }\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position(clip), index(vertex_index) { return Vertex(); }\n"
 	);
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	REQUIRE(r.unit.stage_interfaces.size() == 1);

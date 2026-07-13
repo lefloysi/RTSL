@@ -9,20 +9,15 @@ if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TA
     list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 endif()
 
-# RTSL sources are grouped by pipeline layer under src/; includes are rooted
-# at src/ (e.g. #include "frontend/lexer.hpp"). The public C ABI header is the
-# only split-out surface and lives at bindings/c/include/rtsl.h.
+# RTSL is split into sibling project folders:
 #
-#   support/   shared plumbing: types, source manager, diagnostics, binary io
-#   frontend/  preprocessor, lexer, parser, AST (+ tokens/directives/builtins .def)
-#   sema/      semantic analysis, mangling, uniform lowering
-#   ir/        SSA RTIR: lowering, verification, disassembly (+ ops.def)
-#   artifact/  artifact container serialization and the linker
-#   driver/    compiler orchestration and the rtslc CLI
-#   api/       the C API (rtsl.cpp) and the language service
-#   runtime/   .rtslp reader for Rutile backends (not part of this library)
+#   rtsl/       compiler library implementation
+#   rtslc/      command line tool
+#   rtsl-sdk/   shared SDK code for compiler and backend/transpiler code
 
-set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/src")
+set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/rtsl")
+set(_rtslc_src "${CMAKE_CURRENT_SOURCE_DIR}/rtslc")
+set(_rtsl_sdk_include "${CMAKE_CURRENT_SOURCE_DIR}/rtsl-sdk/include")
 
 set(RTSL_SOURCES
     ${_rtsl_src}/support/basic_diagnostics.cpp
@@ -57,13 +52,25 @@ target_include_directories(rtsl
         "${_rtsl_src}"
         "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
 )
-# `src/runtime/package.hpp/cpp` is a helper for reading .rtslp programs at runtime;
-# it targets Rutile backends and depends on their `rutile.h`. Keeping it out
-# of the RTSL library build inverts the dependency correctly — RTSL knows
-# nothing about Rutile, and each backend compiles package.cpp itself when it
-# needs the reader.
 
-add_executable(rtslc ${_rtsl_src}/driver/rtslc.cpp)
+add_library(rtsl-sdk STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/rtsl-sdk/src/artifact.cpp"
+)
+target_compile_features(rtsl-sdk PUBLIC cxx_std_23)
+set_target_properties(rtsl-sdk PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(rtsl-sdk
+    PUBLIC
+        "${_rtsl_sdk_include}"
+)
+if(MSVC)
+    set_target_properties(rtsl-sdk PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
+    target_compile_options(rtsl-sdk PRIVATE /FS)
+endif()
+target_link_libraries(rtsl PUBLIC rtsl-sdk)
+
+add_executable(rtslc ${_rtslc_src}/rtslc.cpp)
 find_package(CLI11 CONFIG QUIET)
 if(CLI11_FOUND)
     target_link_libraries(rtslc PRIVATE rtsl CLI11::CLI11)

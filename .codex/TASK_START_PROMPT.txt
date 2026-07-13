@@ -1,4 +1,7 @@
-Read AGENTS.md and .codex/TASK.md before acting.
+Read AGENTS.md before acting. Then choose or reuse a stable agent id for this
+worker and use `.codex/tasks/<agent-id>.md` as the task ledger. Use
+`$env:RTSL_AGENT_ID` when it is set; otherwise choose a unique id before
+initializing the ledger. Do not use a shared default for concurrent work.
 
 For this RTSL task, treat the reported file, function, test, diagnostic, or line
 number as a starting clue, not a scope boundary. Infer the general architectural
@@ -6,8 +9,8 @@ rule, consult docs/language.md, docs/backend-contract.md, and
 docs/compiler-architecture.md, then inspect the full repository for the defect
 class before editing.
 
-Populate .codex/TASK.md with the objective, architectural rule, impact map,
-invariants, checklist, and verification plan. Maintain the checklist and
+Populate the agent-scoped ledger with the objective, architectural rule, impact
+map, invariants, checklist, and verification plan. Maintain the checklist and
 verification evidence as work proceeds. Continue until the ledger reaches DONE
 or a genuine documented blocker exists. Do not claim completion while
-scripts/task_validate.ps1 fails.
+`scripts/task_validate.ps1 -AgentId <agent-id>` fails.

@@ -10,27 +10,33 @@ RTSL compiles source files into backend-neutral binary artifacts that the
                                         .rtslp  final program (consumed by Rutile backends)
 ```
 
-`rtslc` is the CLI driver wrapping the compiler/linker library.
+`rtslc` is the CLI driver wrapping the compiler/linker library. `rtsl-sdk` is
+the embeddable SDK layer projects use to read RTSL artifacts and get the data
+backend headers need for target-specific lowering.
 
 ## Repository layout
 
-Sources are grouped by pipeline layer under `src/`; includes are rooted at
-`src/` (e.g. `#include "frontend/lexer.hpp"`). The public C ABI header is the
-only split-out surface and lives at `bindings/c/include/rtsl.h`.
+The repository is split into three top-level project folders. The compiler
+library implementation lives under `rtsl/`, the CLI lives under `rtslc/`, and
+shared SDK code lives under `rtsl-sdk/`. The public C ABI header remains in
+`bindings/c/include/rtsl.h`.
 
 ```
 RTSL/
   bindings/c/             # public C ABI: include/rtsl.h (+ CMakeLists)
-  src/
+  rtsl/
     support/              # shared plumbing: types, source manager, diagnostics, binary io
     frontend/             # preprocessor, lexer, parser, AST
                           #   (+ tokens.def, directives.def, builtins.def, resource_types.def)
     sema/                 # semantic analysis + type checking, mangling, uniform lowering
     ir/                   # SSA RTIR: lowering, verification, disassembly (+ ops.def)
     artifact/             # artifact container serialization and the linker
-    driver/               # compiler orchestration (compiler.cpp) and the rtslc CLI (rtslc.cpp)
+    driver/               # compiler orchestration
     api/                  # the C ABI implementation (rtsl.cpp) and the language service
-    runtime/              # .rtslp reader for Rutile backends (NOT built by this repo)
+  rtslc/                  # CLI executable sources
+  rtsl-sdk/
+    include/              # C SDK headers shared by compiler and transpilers
+    src/                  # C++ SDK implementation
   tests/                  # rtsl-tests + workspace shaders
   cmake/                  # Rtsl.cmake integration helpers
   docs/                   # language, RTIR, artifacts, linking, backend-contract specs
@@ -40,19 +46,18 @@ RTSL/
 
 ## Build graph
 
-The build is intentionally simple: one static library plus the CLI and tests.
+The build is intentionally layered: compiler library, SDK, CLI, and tests.
 
 ```
 rtsl        STATIC   support + frontend + sema + ir + artifact + driver + api
-rtslc       EXE      driver/rtslc.cpp                -> rtsl (+ CLI11)
+rtsl-sdk    STATIC   rtsl-sdk/src/*.cpp             -> shared SDK headers
+rtslc       EXE      rtslc/rtslc.cpp                -> rtsl (+ CLI11)
 rtsl-tests  EXE      tests/*.cpp                     -> rtsl (+ Catch2)
 ```
 
-`src/runtime/package.{hpp,cpp}` is deliberately **excluded** from this build. It
-is a standalone `.rtslp` reader that Rutile backends compile themselves against
-their own `rutile.h`; keeping it out of the RTSL library inverts the dependency
-correctly — RTSL knows nothing about Rutile. Its `ir_op` enum mirrors
-`src/ir/ops.def` and must be kept in lockstep (opcode values are wire format).
+Ad hoc runtime package readers are not part of this repository. SDK-facing
+artifact inspection belongs in `rtsl-sdk`; target-specific transpilation
+belongs in backend headers that consume the SDK instead of compiler internals.
 
 ## Pipeline
 
@@ -89,9 +94,9 @@ stage entry is a plain typed function carrying only its stage tag.
 
 - Rutile backends consume `.rtslp` (and reflect other artifacts) only. They must
   never link the RTSL compiler, frontend, or linker.
-- `src/runtime/` and the serialized artifact format are the only RTSL surfaces
-  code outside this repo should depend on.
-- Nothing in `bindings/` may include from `src/`.
+- The public C ABI, CLI, SDK, CMake helpers, and serialized artifact format are
+  the intended RTSL surfaces for code outside this repo.
+- Nothing in `bindings/` may include from `rtsl/`.
 
 ## Related specs
 

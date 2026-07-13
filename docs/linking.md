@@ -13,7 +13,7 @@ linked library exports symbols, the linker also emits `rtslm`.
 
 Program linking consumes `rtslo` and `rtsll` files and emits `rtslp`.
 
-Backends consume `rtslp` only.
+Backends consume `rtslp` directly or through the RTSL SDK.
 
 ## Module Interface Resolution
 

@@ -59,12 +59,14 @@ by the example, read the relevant v0.1 documentation, inspect the named
 location, search the full repository for analogous implementations and
 violations, and inspect both upstream and downstream layers.
 
-Create or update `.codex/TASK.md` for nontrivial work. The ledger must record
-the objective, architectural rule, documentation consulted, impact map,
-pre-change and post-change invariants, checklist, verification commands and
-results, final repository search, blockers, and continuation notes. Keep the
-impact map separated into confirmed violations, suspicious related locations,
-and inspected locations ruled out.
+Create or update an agent-scoped task ledger for nontrivial work at
+`.codex/tasks/<agent-id>.md`, where `<agent-id>` is stable for the current
+worker and distinct from other concurrent agents. The ledger must record the
+objective, architectural rule, documentation consulted, impact map, pre-change
+and post-change invariants, checklist, verification commands and results, final
+repository search, blockers, and continuation notes. Keep the impact map
+separated into confirmed violations, suspicious related locations, and
+inspected locations ruled out.
 
 Prefer structural fixes over symptom patches. Before adding feature-specific
 conditionals, flags, parser branches, enum cases, or isolated workarounds,

@@ -98,5 +98,5 @@ TEST_CASE("artifact round trips function display names") {
 
 TEST_CASE("mangler emits stable rtsl names") {
 	const std::array<std::string_view, 1> parameter_types{ "Point" };
-	REQUIRE(mangle_rtsl("Vertex::Vertex", StageKind::none, parameter_types) == "_ZN6Vertex6VertexE5Point");
+	REQUIRE(mangle_rtsl("Vertex::Vertex", {}, parameter_types) == "_ZN6Vertex6VertexE5Point");
 }

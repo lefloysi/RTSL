@@ -1,0 +1,13 @@
+// stage_boundary_tags.def - standard stage-boundary names.
+//
+//   RTSL_STAGE_BOUNDARY_TAG(name, interpolation, placement)
+
+#ifndef RTSL_STAGE_BOUNDARY_TAG
+#define RTSL_STAGE_BOUNDARY_TAG(tag, interpolation, placement)
+#endif
+
+RTSL_STAGE_BOUNDARY_TAG(smooth, smooth, user)
+RTSL_STAGE_BOUNDARY_TAG(flat, flat, user)
+RTSL_STAGE_BOUNDARY_TAG(clip, none, clip_position)
+
+#undef RTSL_STAGE_BOUNDARY_TAG

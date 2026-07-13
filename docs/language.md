@@ -18,11 +18,12 @@ Top-level declarations:
 - `uniform name? { ... }`
 - `layout path : rule? Type;`
 - `fn name(...) ...`
-- `@vertex fn name(...) ...`
-- `@fragment fn name(...) ...`
+- `@stage : name fn name(...) ...`
 
-Function attributes use `@name` syntax. v0.1 recognizes `@vertex` and
-`@fragment` on function declarations. `layout` is a reserved keyword.
+Function attributes use `@name` or `@name : value` syntax. `@stage : name`
+marks a function as a stage entry and preserves `name` as an open stage
+identifier. The graphics release path gives `vertex` and `fragment` their
+pipeline meaning. `layout` is a reserved keyword.
 `readonly`, `writeonly`, `smooth`, `flat`, `clip`, `std140`, `std430`, and
 `scalar` are contextual words.
 
@@ -107,12 +108,12 @@ Stage entries are ordinary functions with a stage attribute. The function name
 is not special.
 
 ```rtsl
-@vertex
+@stage : vertex
 fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {
     return Vertex(vec4(p.position, 1.0), p.uv);
 }
 
-@fragment
+@stage : fragment
 fn fragment_entry(Vertex v) -> vec4 {
     return vec4(v.uv, 0.0, 1.0);
 }
@@ -124,9 +125,10 @@ Return boundaries describe payload fields crossing a stage boundary:
 -> Vertex : position(clip), uv(smooth), material(flat)
 ```
 
-On vertex return varyings, `clip` marks the clip-space position. `smooth` and
-`flat` select interpolation. These are contextual tag names, not reserved
-keywords. The compiler assigns concrete locations.
+On vertex return boundaries, `clip` marks the clip-space position built-in.
+`smooth` and `flat` select interpolation for user varyings. These are
+contextual tag names, not reserved keywords. The compiler assigns concrete
+locations for user varyings; built-ins do not consume user locations.
 
 Stage globals such as vertex index, instance index, fragment coordinate, front
 facing, and fragment depth are not return-boundary tags. When a stage needs
@@ -152,7 +154,7 @@ struct GBuffer {
     vec4 normal;    // attachment 1
 };
 
-@fragment
+@stage : fragment
 fn gbuffer_entry(Surface s) -> GBuffer {
     return GBuffer(s.albedo, s.normal);
 }

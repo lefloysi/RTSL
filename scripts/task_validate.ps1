@@ -1,8 +1,28 @@
 param(
-    [string]$TaskPath = ".codex/TASK.md"
+    [string]$AgentId = $env:RTSL_AGENT_ID,
+    [string]$TaskPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-SafeAgentId {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        Write-Error "AgentId is required. Pass -AgentId <agent-id> or set RTSL_AGENT_ID."
+    }
+
+    if ($Value -notmatch "^[A-Za-z0-9][A-Za-z0-9._-]*$") {
+        Write-Error "AgentId must start with a letter or digit and contain only letters, digits, '.', '_', or '-': $Value"
+    }
+
+    return $Value
+}
+
+if ([string]::IsNullOrWhiteSpace($TaskPath)) {
+    $safeAgentId = Get-SafeAgentId $AgentId
+    $TaskPath = ".codex/tasks/$safeAgentId.md"
+}
 
 if (!(Test-Path -LiteralPath $TaskPath)) {
     Write-Error "Task ledger not found: $TaskPath"

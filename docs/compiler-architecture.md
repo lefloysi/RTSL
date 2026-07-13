@@ -1,7 +1,8 @@
 # RTSL Compiler Architecture
 
-RTSL is compiled by a C++ frontend with a stable C ABI. The runtime and command
-line tool share the same implementation.
+RTSL is compiled by a C++ frontend with a stable C ABI. The command line tool
+wraps the compiler library. The RTSL SDK is a separate embeddable layer for
+project/runtime tooling that consumes linked artifacts.
 
 ## Pipeline
 
@@ -27,8 +28,10 @@ rtslo/rtsll inputs + rtslm interfaces
   -> rtsll or rtslp artifact writer
 ```
 
-Backends consume `rtslp`, inspect its ordered payloads and RTIR, then lower to
-SPIR-V, HLSL, MSL, or another target format.
+Backends or project runtime tools consume `rtslp`, inspect its ordered payloads
+and RTIR, then lower to SPIR-V, HLSL, MSL, or another target format. Shared
+artifact inspection belongs in `rtsl-sdk`; target-specific lowering belongs in
+backend headers, not in the compiler library or CLI.
 
 ## Frontend Stages
 
@@ -49,7 +52,7 @@ preserving source-facing symbol names and debug mappings.
 ## Ownership Boundaries
 
 The public ABI lives in `include/` and remains C-compatible. Implementation
-headers and C++ types live under `src/` or implementation-only subdirectories.
+headers and C++ types live under `rtsl/` or implementation-only subdirectories.
 
 C++ exceptions must not escape any exported ABI function. ABI entry points catch
 allocation failures and internal exceptions, convert them to `rtsl_result`, and
@@ -112,7 +115,7 @@ Reflection is available on any loaded artifact (`rtslo`, `rtslm`, `rtsll`,
 `rtslp`). Uniform queries report the scope, name, type, set, binding, and the
 mangled backend binding name. Stage-interface queries report each varying field
 with its payload type, interpolation, built-in slot, and assigned location.
-Entry queries report the generated 4-letter stage entry names and their stages.
+Entry queries report backend entry names and authored stage identifiers.
 
 For v0.1, this ABI is focused on compilation, linking, loading, and reflection.
 

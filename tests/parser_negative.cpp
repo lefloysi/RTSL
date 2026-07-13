@@ -7,7 +7,7 @@ using namespace rtsl;
 TEST_CASE("parser rejects dangling attribute markers") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
-		"@vertex\n"
+		"@stage : vertex\n"
 		"fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth), material(flat) {\n"
 		"    return Vertex(p);\n"
 		"}\n"
