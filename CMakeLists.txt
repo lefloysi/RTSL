@@ -11,12 +11,13 @@ endif()
 
 # RTSL is split into sibling project folders:
 #
-#   rtsl/       compiler library implementation
-#   rtslc/      command line tool
-#   rtsl-sdk/   shared SDK artifact model headers
+#   rtsl/       compiler library project
+#   rtslc/      command line tool project
+#   rtsl-sdk/   shared core project used by compiler and transpilers
 
-set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/rtsl")
-set(_rtslc_src "${CMAKE_CURRENT_SOURCE_DIR}/rtslc")
+set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/rtsl/src")
+set(_rtsl_include "${CMAKE_CURRENT_SOURCE_DIR}/rtsl/include")
+set(_rtslc_src "${CMAKE_CURRENT_SOURCE_DIR}/rtslc/src")
 set(_rtsl_sdk_include "${CMAKE_CURRENT_SOURCE_DIR}/rtsl-sdk/include")
 
 set(RTSL_SOURCES
@@ -50,7 +51,7 @@ endif()
 target_include_directories(rtsl
     PUBLIC
         "${_rtsl_src}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/bindings/c/include"
+        "${_rtsl_include}"
 )
 
 add_library(rtsl-sdk INTERFACE)

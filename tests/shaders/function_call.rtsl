@@ -1,7 +1,0 @@
-fn add(f32 a, f32 b) -> f32 {
-    return a + b;
-}
-
-fn add_example() -> f32 {
-    return add(1.0, 2.0);
-}

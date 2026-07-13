@@ -16,24 +16,26 @@ backend headers need for target-specific lowering.
 
 ## Repository layout
 
-The repository is split into three top-level project folders. The compiler
-library implementation lives under `rtsl/`, the CLI lives under `rtslc/`, and
-shared SDK model headers live under `rtsl-sdk/`. The public C ABI header remains in
-`bindings/c/include/rtsl.h`.
+The repository is split into top-level project folders. The compiler library
+project lives under `rtsl/`, the CLI project lives under `rtslc/`, and shared
+SDK model headers live under `rtsl-sdk/`. The public C ABI header belongs to the
+compiler project at `rtsl/include/rtsl.h`.
 
 ```
 RTSL/
-  bindings/c/             # public C ABI: include/rtsl.h (+ CMakeLists)
   rtsl/
-    support/              # shared plumbing: types, source manager, diagnostics, binary io
-    frontend/             # preprocessor, lexer, parser, AST
+    include/              # public C ABI: rtsl.h
+    src/
+      support/            # compiler plumbing: source manager, diagnostics, binary io
+      frontend/           # preprocessor, lexer, parser, AST
                           #   (+ tokens.def, directives.def, builtins.def, resource_types.def)
-    sema/                 # semantic analysis + type checking, mangling, uniform lowering
-    ir/                   # SSA RTIR: lowering, verification, disassembly (+ ops.def)
-    artifact/             # artifact container serialization and the linker
-    driver/               # compiler orchestration
-    api/                  # the C ABI implementation (rtsl.cpp) and the language service
-  rtslc/                  # CLI executable sources
+      sema/               # semantic analysis + type checking, mangling, uniform lowering
+      ir/                 # SSA RTIR: lowering, verification, disassembly (+ ops.def)
+      artifact/           # artifact container serialization and the linker
+      driver/             # compiler orchestration
+      api/                # the C ABI implementation (rtsl.cpp) and the language service
+  rtslc/
+    src/                  # CLI executable sources
   rtsl-sdk/
     include/rtsl/         # SDK model headers shared by compiler and backends
   tests/                  # rtsl-tests + workspace shaders
@@ -48,9 +50,9 @@ RTSL/
 The build is intentionally layered: compiler library, SDK, CLI, and tests.
 
 ```
-rtsl        STATIC   support + frontend + sema + ir + artifact + driver + api
+rtsl        STATIC   rtsl/src support + frontend + sema + ir + artifact + driver + api
 rtsl-sdk    INTERFACE rtsl-sdk/include/rtsl/*.hpp   -> shared SDK headers
-rtslc       EXE      rtslc/rtslc.cpp                -> rtsl (+ CLI11)
+rtslc       EXE      rtslc/src/rtslc.cpp            -> rtsl (+ CLI11)
 rtsl-tests  EXE      tests/*.cpp                     -> rtsl (+ Catch2)
 ```
 

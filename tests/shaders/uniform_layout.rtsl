@@ -1,6 +1,0 @@
-uniform {
-    UniformBuffer mvp;
-}
-layout mvp : mat4;
-
-fn uses_layout() {}

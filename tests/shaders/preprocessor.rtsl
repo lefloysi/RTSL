@@ -1,4 +1,0 @@
-#define WITH_MAIN
-#ifdef WITH_MAIN
-fn preprocessed() {}
-#endif

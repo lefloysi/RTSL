@@ -1,7 +1,0 @@
-uniform albedo {
-    Sampler2D texture;
-    UniformBuffer tint;
-}
-layout albedo::tint : vec4;
-
-fn uses_namespaced_uniform() {}
