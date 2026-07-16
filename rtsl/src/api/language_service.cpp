@@ -18,13 +18,13 @@ LanguageAnalysis LanguageService::analyze(std::string_view source, CompilerInvoc
 	compiler_.diagnostics().clear();
 
 	const auto file_id = compiler_.sources().add_buffer(std::move(invocation.source_name), source);
-	Lexer lexer(compiler_.sources(), compiler_.diagnostics(), file_id);
+	Lexer lexer{ compiler_.sources(), compiler_.diagnostics(), file_id };
 	analysis.tokens = lexer.lex();
 
-	Parser parser(compiler_.sources(), compiler_.diagnostics(), file_id, analysis.tokens);
+	Parser parser{ compiler_.sources(), compiler_.diagnostics(), file_id, analysis.tokens };
 	analysis.ast = parser.parse_translation_unit();
 
-	Sema sema(compiler_.sources(), compiler_.diagnostics());
+	Sema sema{ compiler_.sources(), compiler_.diagnostics() };
 	analysis.sema = sema.analyze(analysis.ast);
 
 	for (const auto& decl : analysis.ast.declarations) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rtsl/artifact.hpp"
 #include "support/basic_source_manager.hpp"
 
 #include <string>
@@ -14,64 +15,7 @@ enum class DeclKind {
 	function,
 	struct_decl,
 	uniform,
-	varying,
 	namespace_decl,
-};
-
-enum class StageRole : u08 {
-	input,
-	varying,
-	output,
-};
-
-enum class InterpolationKind : u08 {
-	none = 0,
-	smooth = 1,
-	flat = 2,
-};
-
-enum class StageFieldPlacement : u08 {
-	user = 0,
-	clip_position = 1,
-};
-
-// Uniform access qualifier.
-enum class AccessKind : u08 {
-	read_write = 0,
-	read_only = 1,
-	write_only = 2,
-};
-
-// One field of a stage interface payload, with its ABI placement.
-// location == kNoLocation means "no user location" (for example clip position).
-// member_index is the index of the struct member this field maps to, so a
-// backend can extract/insert it (`OpTypeStruct` carries no member names).
-// member_index == kNoMember means the field is not a struct member — the
-// entry's whole parameter/return value is the payload (e.g. a bare `vec4`
-// fragment color).
-struct StageIOField {
-	static constexpr u32 kNoLocation = static_cast<u32>(-1);
-	static constexpr u32 kNoMember = static_cast<u32>(-1);
-	std::string name;
-	std::vector<std::string> tags;
-	InterpolationKind interpolation = InterpolationKind::none;
-	StageFieldPlacement placement = StageFieldPlacement::user;
-	u32 location = kNoLocation;
-	u32 member_index = kNoMember;
-};
-
-// Reflected stage payload metadata.
-struct StageInterface {
-	StageRole role = StageRole::varying;
-	std::string type_name;
-	std::vector<StageIOField> fields;
-};
-
-struct ParameterDecl {
-	std::string type;
-	std::string name;
-	bool is_const = false;
-	bool is_reference = false;
 };
 
 struct Attribute {
@@ -87,6 +31,7 @@ struct Decl {
 			name,
 			literal_int,
 			literal_float,
+			literal_bool,
 			call,
 			member,
 			unary,
@@ -145,51 +90,6 @@ struct Decl {
 	// Authored `@name` or `@name : value` attributes. The parser records
 	// syntax; semantic analysis resolves language-known attributes.
 	std::vector<Attribute> attributes;
-};
-
-struct StructField {
-	std::string type;
-	std::string name;
-};
-
-struct StructMemberFunction {
-	std::string name;
-	std::vector<ParameterDecl> parameters;
-	std::string return_type = "void";
-};
-
-struct ExportSymbol {
-	std::string name;
-	std::string kind;
-	std::string type;
-	u64 interface_hash = 0;
-};
-
-struct StructDecl {
-	std::string name;
-	std::vector<StructField> fields;
-	std::vector<StructMemberFunction> member_functions;
-	std::vector<ParameterDecl> constructor_parameters;
-};
-
-struct UniformBinding {
-	std::string scope_name;
-	std::string name;
-	std::string type;
-	std::vector<StructField> inline_fields;
-	AccessKind access = AccessKind::read_write;
-	u32 set = 0;
-	u32 member = 0;
-	// IR type id of the member's value type (TypeStruct / sampler / image / ...).
-	// Populated during IR lowering; 0 in the AST before lowering.
-	u32 type_id = 0;
-	// Anonymous `uniform { ... }` blocks have no source-visible scope name.
-	// Each anonymous block is its own descriptor set; only named scopes can be
-	// reopened across multiple blocks. The parser assigns each anonymous block
-	// a unique anonymous_block_id; Sema uses it to keep their sets distinct
-	// without leaking compiler-generated names into the C API or mangling.
-	bool is_anonymous = false;
-	u32 anonymous_block_id = 0;
 };
 
 // Memory-layout rule for a resource binding's payload. Governs offsets and

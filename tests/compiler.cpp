@@ -13,6 +13,18 @@
 #include <fstream>
 
 using namespace rtsl;
+
+namespace {
+bool has_diagnostic_code(CompilerInstance& compiler, DiagnosticCode code) {
+	for (const auto& diagnostic : compiler.diagnostics().diagnostics()) {
+		if (diagnostic.code == static_cast<int>(code)) {
+			return true;
+		}
+	}
+	return false;
+}
+} // namespace
+
 TEST_CASE("compiler honors basic preprocessor blocks") {
 	CompilerInstance compiler;
 	const char* source = R"(
@@ -32,7 +44,7 @@ TEST_CASE("compiler re-exports exported imports") {
 	std::filesystem::create_directories(dir);
 	const auto helper_path = dir / "helper.rtsl";
 	{
-		std::ofstream helper(helper_path, std::ios::binary);
+		std::ofstream helper{ helper_path, std::ios::binary };
 		helper << "export fn helper() {}\n";
 	}
 
@@ -40,7 +52,7 @@ TEST_CASE("compiler re-exports exported imports") {
 	Artifact forwarder;
 	compiler.compile_source_to(
 		forwarder,
-		"export import <helper.rtsl>;\n",
+		"export import \"helper.rtsl\";\n",
 		CompilerInvocation{
 			.source_name = (dir / "forwarder.rtsl").string(),
 			.import_paths = { dir.string() },
@@ -58,17 +70,17 @@ TEST_CASE("compiler reports source import cycles") {
 	const auto dir = std::filesystem::temp_directory_path() / "rtsl-import-cycle-test";
 	std::filesystem::create_directories(dir);
 	{
-		std::ofstream a(dir / "a.rtsl", std::ios::binary);
-		a << "import <b.rtsl>;\nexport fn a() {}\n";
+		std::ofstream a{ dir / "a.rtsl", std::ios::binary };
+		a << "import \"b.rtsl\";\nexport fn a() {}\n";
 	}
 	{
-		std::ofstream b(dir / "b.rtsl", std::ios::binary);
-		b << "import <a.rtsl>;\nexport fn b() {}\n";
+		std::ofstream b{ dir / "b.rtsl", std::ios::binary };
+		b << "import \"a.rtsl\";\nexport fn b() {}\n";
 	}
 
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
-		"import <a.rtsl>;\nexport fn root() {}\n",
+		"import \"a.rtsl\";\nexport fn root() {}\n",
 		CompilerInvocation{
 			.source_name = (dir / "root.rtsl").string(),
 			.import_paths = { dir.string() },
@@ -76,6 +88,17 @@ TEST_CASE("compiler reports source import cycles") {
 	);
 	(void)artifact;
 	REQUIRE(compiler.diagnostics().has_error());
+}
+
+TEST_CASE("compiler rejects non-v0.1 stage values") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"@stage : compute fn compute_entry() {}\n",
+		CompilerInvocation{ .source_name = "bad_stage.rtsl" }
+	);
+	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_invalid_stage));
+	REQUIRE(artifact.bytes.empty());
 }
 
 TEST_CASE("compiler emits object") {
@@ -102,7 +125,7 @@ TEST_CASE("linker emits program") {
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "test.rtsl" }
 	);
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -111,6 +134,25 @@ TEST_CASE("linker emits program") {
 
 	Artifact loaded;
 	REQUIRE(read_artifact(program.bytes, loaded));
+	REQUIRE(loaded.entries.size() == 2);
+	bool found_vertex_entry = false;
+	bool found_fragment_entry = false;
+	for (const auto& entry : loaded.entries) {
+		if (entry.stage == "vertex") {
+			REQUIRE(entry.name == "vert");
+			REQUIRE(entry.mangled_name == "vert");
+			REQUIRE(entry.function_id != IRId_None);
+			found_vertex_entry = true;
+		}
+		if (entry.stage == "fragment") {
+			REQUIRE(entry.name == "frag");
+			REQUIRE(entry.mangled_name == "frag");
+			REQUIRE(entry.function_id != IRId_None);
+			found_fragment_entry = true;
+		}
+	}
+	REQUIRE(found_vertex_entry);
+	REQUIRE(found_fragment_entry);
 	REQUIRE(loaded.module.call_targets.empty());
 	for (const auto& fn : loaded.module.functions) {
 		for (const auto& inst : fn.body) {
@@ -130,7 +172,7 @@ TEST_CASE("linker resolves calls to reference-qualified functions") {
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "reference_call_targets.rtsl" }
 	);
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -169,10 +211,10 @@ TEST_CASE("program link rejects objects without stage entries") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_missing_entry));
 	REQUIRE(program.bytes.empty());
 }
 
@@ -186,10 +228,10 @@ TEST_CASE("program link rejects incomplete graphics pipelines") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_missing_stage));
 	REQUIRE(program.bytes.empty());
 }
 
@@ -199,17 +241,83 @@ TEST_CASE("program link rejects duplicate stage entries") {
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"@stage : vertex fn vertex_a(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@stage : vertex fn vertex_b(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : vertex fn vertex_b(Point p) -> Vertex { return Vertex(vec4(p.position, 1.0)); }\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
 		CompilerInvocation{ .source_name = "duplicate_vertex.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_duplicate_stage));
 	REQUIRE(program.bytes.empty());
+}
+
+TEST_CASE("program link rejects duplicate fragment stage entries") {
+	CompilerInstance compiler;
+	auto object = compiler.compile_source(
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_a(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n"
+		"@stage : fragment fn fragment_b(Vertex v) -> vec4 { return vec4(0.0, 1.0, 0.0, 1.0); }\n",
+		CompilerInvocation{ .source_name = "duplicate_fragment.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+
+	Linker linker{ compiler.diagnostics() };
+	REQUIRE(linker.add_artifact(object));
+	auto program = linker.link_program();
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_duplicate_stage));
+	REQUIRE(program.bytes.empty());
+}
+
+TEST_CASE("program link resolves imported helper calls from separate objects") {
+	const auto dir = std::filesystem::temp_directory_path() / "rtsl-cross-object-program-test";
+	std::filesystem::create_directories(dir);
+
+	CompilerInstance compiler;
+	auto helper = compiler.compile_source(
+		"export fn tint(vec2 uv) -> vec4 { return vec4(uv, 0.0, 1.0); }\n",
+		CompilerInvocation{ .source_name = (dir / "helper.rtsl").string() }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	const Artifact helper_interface = extract_module_interface(helper);
+	{
+		std::ofstream sidecar{ dir / "helper.rtslm", std::ios::binary };
+		sidecar.write(reinterpret_cast<const char*>(helper_interface.bytes.data()), static_cast<std::streamsize>(helper_interface.bytes.size()));
+	}
+
+	auto root = compiler.compile_source(
+		"import \"helper.rtsl\";\n"
+		"struct Point { vec3 position; vec2 uv; };\n"
+		"struct Vertex { vec4 position; vec2 uv; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return tint(v.uv); }\n",
+		CompilerInvocation{
+			.source_name = (dir / "root.rtsl").string(),
+			.import_paths = { dir.string() },
+		}
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+
+	Linker linker{ compiler.diagnostics() };
+	REQUIRE(linker.add_artifact(root));
+	REQUIRE(linker.add_artifact(helper));
+	auto program = linker.link_program();
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	REQUIRE(program.kind == ArtifactKind::program);
+	REQUIRE_FALSE(program.bytes.empty());
+
+	Artifact loaded;
+	REQUIRE(read_artifact(program.bytes, loaded));
+	REQUIRE(loaded.module.call_targets.empty());
+	for (const auto& fn : loaded.module.functions) {
+		for (const auto& inst : fn.body) {
+			REQUIRE(inst.op != IROp::FunctionCall);
+		}
+	}
 }
 
 TEST_CASE("linker rejects duplicate exported function identities") {
@@ -225,11 +333,11 @@ TEST_CASE("linker rejects duplicate exported function identities") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(first));
 	REQUIRE(linker.add_artifact(second));
 	auto library = linker.link_library();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_conflict));
 	REQUIRE(library.bytes.empty());
 }
 
@@ -237,13 +345,13 @@ TEST_CASE("program link rejects unresolved imported calls") {
 	const auto dir = std::filesystem::temp_directory_path() / "rtsl-unresolved-import-test";
 	std::filesystem::create_directories(dir);
 	{
-		std::ofstream helper(dir / "helper.rtsl", std::ios::binary);
+		std::ofstream helper{ dir / "helper.rtsl", std::ios::binary };
 		helper << "export fn tint() -> vec4 { return vec4(1.0, 1.0, 1.0, 1.0); }\n";
 	}
 
 	CompilerInstance compiler;
 	auto object = compiler.compile_source(
-		"import <helper.rtsl>;\n"
+		"import \"helper.rtsl\";\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
@@ -255,10 +363,10 @@ TEST_CASE("program link rejects unresolved imported calls") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_unresolved_call));
 	REQUIRE(program.bytes.empty());
 }
 
@@ -274,13 +382,13 @@ TEST_CASE("linker rejects stale imported module interfaces") {
 	REQUIRE_FALSE(interface_compiler.diagnostics().has_error());
 	const Artifact old_interface = extract_module_interface(old_helper);
 	{
-		std::ofstream sidecar(dir / "helper.rtslm", std::ios::binary);
+		std::ofstream sidecar{ dir / "helper.rtslm", std::ios::binary };
 		sidecar.write(reinterpret_cast<const char*>(old_interface.bytes.data()), static_cast<std::streamsize>(old_interface.bytes.size()));
 	}
 
 	CompilerInstance compiler;
 	auto root = compiler.compile_source(
-		"import <helper.rtsl>;\n"
+		"import \"helper.rtsl\";\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
@@ -298,35 +406,12 @@ TEST_CASE("linker rejects stale imported module interfaces") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(root));
 	REQUIRE(linker.add_artifact(changed_helper));
 	auto program = linker.link_program();
-	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::link_conflict));
 	REQUIRE(program.bytes.empty());
-}
-
-TEST_CASE("fragment bare vec4 reflects as default color output") {
-	CompilerInstance compiler;
-	auto object = compiler.compile_source(
-		"struct Point { vec3 position; };\n"
-		"struct Vertex { vec4 position; };\n"
-		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@stage : fragment fn shade(Vertex v) -> vec4 { return vec4(1.0, 0.0, 0.0, 1.0); }\n",
-		CompilerInvocation{ .source_name = "fragment_color.rtsl" }
-	);
-	REQUIRE_FALSE(compiler.diagnostics().has_error());
-	REQUIRE_FALSE(object.bytes.empty());
-
-	bool found_color_output = false;
-	for (const auto& iface : object.module.stage_interfaces) {
-		if (iface.role != StageRole::output || iface.type_name != "vec4") continue;
-		REQUIRE(iface.fields.size() == 1);
-		REQUIRE(iface.fields[0].name == "color");
-		REQUIRE(iface.fields[0].location == 0);
-		found_color_output = true;
-	}
-	REQUIRE(found_color_output);
 }
 
 TEST_CASE("compiler lowers namespaced graphics program") {
@@ -344,7 +429,7 @@ TEST_CASE("compiler lowers namespaced graphics program") {
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE_FALSE(object.bytes.empty());
 
-	Linker linker(compiler.diagnostics());
+	Linker linker{ compiler.diagnostics() };
 	REQUIRE(linker.add_artifact(object));
 	auto program = linker.link_program();
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
@@ -353,6 +438,9 @@ TEST_CASE("compiler lowers namespaced graphics program") {
 }
 
 TEST_CASE("C ABI lifetime and errors") {
+	REQUIRE(rtslGetVersionMajor() == rtsl::ArtifactVersionMajor);
+	REQUIRE(rtslGetVersionMinor() == rtsl::ArtifactVersionMinor);
+
 	rtsl_context ctx = rtslCreateContext();
 	REQUIRE(ctx);
 	const char* source =
@@ -363,11 +451,6 @@ TEST_CASE("C ABI lifetime and errors") {
 	rtsl_module object = rtslCompileSource(ctx, source, std::strlen(source), "abi.rtsl");
 	REQUIRE(object);
 	REQUIRE(rtslModuleGetBytecode(object).size > 0);
-	REQUIRE(rtslModuleGetStageVariableCount(object) > 0);
-	rtsl_stage_variable stage_var{};
-	REQUIRE(rtslModuleGetStageVariable(object, 0, &stage_var));
-	REQUIRE(stage_var.payload_type != nullptr);
-	REQUIRE(std::strlen(stage_var.payload_type) > 0);
 
 	rtsl_linker linker = rtslCreateLinker(ctx);
 	REQUIRE(linker);
@@ -387,17 +470,22 @@ TEST_CASE("C ABI lifetime and errors") {
 	REQUIRE(loaded_program);
 	REQUIRE(rtslModuleGetKind(loaded_program) == RTSL_OUTPUT_PROGRAM);
 	REQUIRE(rtslModuleGetEntryCount(loaded_program) == 2);
-	REQUIRE(rtslModuleGetStageVariableCount(loaded_program) > 0);
 	rtsl_entry_info first_entry{};
 	rtsl_entry_info second_entry{};
 	REQUIRE(rtslModuleGetEntry(loaded_program, 0, &first_entry));
 	REQUIRE(rtslModuleGetEntry(loaded_program, 1, &second_entry));
 	REQUIRE(first_entry.name != nullptr);
 	REQUIRE(second_entry.name != nullptr);
+	REQUIRE(first_entry.stage != nullptr);
+	REQUIRE(second_entry.stage != nullptr);
 	const bool has_vert = std::strcmp(first_entry.name, "vert") == 0 || std::strcmp(second_entry.name, "vert") == 0;
 	const bool has_frag = std::strcmp(first_entry.name, "frag") == 0 || std::strcmp(second_entry.name, "frag") == 0;
+	const bool has_vertex_stage = std::strcmp(first_entry.stage, "vertex") == 0 || std::strcmp(second_entry.stage, "vertex") == 0;
+	const bool has_fragment_stage = std::strcmp(first_entry.stage, "fragment") == 0 || std::strcmp(second_entry.stage, "fragment") == 0;
 	REQUIRE(has_vert);
 	REQUIRE(has_frag);
+	REQUIRE(has_vertex_stage);
+	REQUIRE(has_fragment_stage);
 
 	rtslDestroyModule(loaded_program);
 	rtslDestroyModule(program);
@@ -574,16 +662,209 @@ TEST_CASE("compiler accepts inline member-init constructors") {
 	REQUIRE_FALSE(artifact.bytes.empty());
 }
 
-TEST_CASE("compiler rejects invalid stage payload boundary tag") {
+TEST_CASE("compiler rejects struct-returning vertex stage without boundary tags") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"struct Vertex { vec4 position; };\n"
-		"@stage : vertex fn vertex_entry() -> Vertex : position(random_tag) { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
-		CompilerInvocation{ .source_name = "bad_boundary_tag.rtsl" }
+		"@stage : vertex fn vertex_entry() -> Vertex { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
+		CompilerInvocation{ .source_name = "struct_stage_return.rtsl" }
 	);
-	(void)artifact;
 	REQUIRE(compiler.diagnostics().has_error());
 	REQUIRE(artifact.bytes.empty());
+}
+
+TEST_CASE("compiler rejects return boundary fields outside the payload") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : missing(clip) { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
+		CompilerInvocation{ .source_name = "bad_boundary_field.rtsl" }
+	);
+	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::ir_invalid_stage_signature));
+	REQUIRE(artifact.bytes.empty());
+}
+
+TEST_CASE("compiler rejects fragment input that does not match vertex payload") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"struct Other { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Other v) -> vec4 { return vec4(v.position.xyz, 1.0); }\n",
+		CompilerInvocation{ .source_name = "bad_fragment_input.rtsl" }
+	);
+	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::ir_invalid_stage_signature));
+	REQUIRE(artifact.bytes.empty());
+}
+
+namespace {
+bool module_has_op(const Artifact& artifact, IROp op) {
+	for (const auto& inst : artifact.module.type_constant_pool) {
+		if (inst.op == op) {
+			return true;
+		}
+	}
+	for (const auto& fn : artifact.module.functions) {
+		for (const auto& inst : fn.body) {
+			if (inst.op == op) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+} // namespace
+
+TEST_CASE("compiler lowers multi-component swizzles to VectorShuffle") {
+	// A partial or reordering swizzle (`.xy`, `.zyx`) must select the named
+	// components, not silently pass the whole vector through.
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn shuffle(vec3 v) -> vec3 {\n"
+		"    vec2 a = v.xy;\n"
+		"    return v.zyx;\n"
+		"}\n",
+		CompilerInvocation{ .source_name = "swizzle.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	Artifact loaded;
+	REQUIRE(read_artifact(artifact.bytes, loaded));
+	REQUIRE(module_has_op(loaded, IROp::VectorShuffle));
+}
+
+TEST_CASE("compiler lowers comparison and logical operators to boolean ops") {
+	// Relational and logical operators must produce real boolean values so a
+	// condition is not a null branch operand.
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn pick(vec3 v) -> vec4 {\n"
+		"    if (v.x < 0.5 && v.y > 0.2) { return vec4(1.0, 0.0, 0.0, 1.0); }\n"
+		"    return vec4(0.0, 0.0, 0.0, 1.0);\n"
+		"}\n",
+		CompilerInvocation{ .source_name = "compare.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	Artifact loaded;
+	REQUIRE(read_artifact(artifact.bytes, loaded));
+	REQUIRE(module_has_op(loaded, IROp::FOrdLess));
+	REQUIRE(module_has_op(loaded, IROp::FOrdGreater));
+	REQUIRE(module_has_op(loaded, IROp::LogicalAnd));
+}
+
+TEST_CASE("compiler lowers boolean literals to ConstantBool") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn flag() -> bool { return true; }\n",
+		CompilerInvocation{ .source_name = "bool_literal.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	Artifact loaded;
+	REQUIRE(read_artifact(artifact.bytes, loaded));
+	REQUIRE(module_has_op(loaded, IROp::ConstantBool));
+}
+
+TEST_CASE("compiler builds stage interfaces from the return boundary") {
+	// The return-boundary grammar is how a stage declares its interface. The
+	// compiler resolves the authored varying and derives the vertex input and
+	// fragment color output — RTSL has no input/output/varying globals.
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"struct Point { vec3 position; vec2 uv; };\n"
+		"struct Vertex { vec4 position; vec2 uv; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n",
+		CompilerInvocation{ .source_name = "graphics.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	Artifact loaded;
+	REQUIRE(read_artifact(artifact.bytes, loaded));
+
+	const auto find = [&](StageRole role, std::string_view type) -> const StageInterface* {
+		for (const auto& i : loaded.module.stage_interfaces) {
+			if (i.role == role && i.type_name == type) return &i;
+		}
+		return nullptr;
+	};
+
+	// Authored varying: clip placement on position, smooth interpolation on uv.
+	const StageInterface* varying = find(StageRole::varying, "Vertex");
+	REQUIRE(varying != nullptr);
+	REQUIRE(varying->fields.size() == 2);
+	REQUIRE(varying->fields[0].name == "position");
+	REQUIRE(varying->fields[0].placement == StageFieldPlacement::clip_position);
+	REQUIRE(varying->fields[0].location == StageIOField::kNoLocation);
+	REQUIRE(varying->fields[1].name == "uv");
+	REQUIRE(varying->fields[1].interpolation == InterpolationKind::smooth);
+	REQUIRE(varying->fields[1].location == 0);
+
+	// Derived vertex input from the Point parameter struct.
+	const StageInterface* input = find(StageRole::input, "Point");
+	REQUIRE(input != nullptr);
+	REQUIRE(input->fields.size() == 2);
+
+	// Derived fragment color output at location 0.
+	const StageInterface* output = find(StageRole::output, "vec4");
+	REQUIRE(output != nullptr);
+	REQUIRE(output->fields.size() == 1);
+	REQUIRE(output->fields[0].name == "color");
+	REQUIRE(output->fields[0].location == 0);
+}
+
+TEST_CASE("compiler rejects an unknown return-boundary tag") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position(nonsense) { return Vertex(vec4(0.0, 0.0, 0.0, 1.0)); }\n",
+		CompilerInvocation{ .source_name = "bad_tag.rtsl" }
+	);
+	(void)artifact;
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_unknown_name));
+}
+
+TEST_CASE("C ABI reflects host-visible stage fields but not varyings") {
+	rtsl_context ctx = rtslCreateContext();
+	REQUIRE(ctx != nullptr);
+	const char* src =
+		"struct Point { vec3 position; vec2 uv; };\n"
+		"struct Vertex { vec4 position; vec2 uv; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n";
+	rtsl_module module = rtslCompileSource(ctx, src, std::strlen(src), "abi_stage.rtsl");
+	REQUIRE(module != nullptr);
+
+	bool saw_input = false;
+	bool saw_output = false;
+	const size_t count = rtslModuleGetStageVariableCount(module);
+	for (size_t i = 0; i < count; ++i) {
+		rtsl_stage_variable var{};
+		REQUIRE(rtslModuleGetStageVariable(module, i, &var) == 1);
+		REQUIRE(var.role != RTSL_STAGE_ROLE_VARYING); // varyings are not host-visible
+		if (var.role == RTSL_STAGE_ROLE_INPUT) saw_input = true;
+		if (var.role == RTSL_STAGE_ROLE_OUTPUT) saw_output = true;
+	}
+	REQUIRE(saw_input);
+	REQUIRE(saw_output);
+
+	uint32_t location = 42;
+	REQUIRE(rtslModuleGetStageLocation(module, RTSL_STAGE_ROLE_OUTPUT, "color", &location) == 1);
+	REQUIRE(location == 0);
+
+	rtslDestroyModule(module);
+	rtslDestroyContext(ctx);
+}
+
+TEST_CASE("C ABI reports malformed artifact load failures distinctly") {
+	rtsl_context ctx = rtslCreateContext();
+	REQUIRE(ctx != nullptr);
+	const uint8_t bytes[] = { 'R', 'T', 'S', 'L' };
+	rtsl_module module = rtslLoadModule(ctx, bytes, sizeof(bytes));
+	REQUIRE(module == nullptr);
+	const rtsl_result result = rtslCtxGetResult(ctx);
+	REQUIRE(result.code == RTSL_ERROR_ARTIFACT_FAILED);
+	rtslDestroyContext(ctx);
 }
 
 TEST_CASE("compiler rejects unknown function attributes") {
@@ -750,17 +1031,6 @@ TEST_CASE("compiler rejects unqualified access to named uniform scope members wi
 	REQUIRE(artifact.bytes.empty());
 }
 
-namespace {
-bool has_diagnostic_code(CompilerInstance& compiler, DiagnosticCode code) {
-	for (const auto& diagnostic : compiler.diagnostics().diagnostics()) {
-		if (diagnostic.code == static_cast<int>(code)) {
-			return true;
-		}
-	}
-	return false;
-}
-} // namespace
-
 TEST_CASE("type checker rejects an unknown struct field type") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
@@ -786,82 +1056,15 @@ TEST_CASE("type checker rejects unknown parameter, return, and local types") {
 	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_unknown_type));
 }
 
-namespace {
-const StageInterface* find_interface_by(const Artifact& artifact, std::string_view type_name, StageRole role) {
-	for (const auto& interface : artifact.stage_interfaces) {
-		if (interface.type_name == type_name && interface.role == role) {
-			return &interface;
-		}
-	}
-	return nullptr;
-}
-const StageIOField* find_field(const StageInterface& interface, std::string_view name) {
-	for (const auto& field : interface.fields) {
-		if (field.name == name) {
-			return &field;
-		}
-	}
-	return nullptr;
-}
-} // namespace
-
-TEST_CASE("fragment output interface is distinct from same-named varying input") {
-	CompilerInstance compiler;
-	auto object = compiler.compile_source(
-		"struct Point { vec3 position; };\n"
-		"struct Payload { vec4 position; vec4 color; };\n"
-		"@stage : vertex fn vertex_entry(Point p) -> Payload : position(clip), color(smooth) { return Payload(vec4(p.position, 1.0), vec4(1.0, 0.0, 0.0, 1.0)); }\n"
-		"@stage : fragment fn fragment_entry(Payload p) -> Payload { return p; }\n",
-		CompilerInvocation{ .source_name = "same_payload_output.rtsl" }
-	);
-	REQUIRE_FALSE(compiler.diagnostics().has_error());
-
-	const StageInterface* varying = find_interface_by(object, "Payload", StageRole::varying);
-	REQUIRE(varying != nullptr);
-	const StageInterface* output = find_interface_by(object, "Payload", StageRole::output);
-	REQUIRE(output != nullptr);
-	REQUIRE(output->fields.size() == 2);
-	REQUIRE(find_field(*output, "position") != nullptr);
-	REQUIRE(find_field(*output, "color") != nullptr);
-}
-
-TEST_CASE("stage interface fields carry their struct member index") {
+TEST_CASE("type checker rejects auto as a v0.1 type spelling") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
-		"struct Point { vec3 position; vec2 uv; };\n"
-		"struct Vertex { vec4 position; vec2 uv; u32 material; fn Vertex(Point p); };\n"
-		"fn Vertex::Vertex(Point p) { position = vec4(p.position, 1.0); uv = p.uv; material = 0; }\n"
-		"@stage : vertex fn vs(Point p) -> Vertex : position(clip), uv(smooth), material(flat) { return Vertex(p); }\n",
-		CompilerInvocation{ .source_name = "member_index.rtsl" }
+		"fn bad(auto value) {}\n",
+		CompilerInvocation{ .source_name = "bad_auto.rtsl" }
 	);
-	REQUIRE_FALSE(compiler.diagnostics().has_error());
-
-	const auto check_indices = [](const Artifact& art) {
-		// Input struct (synthesized): members map to their struct positions.
-		const StageInterface* input = find_interface_by(art, "Point", StageRole::input);
-		REQUIRE(input != nullptr);
-		REQUIRE(find_field(*input, "position")->member_index == 0);
-		REQUIRE(find_field(*input, "uv")->member_index == 1);
-
-		// Return boundary (sema-resolved): clip placement maps to a built-in
-		// position slot, while interpolation remains a varying decoration.
-		const StageInterface* varying = find_interface_by(art, "Vertex", StageRole::varying);
-		REQUIRE(varying != nullptr);
-		const StageIOField* position = find_field(*varying, "position");
-		REQUIRE(position->interpolation == InterpolationKind::none);
-		REQUIRE(position->placement == StageFieldPlacement::clip_position);
-		REQUIRE(position->member_index == 0);
-		REQUIRE(find_field(*varying, "uv")->member_index == 1);
-		REQUIRE(find_field(*varying, "material")->member_index == 2);
-	};
-
-	check_indices(artifact);
-
-	// The member index must survive a serialization round-trip.
-	Artifact reloaded;
-	DiagnosticEngine diagnostics;
-	REQUIRE(read_artifact(artifact.bytes, reloaded, &diagnostics));
-	check_indices(reloaded);
+	(void)artifact;
+	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_unknown_type));
 }
 
 TEST_CASE("type checker rejects a return type mismatch") {
@@ -998,4 +1201,17 @@ TEST_CASE("type checker accepts builtin, resource, and struct type spellings") {
 	);
 	REQUIRE_FALSE(has_diagnostic_code(compiler, DiagnosticCode::sema_unknown_type));
 	REQUIRE_FALSE(artifact.bytes.empty());
+}
+
+TEST_CASE("type checker rejects invalid sample arguments") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn bad(vec2 uv) -> vec4 {\n"
+		"    return sample(uv, uv);\n"
+		"}\n",
+		CompilerInvocation{ .source_name = "bad_sample.rtsl" }
+	);
+	REQUIRE(compiler.diagnostics().has_error());
+	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_argument_mismatch));
+	REQUIRE(artifact.bytes.empty());
 }

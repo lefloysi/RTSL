@@ -32,9 +32,9 @@ struct ParseResult {
 ParseResult parse(std::string_view source, std::string_view name = "test.rtsl") {
 	ParseResult result;
 	const auto file = result.sources.add_buffer(name, source);
-	Lexer lexer(result.sources, result.diagnostics, file);
+	Lexer lexer{ result.sources, result.diagnostics, file };
 	result.tokens = lexer.lex();
-	Parser parser(result.sources, result.diagnostics, file, result.tokens);
+	Parser parser{ result.sources, result.diagnostics, file, result.tokens };
 	result.unit = parser.parse_translation_unit();
 	return result;
 }
@@ -244,14 +244,17 @@ TEST_CASE("all unary operators parse") {
 	REQUIRE(body[0].kind == Decl::BodyStatementKind::return_stmt);
 }
 
-TEST_CASE("boolean literals lower to int-literal 1 / 0") {
+TEST_CASE("boolean literals parse as boolean literals") {
+	// `true`/`false` are boolean literals (spec/language.md), distinct from
+	// integer literals: they carry the bool type through sema and lower to
+	// OpConstantTrueFalse. text stays "1"/"0" as the encoded literal value.
 	auto r_true  = parse("fn t() { return true; }");
 	auto r_false = parse("fn t() { return false; }");
 	REQUIRE_FALSE(r_true.diagnostics.has_error());
 	REQUIRE_FALSE(r_false.diagnostics.has_error());
-	REQUIRE(first_function_body(r_true.unit)[0].expr.kind  == Decl::Expr::Kind::literal_int);
+	REQUIRE(first_function_body(r_true.unit)[0].expr.kind  == Decl::Expr::Kind::literal_bool);
 	REQUIRE(first_function_body(r_true.unit)[0].expr.text  == "1");
-	REQUIRE(first_function_body(r_false.unit)[0].expr.kind == Decl::Expr::Kind::literal_int);
+	REQUIRE(first_function_body(r_false.unit)[0].expr.kind == Decl::Expr::Kind::literal_bool);
 	REQUIRE(first_function_body(r_false.unit)[0].expr.text == "0");
 }
 
@@ -294,8 +297,13 @@ TEST_CASE("import without delimiters is diagnosed") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
+TEST_CASE("angle import syntax is not source syntax") {
+	auto r = parse("import <foo.rtsl>;");
+	REQUIRE(r.diagnostics.has_error());
+}
+
 TEST_CASE("import missing semicolon is diagnosed") {
-	auto r = parse("import <foo.rtsl>");
+	auto r = parse("import \"foo.rtsl\"");
 	REQUIRE(r.diagnostics.has_error());
 }
 
@@ -385,7 +393,7 @@ TEST_CASE("function attribute records authored stage value on the fn decl") {
 	REQUIRE(fn->attributes[0].value == "vertex");
 }
 
-TEST_CASE("function attribute records arbitrary stage values on the fn decl") {
+TEST_CASE("function attribute records fragment stage value on the fn decl") {
 	auto r = parse("@stage : fragment fn fragment_entry() {}");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	const auto* fn = find_function(r.unit);
@@ -516,6 +524,8 @@ TEST_CASE("contextual interpolation words remain valid identifiers") {
 }
 
 TEST_CASE("function return boundary records varying interface") {
+	// The return-boundary grammar `-> T : field(tag), ...` declares a stage
+	// entry's interface; it replaces input/output/varying globals.
 	auto r = parse(
 		"struct Vertex { vec4 position; vec2 uv; };\n"
 		"@stage : vertex fn vertex_entry() -> Vertex : position(clip), uv(smooth) { return Vertex(); }\n"
@@ -535,6 +545,27 @@ TEST_CASE("function return boundary records varying interface") {
 		}
 	}
 	REQUIRE(found_varying);
+}
+
+TEST_CASE("return boundary requires a tag list") {
+	auto r = parse(
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position { return Vertex(); }\n"
+	);
+	REQUIRE(r.diagnostics.has_error());
+}
+
+TEST_CASE("return boundary records unknown tag spelling for sema") {
+	// The parser preserves any tag identifier; sema owns which tags are known.
+	auto r = parse(
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
+	);
+	REQUIRE_FALSE(r.diagnostics.has_error());
+	REQUIRE(r.unit.stage_interfaces.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags.size() == 1);
+	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags[0] == "weird_tag");
 }
 
 TEST_CASE("using alias cannot declare stage boundary") {
@@ -566,8 +597,13 @@ TEST_CASE("using uniform is not source syntax") {
 	REQUIRE(r.diagnostics.has_error());
 }
 
+TEST_CASE("string literal expression is not source syntax") {
+	auto r = parse("fn f() { \"text\"; }");
+	REQUIRE(r.diagnostics.has_error());
+}
+
 TEST_CASE("export import records imported module and exported decl") {
-	auto r = parse("export import <shared/math.rtsl>;");
+	auto r = parse("export import \"shared/math.rtsl\";");
 	REQUIRE_FALSE(r.diagnostics.has_error());
 	REQUIRE(r.unit.imports.size() == 1);
 	REQUIRE(r.unit.imports[0] == "shared/math.rtsl");
@@ -576,37 +612,6 @@ TEST_CASE("export import records imported module and exported decl") {
 	REQUIRE(r.unit.declarations.size() == 1);
 	REQUIRE(r.unit.declarations[0].kind == DeclKind::import);
 	REQUIRE(r.unit.declarations[0].exported);
-}
-
-TEST_CASE("return boundary requires a tag list") {
-	auto r = parse(
-		"struct Vertex { vec4 position; };\n"
-		"@stage : vertex fn vertex_entry() -> Vertex : position { return Vertex(); }\n"
-	);
-	REQUIRE(r.diagnostics.has_error());
-}
-
-TEST_CASE("return boundary records unknown tag spelling for sema") {
-	auto r = parse(
-		"struct Vertex { vec4 position; };\n"
-		"@stage : vertex fn vertex_entry() -> Vertex : position(weird_tag) { return Vertex(); }\n"
-	);
-	REQUIRE_FALSE(r.diagnostics.has_error());
-	REQUIRE(r.unit.stage_interfaces.size() == 1);
-	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 1);
-	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags.size() == 1);
-	REQUIRE(r.unit.stage_interfaces[0].fields[0].tags[0] == "weird_tag");
-}
-
-TEST_CASE("stage-global-looking boundary tag is syntax and resolved by sema") {
-	auto r = parse(
-		"struct Vertex { vec4 position; u32 index; };\n"
-		"@stage : vertex fn vertex_entry() -> Vertex : position(clip), index(vertex_index) { return Vertex(); }\n"
-	);
-	REQUIRE_FALSE(r.diagnostics.has_error());
-	REQUIRE(r.unit.stage_interfaces.size() == 1);
-	REQUIRE(r.unit.stage_interfaces[0].fields.size() == 2);
-	REQUIRE(r.unit.stage_interfaces[0].fields[1].tags[0] == "vertex_index");
 }
 
 TEST_CASE("input stage interface declaration is not source syntax") {

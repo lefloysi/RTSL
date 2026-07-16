@@ -136,3 +136,126 @@ Verification:
 - `rg "bindings/c/include|rtslc/rtslc\.cpp|rtsl/(api|artifact|driver|frontend|ir|sema|support)" README.md architecture.md docs CMakeLists.txt cmake tests rtsl rtslc -n`: only intentional SDK include remained.
 - `cmake -S . -B out/layout-check`: failed in sandbox due Windows SDK metadata access, succeeded with escalation. CLI11 and Catch2 were not found, so `rtslc` and `rtsl-tests` were skipped in this build tree.
 - `cmake --build out/layout-check --config Debug --target rtsl`: succeeded with escalation.
+
+## Stage Output ABI Follow-up
+
+Objective: remove input/varying/output role classification from the public RTSL
+C ABI. RTSL should expose reflected stage outputs; input and varying synthesis
+belong to the output/backend side.
+
+Impact map:
+
+- Confirmed violation: `rtsl/include/rtsl.h` exposes `rtsl_stage_role` with
+  `INPUT`, `VARYING`, and `OUTPUT`.
+- Confirmed violation: `rtslModuleGetStageLocation` accepts a role argument.
+- Related implementation: `rtsl/src/api/rtsl.cpp` converts internal
+  `StageRole` to C ABI roles and exposes non-varying stage variables.
+- Related tests: `tests/compiler.cpp` queries C ABI stage variables and entry
+  reflection.
+
+Checklist:
+
+- [x] Remove public role enum and role field from ABI stage reflection.
+- [x] Rename C ABI stage reflection around outputs.
+- [x] Filter C ABI reflection to `StageRole::output`.
+- [x] Update ABI tests.
+- [x] Build verify compiler target.
+
+Verification:
+
+- `rg "rtsl_stage_role|RTSL_STAGE_ROLE|rtsl_stage_variable|rtslModuleGetStageVariable|rtslModuleGetStageLocation|stage_views" rtsl tests docs README.md architecture.md -n`: no matches.
+- `cmake --build out/layout-check --config Debug --target rtsl`: succeeded with escalation.
+
+## Stage Output Type ID Follow-up
+
+Objective: expose stage output payload type by artifact type id instead of by
+string name in the public C ABI.
+
+Impact map:
+
+- Confirmed violation: `rtsl_stage_output` used `const char* payload_type`.
+- Required implementation support: `StageInterface` needed to carry the resolved
+  IR type id through lowering and artifact serialization.
+
+Checklist:
+
+- [x] Add `StageInterface::type_id`.
+- [x] Populate type ids for parser-authored and synthesized stage interfaces
+  during IR lowering.
+- [x] Serialize/deserialize the stage-interface type id.
+- [x] Replace C ABI `payload_type` string with `payload_type_id`.
+- [x] Update tests.
+- [x] Build verify compiler target.
+
+Verification:
+
+- `rg "payload_type|type_id" rtsl/include rtsl/src/api tests/compiler.cpp tests/artifact.cpp -n`: only `payload_type_id` and expected type-id uses remain.
+- `cmake --build out/layout-check --config Debug --target rtsl`: succeeded with escalation.
+
+## Spec And Docs Split Follow-up
+
+Objective: implement the documentation plan with separate top-level `spec/` and
+`docs/` folders, not `docs/spec/`.
+
+Architectural rule: normative contracts live in `spec/`; practical build and
+usage guidance lives in `docs/`. README should explain project purpose and
+architecture without becoming the language manual.
+
+Impact map:
+
+- Confirmed violation: README and architecture references pointed at old
+  `docs/*.md` spec paths.
+- Confirmed violation: `cmake/Rtsl.cmake` required `RTSLC` but invoked the
+  hardcoded `rtslc` target.
+- Confirmed violation: CTest referenced
+  `tests/shaders/graphics_program.rtsl`, but the fixture directory was absent.
+- Suspicious related location: AGENTS release-discipline paths named old
+  `docs/` spec files.
+
+Checklist:
+
+- [x] Spawn separate workers for `spec/` and `docs/`.
+- [x] Keep workers on disjoint write sets.
+- [x] Integrate worker drafts.
+- [x] Update README and architecture links to top-level `spec/` and `docs/`.
+- [x] Update AGENTS path references.
+- [x] Fix `RTSLC` helper behavior so docs and implementation agree.
+- [x] Add the CLI smoke shader fixture.
+- [x] Re-search for stale `docs/spec`, old doc paths, and implementation-stage
+  wording.
+- [x] Build and run CTest.
+
+Verification:
+
+- `rg -n "docs/spec|currently|at the moment|docs/language|docs/compiler|docs/artifacts|ArtifactHeaderSize|PayloadRecordSize|bindings/|`bindings`|`scripts`" README.md architecture.md AGENTS.md spec docs rtsl rtslc rtsl-sdk cmake CMakeLists.txt tests`: no matches.
+- `cmake --build out\build --config Debug`: succeeded with escalation.
+- `ctest --test-dir out\build -C Debug --output-on-failure`: 5/5 tests passed,
+  including `rtsl-tests` and the CLI smoke tests.
+
+Result: DONE.
+
+## Documentation Structure Rewrite
+
+Objective: make the README, architecture overview, `docs/`, and `spec/` read as
+a coherent documentation set instead of repeated file inventories.
+
+Architectural rule: README is the entry point, `architecture.md` is the system
+overview, `docs/` is practical guidance, and `spec/` is normative contract.
+
+Checklist:
+
+- [x] Rewrite README around project purpose, artifact flow, build, usage, and
+  navigation.
+- [x] Add `docs/README.md` as the practical documentation index.
+- [x] Add `spec/README.md` as the contract index.
+- [x] Rewrite `architecture.md` as a focused system overview.
+- [x] Rewrite getting-started, rtslc, C ABI, and contributing guides to remove
+  duplicated repository overview prose.
+- [x] Remove implementation-stage wording from public docs/specs.
+- [x] Re-scan public documentation for stale paths and stage-language wording.
+
+Verification:
+
+- `rg -n "currently|at the moment|today|current parser|v0\.1|docs/spec|docs/language|docs/compiler|docs/artifacts" README.md architecture.md docs spec`: no matches.
+
+Result: DONE.

@@ -268,6 +268,22 @@ class TypeRegistry {
 		return id ? id : IRId_None;
 	}
 
+	// Find the registered vector type with the given element scalar and
+	// component count (vec2/vec3/vec4 and their integer/unsigned siblings are
+	// all primed at construction). One component resolves to the scalar itself.
+	[[nodiscard]] IRId vector_of(IRId element, u32 components) const {
+		if (components <= 1) {
+			return element;
+		}
+		for (const auto& [name, info] : info_) {
+			if (info.kind == TypeInfo::Kind::Vector && info.element_type_id == element &&
+				info.components == components) {
+				return info.id;
+			}
+		}
+		return element;
+	}
+
 	// Pointer type intern helper. Pointer types live in the pool too.
 	[[nodiscard]] IRId pointer_to(IRId pointee, StorageClass sc) {
 		if (pointee == IRId_None) {
@@ -448,11 +464,9 @@ class FunctionLowerer {
 		std::span<const UniformBinding> uniforms,
 		const StringMap<std::string>& using_uniforms,
 		const StringMap<IRId>& uniform_var_ids,
-		const StringMap<IRId>& uniform_var_type_ids,
-		std::span<const StageInterface> stage_interfaces)
+		const StringMap<IRId>& uniform_var_type_ids)
 		: builder_(builder), types_(types), fn_(fn), uniforms_(uniforms),
-		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids),
-		  stage_interfaces_(stage_interfaces) {}
+		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids) {}
 
 	void bind_parameter(std::string_view name, std::string_view type, IRId param_id) {
 		locals_.insert_or_assign(std::string(name), Local{
@@ -641,8 +655,24 @@ class FunctionLowerer {
 		return fn_.body.back().result_id;
 	}
 
+	// Lower a control-flow condition to a boolean value. An empty condition (a
+	// bare `for (;;)`) is an implicit `true`. A condition that fails to lower is
+	// a diagnosed error rather than a null branch operand, so a malformed
+	// condition never produces silently broken control flow.
+	Value lower_condition(const Decl::Expr& expr) {
+		if (expr.kind == Decl::Expr::Kind::unknown) {
+			return Value{ constant_bool(true), types_.find("bool") };
+		}
+		const Value cond = lower_expr(expr);
+		if (cond.id == IRId_None) {
+			builder_.diagnose("condition does not produce a value");
+			return Value{ constant_bool(true), types_.find("bool") };
+		}
+		return cond;
+	}
+
 	void lower_if(const Decl::BodyStatement& statement) {
-		const Value cond = lower_expr(statement.expr);
+		const Value cond = lower_condition(statement.expr);
 		IRInstruction merge;
 		merge.op = IROp::SelectionMerge;
 		merge.operands = { builder_.fresh_id() };
@@ -686,7 +716,7 @@ class FunctionLowerer {
 		merge.op = IROp::LoopMerge;
 		merge.operands = { merge_label, head_label };
 		fn_.body.push_back(std::move(merge));
-		const Value cond = lower_expr(statement.expr);
+		const Value cond = lower_condition(statement.expr);
 		emit_branch_conditional(cond.id, body_label, merge_label);
 
 		IRInstruction body_inst;
@@ -722,7 +752,7 @@ class FunctionLowerer {
 		cond_inst.result_id = cond_label;
 		fn_.body.push_back(std::move(cond_inst));
 
-		const Value cond = lower_expr(statement.expr);
+		const Value cond = lower_condition(statement.expr);
 		IRInstruction merge;
 		merge.op = IROp::SelectionMerge;
 		merge.operands = { merge_label };
@@ -751,7 +781,7 @@ class FunctionLowerer {
 		merge.op = IROp::LoopMerge;
 		merge.operands = { merge_label, continue_label };
 		fn_.body.push_back(std::move(merge));
-		const Value cond = statement.expr.kind == Decl::Expr::Kind::unknown ? Value{ builder_.fresh_id(), types_.find("bool") } : lower_expr(statement.expr);
+		const Value cond = lower_condition(statement.expr);
 		emit_branch_conditional(cond.id, body_label, merge_label);
 
 		IRInstruction body_inst;
@@ -837,7 +867,7 @@ class FunctionLowerer {
 		// We support: `name = expr` and `name.member = expr` and `this.member = expr`.
 		const Value v = lower_expr(rhs);
 
-		Lex lex(lhs_t);
+		Lex lex{ lhs_t };
 		const Tok head = lex.next();
 		if (head.kind != TokKind::ident) {
 			// Drop the rhs result; we can't honor this assignment shape.
@@ -1014,10 +1044,25 @@ class FunctionLowerer {
 			v.type_id = types_.find("f32");
 			return v;
 		}
+		case Decl::Expr::Kind::literal_bool: {
+			Value v;
+			v.id = constant_bool(expr.text == "1");
+			v.type_id = types_.find("bool");
+			return v;
+		}
 		case Decl::Expr::Kind::unary:
 			if (!expr.children.empty()) {
 				const Value child = lower_expr(expr.children.front());
-				return expr.op == "-" ? emit_negate(child) : child;
+				if (child.id == IRId_None)
+					return {};
+				if (expr.op == "-")
+					return emit_negate(child);
+				if (expr.op == "!")
+					return emit_unop(IROp::LogicalNot, child, types_.find("bool"));
+				if (expr.op == "+")
+					return child;
+				builder_.diagnose(std::format("unsupported unary operator '{}'", expr.op));
+				return {};
 			}
 			return {};
 		case Decl::Expr::Kind::binary:
@@ -1036,6 +1081,13 @@ class FunctionLowerer {
 					return emit_mul_like(TokKind::slash, lhs, rhs);
 				if (expr.op == "%")
 					return emit_mul_like(TokKind::percent, lhs, rhs);
+				if (expr.op == "&&")
+					return emit_binop_typed(IROp::LogicalAnd, lhs, rhs, types_.find("bool"));
+				if (expr.op == "||")
+					return emit_binop_typed(IROp::LogicalOr, lhs, rhs, types_.find("bool"));
+				if (const auto cmp = comparison_op(expr.op, lhs.type_id))
+					return emit_binop_typed(*cmp, lhs, rhs, types_.find("bool"));
+				builder_.diagnose(std::format("unsupported binary operator '{}'", expr.op));
 			}
 			return {};
 		case Decl::Expr::Kind::call:
@@ -1139,6 +1191,39 @@ class FunctionLowerer {
 		const std::string sig = "cf:" + std::to_string(bits);
 		const IRId ty = types_.find("f32");
 		return builder_.intern_constant(sig, IROp::ConstantFloat, ty, {}, { bits });
+	}
+
+	IRId constant_bool(bool value) {
+		const std::string sig = value ? "cb:1" : "cb:0";
+		const IRId ty = types_.find("bool");
+		return builder_.intern_constant(sig, IROp::ConstantBool, ty, {}, { value ? 1u : 0u });
+	}
+
+	// Select the comparison opcode for `op` based on the operand's scalar kind
+	// (float ordered, signed, or unsigned). Vector operands compare per element,
+	// so the element kind drives the choice. Returns nullopt for non-comparison
+	// operators.
+	[[nodiscard]] std::optional<IROp> comparison_op(std::string_view op, IRId operand_type) const {
+		TypeInfo::Kind kind = TypeInfo::Kind::Float;
+		if (const TypeInfo* info = types_.info_by_id(operand_type)) {
+			kind = info->kind == TypeInfo::Kind::Vector
+					   ? scalar_kind_of(info->element_type_id)
+					   : info->kind;
+		}
+		const bool is_float = kind == TypeInfo::Kind::Float;
+		const bool is_uint = kind == TypeInfo::Kind::UInt;
+		if (op == "==") return is_float ? IROp::FOrdEqual : IROp::IEqual;
+		if (op == "!=") return is_float ? IROp::FOrdNotEqual : IROp::INotEqual;
+		if (op == "<") return is_float ? IROp::FOrdLess : (is_uint ? IROp::ULess : IROp::SLess);
+		if (op == "<=") return is_float ? IROp::FOrdLessEqual : (is_uint ? IROp::ULessEqual : IROp::SLessEqual);
+		if (op == ">") return is_float ? IROp::FOrdGreater : (is_uint ? IROp::UGreater : IROp::SGreater);
+		if (op == ">=") return is_float ? IROp::FOrdGreaterEqual : (is_uint ? IROp::UGreaterEqual : IROp::SGreaterEqual);
+		return std::nullopt;
+	}
+
+	[[nodiscard]] TypeInfo::Kind scalar_kind_of(IRId type_id) const {
+		const TypeInfo* info = types_.info_by_id(type_id);
+		return info ? info->kind : TypeInfo::Kind::Float;
 	}
 
 	// Name lookup that handles locals, parameters, struct field names (when
@@ -1247,18 +1332,38 @@ class FunctionLowerer {
 			return base;
 		}
 		if (info->kind == TypeInfo::Kind::Vector) {
-			const auto idx = vector_component(name);
-			if (!idx) {
-				return base;
+			std::vector<u32> indices;
+			indices.reserve(name.size());
+			for (const char c : name) {
+				const auto idx = vector_component(std::string_view{ &c, 1 });
+				if (!idx) {
+					builder_.diagnose(std::format("invalid swizzle '{}' on type '{}'",
+												  name, types_.name_by_id(base.type_id)));
+					return base;
+				}
+				indices.push_back(*idx);
 			}
-			IRInstruction extract;
-			extract.op = IROp::CompositeExtract;
-			extract.result_id = builder_.fresh_id();
-			extract.type_id = info->element_type_id;
-			extract.operands = { base.id };
-			extract.literals = { *idx };
-			fn_.body.push_back(std::move(extract));
-			return Value{ extract.result_id, info->element_type_id };
+			// A single component extracts a scalar; multiple components (including
+			// reordering, e.g. `.zyx`) produce a smaller/permuted vector.
+			if (indices.size() == 1) {
+				IRInstruction extract;
+				extract.op = IROp::CompositeExtract;
+				extract.result_id = builder_.fresh_id();
+				extract.type_id = info->element_type_id;
+				extract.operands = { base.id };
+				extract.literals = { indices.front() };
+				fn_.body.push_back(std::move(extract));
+				return Value{ extract.result_id, info->element_type_id };
+			}
+			const IRId result_ty = types_.vector_of(info->element_type_id, static_cast<u32>(indices.size()));
+			IRInstruction shuffle;
+			shuffle.op = IROp::VectorShuffle;
+			shuffle.result_id = builder_.fresh_id();
+			shuffle.type_id = result_ty;
+			shuffle.operands = { base.id, base.id };
+			shuffle.literals = std::move(indices);
+			fn_.body.push_back(std::move(shuffle));
+			return Value{ shuffle.result_id, result_ty };
 		}
 		if (info->kind == TypeInfo::Kind::Struct) {
 			for (u32 i = 0; i < info->members.size(); ++i) {
@@ -1458,6 +1563,16 @@ class FunctionLowerer {
 		return Value{ inst.result_id, v.type_id };
 	}
 
+	Value emit_unop(IROp op, const Value& v, IRId result_ty) {
+		IRInstruction inst;
+		inst.op = op;
+		inst.result_id = builder_.fresh_id();
+		inst.type_id = result_ty;
+		inst.operands = { v.id };
+		fn_.body.push_back(std::move(inst));
+		return Value{ inst.result_id, result_ty };
+	}
+
 	Value emit_mul_like(TokKind op, const Value& lhs, const Value& rhs) {
 		// Pick the right SPIR-V-ish opcode based on the operand types.
 		const TypeInfo* lhs_info = types_.info_by_id(lhs.type_id);
@@ -1498,7 +1613,6 @@ class FunctionLowerer {
 	const StringMap<std::string>& using_uniforms_;
 	const StringMap<IRId>& uniform_var_ids_;
 	const StringMap<IRId>& uniform_var_type_ids_;
-	std::span<const StageInterface> stage_interfaces_;
 	std::unordered_map<std::string, Local, TransparentStringHash, std::equal_to<>> locals_;
 
 	// Constructor lowering state. Active when the current function is a
@@ -1507,18 +1621,6 @@ class FunctionLowerer {
 	IRId ctor_owner_type_id_ = IRId_None;
 	std::vector<IRId> ctor_field_values_;
 };
-
-// ----------------------------------------------------------------------------
-// Helpers for stage-interface synthesis.
-// ----------------------------------------------------------------------------
-
-const StageInterface* find_interface(std::span<const StageInterface> interfaces, std::string_view type_name, StageRole role) {
-	for (const auto& interface : interfaces) {
-		if (interface.type_name == type_name && interface.role == role)
-			return &interface;
-	}
-	return nullptr;
-}
 
 // Resolve every IROp::FunctionCall against the functions defined in this
 // module by inlining the callee's body in place. The IR pipeline doesn't
@@ -1799,6 +1901,15 @@ struct BufferLayout {
 // Top-level lowering: build types, globals, decorations, then walk functions.
 // ----------------------------------------------------------------------------
 
+const StageInterface* find_interface(std::span<const StageInterface> interfaces, std::string_view type_name, StageRole role) {
+	for (const auto& interface : interfaces) {
+		if (interface.type_name == type_name && interface.role == role) {
+			return &interface;
+		}
+	}
+	return nullptr;
+}
+
 IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics) {
 	IRModule ir;
 	ir.source_name = module.source_name;
@@ -1807,6 +1918,9 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	ir.exports = module.exports;
 	ir.structs = module.structs;
 	ir.uniforms = module.uniforms;
+	// Authored varying interfaces (from `-> T : field(tag), ...`) arrive resolved
+	// from sema. The vertex-input and fragment-output interfaces are derived
+	// below from the entry signatures.
 	ir.stage_interfaces = module.stage_interfaces;
 
 	StringSet callable_names;
@@ -1837,7 +1951,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	}
 
 	IRBuilder builder{ ir, std::move(callable_names), std::move(callable_targets), diagnostics };
-	TypeRegistry types(builder);
+	TypeRegistry types{ builder };
 	for (const auto& decl : module.structs) {
 		types.register_struct(decl);
 	}
@@ -2107,15 +2221,6 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	}
 
 	// Walk the semantic symbols and lower function bodies.
-	struct PendingStage {
-		std::size_t function_index;
-		std::string stage;
-		std::string user_name;
-		std::string input_type;
-		std::string output_type;
-	};
-	std::vector<PendingStage> pending_stages;
-
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind != DeclKind::function)
 			continue;
@@ -2129,8 +2234,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 
 		// Stage identity is resolved by sema from `@stage : identifier` and
 		// forwarded as open metadata.
-		const std::string& stage = symbol.stage;
-		const bool is_stage_entry = !stage.empty();
+		const std::string_view stage = symbol.stage;
 		// Detect a struct member-init constructor: a function named
 		// "Type::Type" where Type is a known struct. The source declares no
 		// return type for these; we promote the return type to the owning
@@ -2168,9 +2272,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		fn.source_name = mangle_rtsl(symbol.name, stage, parameter_types);
 		fn.display_name_text = symbol.name;
 		ir.functions.push_back(std::move(fn));
-		const std::size_t fn_index = ir.functions.size() - 1;
 
-		FunctionLowerer lowerer{ builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, ir.stage_interfaces };
+		FunctionLowerer lowerer{ builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids };
 		if (is_constructor) {
 			lowerer.begin_constructor(ctor_owner);
 		}
@@ -2197,107 +2300,83 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 				lowerer.emit_implicit_void_return();
 			}
 		}
-
-		if (is_stage_entry) {
-			std::string input_type;
-			for (const auto& p : symbol.parameters) {
-				if (input_type.empty()) {
-					input_type = p.type;
-				}
-			}
-			pending_stages.push_back(PendingStage{
-				.function_index = fn_index,
-				.stage = stage,
-				.user_name = symbol.name,
-				.input_type = std::move(input_type),
-				.output_type = symbol.return_type,
-			});
-		}
 	}
 
-	// Synthesize stage interfaces from struct fields when the source didn't
-	// declare them. A varying must be declared explicitly because its
-	// interpolation qualifiers are not derivable.
-	const auto synth_from_struct = [&](std::string_view type, StageRole role) {
-		if (type.empty() || type == "void") {
-			return;
-		}
-		if (find_interface(ir.stage_interfaces, type, role)) {
-			return;
-		}
-		for (const auto& decl : ir.structs) {
-			if (decl.name != type) {
-				continue;
-			}
-			StageInterface derived;
-			derived.role = role;
-			derived.type_name = type;
-			u32 location = 0;
-			for (u32 index = 0; index < decl.fields.size(); ++index) {
-				StageIOField f;
-				f.name = decl.fields[index].name;
-				f.location = location++;
-				f.member_index = index;
-				derived.fields.push_back(std::move(f));
-			}
-			ir.stage_interfaces.push_back(std::move(derived));
-			return;
-		}
-	};
-	const auto require_varying = [&](std::string_view type, std::string_view context) {
-		if (type.empty() || type == "void") {
-			return;
-		}
-		for (const auto& interface : ir.stage_interfaces) {
-			if (interface.type_name == type && interface.role == StageRole::varying) {
+	// Derive the stage input/output interface metadata from the typed entry
+	// signatures. RTSL has no input/output/varying globals: the return-boundary
+	// grammar supplies varyings (already resolved into ir.stage_interfaces), and
+	// the compiler derives the vertex-input and fragment-output interfaces here.
+	// This is backend-neutral metadata only. RTIR carries no stage input,
+	// output, or varying operations; a backend maps these records to its target
+	// declarations.
+	{
+		// Synthesize an interface from a struct payload's fields when the source
+		// didn't declare one. Fields get sequential locations and a member index
+		// so a backend can extract/insert them.
+		const auto synth_from_struct = [&](std::string_view type, StageRole role) {
+			if (type.empty() || type == "void" || find_interface(ir.stage_interfaces, type, role)) {
 				return;
 			}
-		}
-		if (diagnostics) {
-			diagnostics->report(DiagnosticCode::ir_lowering_failed, DiagnosticSeverity::error, {}, module.source_name,
-								std::format("stage payload '{}' is {} and requires a 'varying' declaration to define interpolation", type, context));
-		}
-	};
-	// Fragment sugar: `@stage : fragment fn name(...) -> vec4` (bare vector, not a
-	// struct) means "single color output at location 0". Synthesize an output
-	// interface with one field so the wrapper has something to write to. If
-	// the user returns a struct, they must annotate its fields — no magic.
-	const auto synth_bare_color_output = [&](std::string_view type) {
-		if (type != "vec4") {
-			return;
-		}
-		if (find_interface(ir.stage_interfaces, type, StageRole::output)) {
-			return;
-		}
-		StageInterface derived;
-		derived.role = StageRole::output;
-		derived.type_name = std::string(type);
-		StageIOField f;
-		f.name = "color";
-		f.location = 0;
-		derived.fields.push_back(std::move(f));
-		ir.stage_interfaces.push_back(std::move(derived));
-	};
-	for (const auto& pending : pending_stages) {
-		if (is_vertex_stage(pending.stage)) {
-			synth_from_struct(pending.input_type, StageRole::input);
-			continue;
-		}
-		if (is_fragment_stage(pending.stage)) {
-			require_varying(pending.input_type, "a fragment input");
-			synth_bare_color_output(pending.output_type);
-			synth_from_struct(pending.output_type, StageRole::output);
+			for (const auto& decl : ir.structs) {
+				if (decl.name != type) {
+					continue;
+				}
+				StageInterface derived;
+				derived.role = role;
+				derived.type_name = std::string(type);
+				u32 location = 0;
+				for (u32 index = 0; index < decl.fields.size(); ++index) {
+					StageIOField f;
+					f.name = decl.fields[index].name;
+					f.location = location++;
+					f.member_index = index;
+					derived.fields.push_back(std::move(f));
+				}
+				ir.stage_interfaces.push_back(std::move(derived));
+				return;
+			}
+		};
+		// A fragment input payload must carry a `varying` interface: its
+		// interpolation qualifiers are authored, not derivable. That interface is
+		// the vertex stage's return boundary (`-> V : field(tag), ...`).
+		const auto require_varying = [&](std::string_view type) {
+			if (type.empty() || type == "void" || find_interface(ir.stage_interfaces, type, StageRole::varying)) {
+				return;
+			}
+			if (diagnostics) {
+				diagnostics->report(DiagnosticCode::ir_lowering_failed, DiagnosticSeverity::error, {}, module.source_name,
+									std::format("fragment input '{}' requires a varying interface; declare it on the vertex stage's return boundary", type));
+			}
+		};
+		// Fragment sugar: `-> vec4` (a bare vector, not a struct) is a single color
+		// output at location 0.
+		const auto synth_bare_color_output = [&](std::string_view type) {
+			if (type != "vec4" || find_interface(ir.stage_interfaces, type, StageRole::output)) {
+				return;
+			}
+			StageInterface derived;
+			derived.role = StageRole::output;
+			derived.type_name = std::string(type);
+			StageIOField f;
+			f.name = "color";
+			f.location = 0;
+			derived.fields.push_back(std::move(f));
+			ir.stage_interfaces.push_back(std::move(derived));
+		};
+		for (const auto& symbol : module.symbols) {
+			if (symbol.kind != DeclKind::function || symbol.stage.empty() || !symbol.has_body) {
+				continue;
+			}
+			const std::string_view input_type = symbol.parameters.empty() ? std::string_view{} : std::string_view{ symbol.parameters.front().type };
+			if (is_vertex_stage(symbol.stage)) {
+				synth_from_struct(input_type, StageRole::input);
+			} else if (is_fragment_stage(symbol.stage)) {
+				require_varying(input_type);
+				synth_bare_color_output(symbol.return_type);
+				synth_from_struct(symbol.return_type, StageRole::output);
+			}
 		}
 	}
-
-	// Stage input/output is deliberately NOT represented in RTIR. A stage entry
-	// stays a plain typed function (e.g. `vert(Point) -> Vertex`) carrying its
-	// stage tag; the serialized stage-interface metadata describes how each
-	// struct field maps to a location and interpolation mode.
-	// Synthesizing the target's actual input/output variables (SPIR-V Input/
-	// Output storage, HLSL semantics, MSL attributes, ...) is backend policy and
-	// lives in the Rutile backend that consumes the rtslp — not here.
-	(void)pending_stages;
 
 	inline_resolved_calls(ir, builder);
 
@@ -2305,7 +2384,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 }
 
 bool verify_ir(const IRModule& module, DiagnosticEngine* diagnostics) {
-	const auto fail = [&](const std::string& message) {
+	const auto fail = [&](std::string_view message) {
 		if (diagnostics) {
 			diagnostics->report(DiagnosticCode::ir_verification_failed, DiagnosticSeverity::error, {}, module.source_name, message);
 		}

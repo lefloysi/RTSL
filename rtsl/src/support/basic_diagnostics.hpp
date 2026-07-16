@@ -39,6 +39,7 @@ enum class DiagnosticCode : int {
 	sema_not_callable = 3009,
 	sema_member_fn_unknown_owner = 3010,
 	sema_member_fn_no_declaration = 3011,
+	sema_invalid_stage = 3012,
 
 	ir_lowering_failed = 3100,
 	layout_duplicate = 3101,
@@ -59,6 +60,7 @@ enum class DiagnosticCode : int {
 	link_missing_entry = 6005,
 	link_duplicate_stage = 6006,
 	link_missing_stage = 6007,
+	link_invalid_artifact_kind = 6008,
 };
 
 struct Diagnostic {

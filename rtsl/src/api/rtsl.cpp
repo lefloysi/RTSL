@@ -15,15 +15,6 @@
 #include <utility>
 #include <vector>
 
-rtsl_stage_role to_c_role(rtsl::StageRole role) {
-	switch (role) {
-	case rtsl::StageRole::input: return RTSL_STAGE_ROLE_INPUT;
-	case rtsl::StageRole::varying: return RTSL_STAGE_ROLE_VARYING;
-	case rtsl::StageRole::output: return RTSL_STAGE_ROLE_OUTPUT;
-	}
-	std::unreachable();
-}
-
 rtsl_uniform_kind uniform_kind_from_type(const rtsl::IRModule& module, std::string_view uniform_type, rtsl::IRId type_id) {
 	switch (rtsl::resource_binding_kind(uniform_type)) {
 	case rtsl::ResourceBindingKind::uniform_buffer:
@@ -86,15 +77,16 @@ struct rtsl_module_t {
 			});
 		}
 
+		// Host reflection exposes only the target-facing input and output
+		// interfaces. Varyings are the vertex-to-fragment contract used by a
+		// backend when it emits both stages; they are not a host-visible surface.
 		for (const auto& interface : artifact.stage_interfaces) {
-			// Varying interfaces are pipeline-internal and not serialized;
-			// belt-and-suspenders in case an in-memory artifact still carries
-			// them.
-			if (interface.role == rtsl::StageRole::varying)
+			if (interface.role == rtsl::StageRole::varying) {
 				continue;
+			}
 			for (const auto& field : interface.fields) {
 				stage_views.push_back(rtsl_stage_variable{
-					.role = to_c_role(interface.role),
+					.role = static_cast<rtsl_stage_role>(interface.role),
 					.payload_type = interface.type_name.c_str(),
 					.name = field.name.c_str(),
 					.interpolation = static_cast<rtsl_interpolation>(field.interpolation),
@@ -154,6 +146,14 @@ static rtsl_diagnostic_severity to_c_severity(rtsl::DiagnosticSeverity severity)
 }
 
 extern "C" {
+
+uint32_t rtslGetVersionMajor(void) {
+	return rtsl::ArtifactVersionMajor;
+}
+
+uint32_t rtslGetVersionMinor(void) {
+	return rtsl::ArtifactVersionMinor;
+}
 
 rtsl_context rtslCreateContext(void) {
 	return new (std::nothrow) rtsl_context_t();
@@ -240,7 +240,7 @@ rtsl_module rtslLoadModule(rtsl_context ctx, const uint8_t* data, size_t size) {
 	try {
 		rtsl::Artifact artifact;
 		if (!rtsl::read_artifact(std::span<const rtsl::u08>(data, size), artifact, &ctx->compiler.diagnostics())) {
-			set_result(ctx, RTSL_ERROR_INVALID_ARGUMENT, "failed to load artifact");
+			set_result(ctx, RTSL_ERROR_ARTIFACT_FAILED, "failed to load artifact");
 			return nullptr;
 		}
 		set_result(ctx, RTSL_OK, "ok");
@@ -314,17 +314,10 @@ int rtslModuleGetStageLocation(rtsl_module module, rtsl_stage_role role, const c
 	if (!module || !field_name || !out_location) {
 		return 0;
 	}
-	if (role == RTSL_STAGE_ROLE_VARYING) {
-		return 0;
-	}
 	module->ensure_reflection();
-	for (const auto& var : module->stage_views) {
-		if (var.role != role)
-			continue;
-		if (var.location == RTSL_NO_LOCATION)
-			continue;
-		if (std::strcmp(var.name, field_name) == 0) {
-			*out_location = var.location;
+	for (const auto& view : module->stage_views) {
+		if (view.role == role && std::strcmp(view.name, field_name) == 0) {
+			*out_location = view.location;
 			return 1;
 		}
 	}

@@ -121,10 +121,10 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 	const auto invocation_source_name = invocation.source_name;
 	const auto file_id = sources_.add_buffer(invocation_source_name, std::move(preprocessed));
 
-	Lexer lexer(sources_, diagnostics_, file_id);
+	Lexer lexer{ sources_, diagnostics_, file_id };
 	const auto tokens = lexer.lex();
 
-	Parser parser(sources_, diagnostics_, file_id, tokens);
+	Parser parser{ sources_, diagnostics_, file_id, tokens };
 	auto ast = parser.parse_translation_unit();
 
 	std::vector<LoadedImport> imported_modules;
@@ -150,7 +150,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 		imported_modules.push_back(LoadedImport{ .name = import_name, .artifact = std::move(imported) });
 	}
 
-	Sema sema(sources_, diagnostics_);
+	Sema sema{ sources_, diagnostics_ };
 	auto semantic_module = sema.analyze(ast);
 	for (const auto& imported : imported_modules) {
 		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.artifact.exports.begin(), imported.artifact.exports.end());

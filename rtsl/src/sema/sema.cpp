@@ -1,8 +1,10 @@
 #include "sema/sema.hpp"
 
+#include "sema/stage_rules.hpp"
+
+#include <array>
 #include <cstddef>
 #include <format>
-#include <array>
 #include <span>
 #include <string>
 #include <string_view>
@@ -25,6 +27,35 @@ const StructDecl* find_struct(std::span<const StructDecl> structs, std::string_v
 	return nullptr;
 }
 
+std::string resolve_stage_attribute(std::span<const Attribute> attributes, std::string_view source_name, DiagnosticEngine& diagnostics) {
+	std::string stage;
+	for (const auto& attribute : attributes) {
+		if (attribute.name != "stage") {
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
+							   "unknown function attribute '@" + attribute.name + "'");
+			continue;
+		}
+		if (attribute.value.empty()) {
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
+							   "stage attribute requires ': <identifier>'");
+			continue;
+		}
+		if (!stage.empty() && stage != attribute.value) {
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
+							   "function has multiple stage attributes");
+			continue;
+		}
+		if (!is_graphics_stage(attribute.value)) {
+			diagnostics.report(DiagnosticCode::sema_invalid_stage, DiagnosticSeverity::error, attribute.span.begin, source_name,
+							   "unsupported stage '" + attribute.value + "'; expected 'vertex' or 'fragment'");
+			continue;
+		}
+		stage = attribute.value;
+	}
+	return stage;
+}
+
+// Contextual meaning of a return-boundary pipeline tag (smooth/flat/clip).
 struct StageBoundaryMeaning {
 	InterpolationKind interpolation = InterpolationKind::none;
 	StageFieldPlacement placement = StageFieldPlacement::user;
@@ -52,29 +83,9 @@ StageBoundaryMeaning stage_boundary_meaning(std::string_view name) {
 	return {};
 }
 
-std::string resolve_stage_attribute(std::span<const Attribute> attributes, std::string_view source_name, DiagnosticEngine& diagnostics) {
-	std::string stage;
-	for (const auto& attribute : attributes) {
-		if (attribute.name != "stage") {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "unknown function attribute '@" + attribute.name + "'");
-			continue;
-		}
-		if (attribute.value.empty()) {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "stage attribute requires ': <identifier>'");
-			continue;
-		}
-		if (!stage.empty() && stage != attribute.value) {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "function has multiple stage attributes");
-			continue;
-		}
-		stage = attribute.value;
-	}
-	return stage;
-}
-
+// Resolve each authored pipeline tag to its interpolation/placement meaning,
+// diagnosing unknown tags. Tags are the contextual vocabulary of the boundary;
+// their meaning lives here in sema, not in the parser.
 void resolve_stage_interface_tags(std::span<StageInterface> interfaces, std::string_view source_name, DiagnosticEngine& diagnostics) {
 	for (auto& interface : interfaces) {
 		for (auto& field : interface.fields) {
@@ -297,6 +308,15 @@ bool is_buffer_resource_type(std::string_view type) {
 	return type == "UniformBuffer" || type == "StorageBuffer";
 }
 
+bool is_sampled_resource_type(std::string_view type) {
+	return type == "Sampler2D" || type == "Sampler3D" || type == "SamplerCube" ||
+		   type == "Sampler2DArray" || type == "Image2D" || type == "Image3D";
+}
+
+bool is_coordinate_type(std::string_view type) {
+	return type == "f32" || type == "vec2" || type == "vec3" || type == "vec4";
+}
+
 std::string uniform_value_type(std::string_view qualified_name, const SemanticModule& module) {
 	for (const auto& uniform : module.uniforms) {
 		if (qualified_uniform_name(uniform) != qualified_name) {
@@ -367,6 +387,8 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 		return "i32";
 	case Decl::Expr::Kind::literal_float:
 		return "f32";
+	case Decl::Expr::Kind::literal_bool:
+		return "bool";
 	case Decl::Expr::Kind::name:
 		if (const auto it = locals.find(expr.text); it != locals.end()) {
 			return std::string(it->second);
@@ -431,6 +453,12 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 	case Decl::Expr::Kind::binary: {
 		if (expr.op == "=" || expr.children.size() != 2) {
 			return {};
+		}
+		// Comparison and logical operators yield a boolean regardless of operand
+		// type; this is what makes `if (x < 0.5)` type as a bool condition.
+		if (expr.op == "==" || expr.op == "!=" || expr.op == "<" || expr.op == "<=" ||
+			expr.op == ">" || expr.op == ">=" || expr.op == "&&" || expr.op == "||") {
+			return "bool";
 		}
 		const std::string lhs = infer_expr_type(expr.children[0], locals, module, known);
 		const std::string rhs = infer_expr_type(expr.children[1], locals, module, known);
@@ -519,6 +547,18 @@ void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticM
 		const auto candidates = function_candidates(module.symbols, callee);
 		if (!candidates.empty() || find_stdlib_function(callee, expr.children.size() - 1)) {
 			if (find_stdlib_function(callee, expr.children.size() - 1)) {
+				if (callee == "sample" && expr.children.size() == 3) {
+					const std::string resource_type = infer_expr_type(expr.children[1], locals, module, known);
+					const std::string coordinate_type = infer_expr_type(expr.children[2], locals, module, known);
+					if (!resource_type.empty() && !is_sampled_resource_type(resource_type)) {
+						diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
+										   std::format("sample first argument must be a sampled image resource, not '{}'", resource_type));
+					}
+					if (!coordinate_type.empty() && !is_coordinate_type(coordinate_type)) {
+						diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
+										   std::format("sample coordinates must be f32 or a float vector, not '{}'", coordinate_type));
+					}
+				}
 				for (const auto& child : expr.children) {
 					check_calls(child, locals, module, known, diagnostics);
 				}
@@ -651,7 +691,99 @@ void check_types(const SemanticModule& module, DiagnosticEngine& diagnostics) {
 	}
 }
 
+LayoutRule resolve_layout_rule(LayoutRule declared, bool is_storage_buffer) {
+	if (declared != LayoutRule::unset) {
+		return declared;
+	}
+	return is_storage_buffer ? LayoutRule::std430 : LayoutRule::std140;
+}
+
+void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
+	const auto layouts_match = [](const LayoutDecl& a, const LayoutDecl& b) {
+		if (a.rule != b.rule || a.is_inline_struct != b.is_inline_struct || a.type_spelling != b.type_spelling ||
+			a.inline_fields.size() != b.inline_fields.size()) {
+			return false;
+		}
+		for (std::size_t i = 0; i < a.inline_fields.size(); ++i) {
+			if (a.inline_fields[i].type != b.inline_fields[i].type || a.inline_fields[i].name != b.inline_fields[i].name) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	std::unordered_map<std::string, std::size_t> uniform_indices;
+	for (std::size_t i = 0; i < module.uniforms.size(); ++i) {
+		uniform_indices.emplace(qualified_uniform_name(module.uniforms[i]), i);
+	}
+
+	std::unordered_map<std::size_t, std::size_t> first_layout_for_uniform;
+	for (std::size_t li = 0; li < module.layouts.size(); ++li) {
+		auto& layout = module.layouts[li];
+		const std::string qn = qualified_layout_name(layout);
+		const auto target_it = uniform_indices.find(qn);
+		if (target_it == uniform_indices.end()) {
+			diagnostics.report(DiagnosticCode::layout_unknown_uniform, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+							   std::format("layout refers to unknown uniform '{}'", qn));
+			continue;
+		}
+		const auto& target = module.uniforms[target_it->second];
+		if (!is_buffer_resource_type(target.type)) {
+			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+							   std::format("uniform '{}' has type {} and does not accept a layout", qn, target.type));
+			continue;
+		}
+		layout.rule = resolve_layout_rule(layout.rule, target.type == "StorageBuffer");
+		const auto [existing_it, inserted] = first_layout_for_uniform.emplace(target_it->second, li);
+		if (!inserted && !layouts_match(module.layouts[existing_it->second], layout)) {
+			diagnostics.report(DiagnosticCode::layout_duplicate, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+							   std::format("conflicting layout for '{}'", qn));
+		}
+	}
+
+	for (std::size_t i = 0; i < module.uniforms.size(); ++i) {
+		const auto& uniform = module.uniforms[i];
+		if (is_buffer_resource_type(uniform.type) && !first_layout_for_uniform.contains(i)) {
+			diagnostics.report(DiagnosticCode::layout_missing_resource_type, DiagnosticSeverity::error, {}, module.source_name,
+							   std::format("{} '{}' has no layout", uniform.type == "UniformBuffer" ? "UniformBuffer" : "StorageBuffer",
+								   qualified_uniform_name(uniform)));
+		}
+	}
+}
+
+const StageInterface* find_stage_interface(std::span<const StageInterface> interfaces, std::string_view type_name, StageRole role) {
+	for (const auto& interface : interfaces) {
+		if (interface.type_name == type_name && interface.role == role) {
+			return &interface;
+		}
+	}
+	return nullptr;
+}
+
+void validate_stage_interfaces(const SemanticModule& module, DiagnosticEngine& diagnostics) {
+	for (const auto& interface : module.stage_interfaces) {
+		const StructDecl* payload = find_struct(module.structs, interface.type_name);
+		if (!payload) {
+			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name,
+							   std::format("stage return boundary requires struct payload '{}'", interface.type_name));
+			continue;
+		}
+		for (const auto& field : interface.fields) {
+			if (struct_field_type(module.structs, interface.type_name, field.name).empty()) {
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name,
+								   std::format("stage return boundary field '{}' is not a member of '{}'", field.name, interface.type_name));
+			}
+		}
+	}
+}
+
 void check_stage_entry_signatures(const SemanticModule& module, DiagnosticEngine& diagnostics) {
+	std::unordered_set<std::string_view> vertex_return_payloads;
+	for (const auto& symbol : module.symbols) {
+		if (symbol.kind == DeclKind::function && is_vertex_stage(symbol.stage) && !symbol.return_type.empty() && symbol.return_type != "void") {
+			vertex_return_payloads.insert(symbol.return_type);
+		}
+	}
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind != DeclKind::function || symbol.stage.empty()) {
 			continue;
@@ -660,6 +792,24 @@ void check_stage_entry_signatures(const SemanticModule& module, DiagnosticEngine
 			if (parameter.is_reference) {
 				diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
 								   "stage entry parameters must be value types");
+			}
+		}
+		if (is_vertex_stage(symbol.stage) && symbol.return_type != "void" && symbol.return_type.empty() == false &&
+			!find_stage_interface(module.stage_interfaces, symbol.return_type, StageRole::varying)) {
+			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
+							   "vertex stage return type requires a return boundary");
+		}
+		if (is_fragment_stage(symbol.stage) && !symbol.parameters.empty()) {
+			const std::string& input_type = symbol.parameters.front().type;
+			if (!input_type.empty() && input_type != "void" && find_struct(module.structs, input_type) &&
+				!find_stage_interface(module.stage_interfaces, input_type, StageRole::varying)) {
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
+								   std::format("fragment input '{}' requires the vertex stage return boundary payload", input_type));
+			}
+			if (!input_type.empty() && input_type != "void" && find_struct(module.structs, input_type) &&
+				!vertex_return_payloads.empty() && !vertex_return_payloads.contains(input_type)) {
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
+								   std::format("fragment input '{}' does not match a vertex stage return payload", input_type));
 			}
 		}
 	}
@@ -678,6 +828,7 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 	module.using_imports = unit.using_imports;
 
 	resolve_stage_interface_tags(module.stage_interfaces, module.source_name, diagnostics_);
+	validate_stage_interfaces(module, diagnostics_);
 
 	// Assign sequential ABI locations to user payload fields, and resolve each
 	// field to the struct member it maps to so a backend can extract/insert it.
@@ -770,6 +921,7 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 		}
 	}
 
+	validate_layouts(module, diagnostics_);
 	check_types(module, diagnostics_);
 	check_stage_entry_signatures(module, diagnostics_);
 

@@ -1,0 +1,19 @@
+struct Point {
+    vec3 position;
+    vec2 uv;
+};
+
+struct Vertex {
+    vec4 position;
+    vec2 uv;
+};
+
+@stage : vertex
+fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {
+    return Vertex(vec4(p.position, 1.0), p.uv);
+}
+
+@stage : fragment
+fn fragment_entry(Vertex v) -> vec4 {
+    return vec4(v.uv, 0.0, 1.0);
+}

@@ -36,7 +36,6 @@ struct Artifact {
 
 [[nodiscard]] std::vector<u08> write_artifact(ArtifactKind kind, const IRModule& module);
 [[nodiscard]] std::vector<u08> write_debug_artifact(const IRModule& module);
-[[nodiscard]] std::vector<u08> write_linked_program(std::span<const Artifact> inputs);
 [[nodiscard]] bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngine* diagnostics = nullptr);
 // File-extension registry. Every RTSL file suffix in the toolchain comes from
 // here — nothing else spells them out.

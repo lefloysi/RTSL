@@ -24,7 +24,7 @@ namespace rtsl {
 	if (is_fragment_stage(stage)) {
 		return "frag";
 	}
-	return std::string(stage);
+	return {};
 }
 
 } // namespace rtsl

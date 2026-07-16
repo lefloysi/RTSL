@@ -22,18 +22,23 @@ function(rtsl_add_program target_name)
         list(APPEND _rtsl_include_args -I "${dir}")
     endforeach()
 
+    set(_rtsl_compiler "${RTSL_RTSLC}")
+    set(_rtsl_compiler_dep)
+    if(TARGET "${RTSL_RTSLC}")
+        set(_rtsl_compiler "$<TARGET_FILE:${RTSL_RTSLC}>")
+        list(APPEND _rtsl_compiler_dep "${RTSL_RTSLC}")
+    endif()
+
     file(MAKE_DIRECTORY "${RTSL_OUTPUT_DIR}")
 
     # First pass: build a map of source basename -> .rtslm output path so we
-    # can resolve `import <name>;` lines to concrete build-tree paths. Every
+    # can resolve `import "name";` lines to concrete build-tree paths. Every
     # source contributes a candidate .rtslm sidecar even if it turns out to
     # have no exports (rtslc skips writing in that case -- CMake sees a
     # missing file, but nothing will depend on it either).
-    set(_rtsl_module_paths)
     foreach(source IN LISTS RTSL_SOURCES)
         get_filename_component(source_name "${source}" NAME_WE)
         set(_rtsl_module_${source_name} "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
-        list(APPEND _rtsl_module_paths "${_rtsl_module_${source_name}}")
     endforeach()
 
     set(outputs)
@@ -44,7 +49,7 @@ function(rtsl_add_program target_name)
         set(program_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslp")
 
         # Scan the source for import lines so we can wire per-file dependency
-        # ordering. Matches `import <foo.rtsl>;` and `import "foo";`; extension
+        # ordering. Matches `import "foo";`; extension
         # is optional. Only imports that name a sibling source in this call
         # become build-graph edges -- external imports fall through to the -I
         # search path at compile time and don't imply an ordering here.
@@ -52,7 +57,7 @@ function(rtsl_add_program target_name)
         if(EXISTS "${source}")
             file(STRINGS "${source}" _rtsl_import_lines REGEX "^[ \t]*(export[ \t]+)?import[ \t]")
             foreach(line IN LISTS _rtsl_import_lines)
-                if(line MATCHES "(export[ \t]+)?import[ \t]+[<\"]([^>\"]+)[>\"]")
+                if(line MATCHES "(export[ \t]+)?import[ \t]+\"([^\"]+)\"")
                     set(_imported "${CMAKE_MATCH_2}")
                     get_filename_component(_imported_base "${_imported}" NAME_WE)
                     if(DEFINED _rtsl_module_${_imported_base})
@@ -70,11 +75,11 @@ function(rtsl_add_program target_name)
         add_custom_command(
             OUTPUT "${object_path}" "${program_path}"
             BYPRODUCTS "${module_path}"
-            COMMAND "$<TARGET_FILE:rtslc>" compile "${source}" -o "${object_path}"
+            COMMAND "${_rtsl_compiler}" compile "${source}" -o "${object_path}"
                 -I "${RTSL_OUTPUT_DIR}"
                 ${_rtsl_include_args}
-            COMMAND "$<TARGET_FILE:rtslc>" link-program "${object_path}" -o "${program_path}"
-            DEPENDS "${source}" rtslc ${RTSL_DEPENDS} ${import_deps}
+            COMMAND "${_rtsl_compiler}" link-program "${object_path}" -o "${program_path}"
+            DEPENDS "${source}" ${_rtsl_compiler_dep} ${RTSL_DEPENDS} ${import_deps}
             VERBATIM
             COMMENT "RTSL ${source_name} -> ${target_name}"
         )
@@ -93,7 +98,6 @@ function(rtsl_add_program target_name)
             COMMAND "${CMAKE_COMMAND}"
                 -DRTSL_EMBED_INPUTS=${embed_inputs}
                 -DRTSL_EMBED_OUTPUT=${embed_cpp}
-                -DRTSL_EMBED_HEADER_NAME=rtsl_embed.hpp
                 -DRTSL_EMBED_NAMESPACE=${RTSL_NAMESPACE}
                 -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
             DEPENDS ${outputs}
@@ -101,12 +105,11 @@ function(rtsl_add_program target_name)
             COMMENT "Embedding RTSL programs for ${target_name}"
         )
         target_sources("${target_name}" PRIVATE "${embed_cpp}")
-        target_include_directories("${target_name}" PRIVATE "${RTSL_OUTPUT_DIR}")
     endif()
 endfunction()
 
-if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT AND DEFINED RTSL_EMBED_HEADER_NAME AND DEFINED RTSL_EMBED_NAMESPACE)
-    file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <cstddef>\n#include <cstdint>\n#include \"${RTSL_EMBED_HEADER_NAME}\"\n\n")
+if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT AND DEFINED RTSL_EMBED_NAMESPACE)
+    file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <cstddef>\n#include <cstdint>\n\n")
 
     foreach(input_path IN LISTS RTSL_EMBED_INPUTS)
         get_filename_component(input_name "${input_path}" NAME_WE)

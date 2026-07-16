@@ -9,7 +9,7 @@ namespace rtsl {
 
 class Lexer {
   public:
-	Lexer(SourceManager& sources, DiagnosticEngine& diagnostics, u32 file_id);
+	Lexer(SourceManager& source_manager, DiagnosticEngine& diagnostic_engine, u32 source_file_id);
 
 	[[nodiscard]] std::vector<Token> lex();
 
@@ -25,11 +25,11 @@ class Lexer {
 	Token make_token(TokenKind kind, std::size_t begin, std::size_t end) const;
 	void diagnose(std::size_t offset, std::string_view message);
 
-	SourceManager& sources_;
-	DiagnosticEngine& diagnostics_;
-	u32 file_id_ = 0;
-	std::string_view input_;
-	std::size_t cursor_ = 0;
+	SourceManager& sources;
+	DiagnosticEngine& diagnostics;
+	u32 file_id = 0;
+	std::string_view input;
+	std::size_t cursor = 0;
 };
 
 } // namespace rtsl

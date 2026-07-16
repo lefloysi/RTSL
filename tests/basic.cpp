@@ -35,7 +35,7 @@ TEST_CASE("lexer tokenizes keywords and punctuation") {
 	SourceManager sources;
 	DiagnosticEngine diagnostics;
 	const auto file = sources.add_buffer("test.rtsl", "export fn helper() -> void {}");
-	Lexer lexer(sources, diagnostics, file);
+	Lexer lexer{ sources, diagnostics, file };
 	const auto tokens = lexer.lex();
 	REQUIRE_FALSE(diagnostics.has_error());
 	REQUIRE(tokens[0].kind == TokenKind::kw_Export);
@@ -47,23 +47,24 @@ TEST_CASE("lexer tokenizes keywords and punctuation") {
 TEST_CASE("lexer reserves layout but leaves interpolation words contextual") {
 	SourceManager sources;
 	DiagnosticEngine diagnostics;
-	const auto file = sources.add_buffer("test.rtsl", "layout smooth flat clip");
-	Lexer lexer(sources, diagnostics, file);
+	const auto file = sources.add_buffer("test.rtsl", "layout smooth flat clip auto");
+	Lexer lexer{ sources, diagnostics, file };
 	const auto tokens = lexer.lex();
 	REQUIRE_FALSE(diagnostics.has_error());
 	REQUIRE(tokens[0].kind == TokenKind::kw_Layout);
 	REQUIRE(tokens[1].kind == TokenKind::identifier);
 	REQUIRE(tokens[2].kind == TokenKind::identifier);
 	REQUIRE(tokens[3].kind == TokenKind::identifier);
+	REQUIRE(tokens[4].kind == TokenKind::identifier);
 }
 
 TEST_CASE("parser builds translation unit") {
 	SourceManager sources;
 	DiagnosticEngine diagnostics;
 	const auto file = sources.add_buffer("test.rtsl", "export fn helper() {}");
-	Lexer lexer(sources, diagnostics, file);
+	Lexer lexer{ sources, diagnostics, file };
 	const auto tokens = lexer.lex();
-	Parser parser(sources, diagnostics, file, tokens);
+	Parser parser{ sources, diagnostics, file, tokens };
 	const auto unit = parser.parse_translation_unit();
 	REQUIRE_FALSE(diagnostics.has_error());
 	REQUIRE(unit.declarations.size() == 1);

@@ -29,7 +29,8 @@ typedef enum rtsl_result_code {
     RTSL_ERROR_INVALID_ARGUMENT = 1,
     RTSL_ERROR_COMPILE_FAILED = 2,
     RTSL_ERROR_LINK_FAILED = 3,
-    RTSL_ERROR_INTERNAL = 4
+    RTSL_ERROR_INTERNAL = 4,
+    RTSL_ERROR_ARTIFACT_FAILED = 5
 } rtsl_result_code;
 
 typedef struct rtsl_result {
@@ -95,6 +96,8 @@ typedef struct rtsl_uniform_info {
     rtsl_uniform_kind kind;
 } rtsl_uniform_info;
 
+/* Stage interface role. Host reflection exposes input and output; varyings are
+ * the vertex-to-fragment contract and are not surfaced here. */
 typedef enum rtsl_stage_role {
     RTSL_STAGE_ROLE_INPUT = 0,
     RTSL_STAGE_ROLE_VARYING = 1,
@@ -114,10 +117,12 @@ typedef enum rtsl_stage_field_placement {
 
 #define RTSL_NO_LOCATION 0xffffffffu
 
-/* Reflected stage variable. */
+/* Reflected stage interface field. A stage entry declares its interface with
+ * the return-boundary grammar `-> T : field(tag, ...)`; RTSL has no
+ * input/output/varying globals. */
 typedef struct rtsl_stage_variable {
     rtsl_stage_role role;
-    const char* payload_type;       /* stage payload type containing this field */
+    const char* payload_type;     /* stage payload type containing this field */
     const char* name;             /* field name */
     rtsl_interpolation interpolation;
     rtsl_stage_field_placement placement;
@@ -129,6 +134,9 @@ typedef struct rtsl_entry_info {
     const char* name;  /* backend entry name */
     const char* stage; /* authored stage identifier, e.g. vertex or fragment */
 } rtsl_entry_info;
+
+RTSL_API uint32_t rtslGetVersionMajor(void);
+RTSL_API uint32_t rtslGetVersionMinor(void);
 
 RTSL_API rtsl_context rtslCreateContext(void);
 RTSL_API rtsl_result rtslCtxGetResult(rtsl_context ctx);
@@ -151,13 +159,11 @@ RTSL_API rtsl_module rtslLoadModuleFromBytes(const uint8_t* data, size_t size);
 RTSL_API size_t rtslModuleGetUniformCount(rtsl_module module);
 RTSL_API int rtslModuleGetUniform(rtsl_module module, size_t index, rtsl_uniform_info* out_info);
 
-/* Stage-variable reflection. */
+/* Stage interface reflection for host-visible stage fields; varyings are not surfaced. */
 RTSL_API size_t rtslModuleGetStageVariableCount(rtsl_module module);
 RTSL_API int rtslModuleGetStageVariable(rtsl_module module, size_t index, rtsl_stage_variable* out_var);
-
-/* Look up the assigned location of a reflected stage variable. */
 RTSL_API int rtslModuleGetStageLocation(rtsl_module module, rtsl_stage_role role,
-                                         const char* field_name, uint32_t* out_location);
+                                        const char* field_name, uint32_t* out_location);
 
 /* Backend entry point reflection. */
 RTSL_API size_t rtslModuleGetEntryCount(rtsl_module module);

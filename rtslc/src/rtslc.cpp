@@ -11,6 +11,7 @@
 #include <span>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -26,8 +27,19 @@ void print_engine_diagnostics(const rtsl::DiagnosticEngine& diagnostics) {
 }
 
 int compile_mode(const fs::path& input_path, const fs::path& output, std::span<const std::string> include_dirs, bool verbose) {
+	std::error_code input_error;
+	if (!fs::exists(input_path, input_error) || input_error) {
+		std::cerr << "rtslc: failed to read " << input_path << '\n';
+		return 1;
+	}
+	std::error_code size_error;
+	const auto input_size = fs::file_size(input_path, size_error);
+	if (size_error) {
+		std::cerr << "rtslc: failed to read " << input_path << '\n';
+		return 1;
+	}
 	const auto source = read_file(input_path);
-	if (source.empty()) {
+	if (source.empty() && input_size != 0) {
 		std::cerr << "rtslc: failed to read " << input_path << '\n';
 		return 1;
 	}
@@ -77,7 +89,7 @@ int link_mode(std::span<const std::string> inputs, const fs::path& output, bool 
 	}
 
 	rtsl::DiagnosticEngine diagnostics;
-	rtsl::Linker linker(diagnostics);
+	rtsl::Linker linker{ diagnostics };
 	for (const auto& input_path : inputs) {
 		const auto bytes = read_file(input_path);
 		if (bytes.empty()) {

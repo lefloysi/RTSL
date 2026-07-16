@@ -39,7 +39,7 @@ RTSL v0.1 target:
 ## Release Discipline
 
 - Keep implementation and documentation aligned with the intended v0.1 scope in
-  `docs/language.md`, `docs/backend-contract.md`, and `docs/compiler-architecture.md`.
+  `spec/language.md`, `spec/backend-contract.md`, and `spec/compiler-pipeline.md`.
   When user-directed design changes conflict with current docs, update the docs
   or the implementation so they converge on the intended behavior.
 - When a feature is listed as part of v0.1, treat missing support as a bug.

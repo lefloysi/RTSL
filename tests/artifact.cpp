@@ -18,6 +18,16 @@ TEST_CASE("artifact round trips") {
 	REQUIRE_FALSE(artifact.bytes.empty());
 }
 
+TEST_CASE("artifact stream starts with the artifact identity") {
+	IRModule module{ .source_name = "layout.rtsl" };
+	const auto bytes = write_artifact(ArtifactKind::object, module);
+
+	Artifact artifact;
+	REQUIRE(read_artifact(bytes, artifact));
+	REQUIRE(artifact.kind == ArtifactKind::object);
+	REQUIRE(artifact.module.source_name == "layout.rtsl");
+}
+
 TEST_CASE("artifact reader rejects malformed input") {
 	Artifact artifact;
 	DiagnosticEngine diagnostics;
@@ -58,22 +68,17 @@ TEST_CASE("module interface emits re-export-only modules") {
 	REQUIRE(loaded.exports[0].name == "shared");
 }
 
-TEST_CASE("artifact round trips stage interface type names") {
-	IRModule module{ .source_name = "stage.rtsl" };
-	module.stage_interfaces.push_back(StageInterface{
-		.role = StageRole::output,
-		.type_name = "Fragment",
-		.fields = {
-			StageIOField{ .name = "color", .location = 0 },
-		},
-	});
+TEST_CASE("linker rejects module interface inputs") {
+	Artifact module{ .kind = ArtifactKind::module };
+	module.module.source_name = "iface.rtslm";
+	module.module.exports = { ExportSymbol{ .name = "shared", .kind = "function", .type = "void" } };
+	module.exports = module.module.exports;
+	module.bytes = write_artifact(ArtifactKind::module, module.module);
 
-	Artifact artifact;
-	REQUIRE(read_artifact(write_artifact(ArtifactKind::program, module), artifact));
-	REQUIRE(artifact.stage_interfaces.size() == 1);
-	REQUIRE(artifact.stage_interfaces[0].type_name == "Fragment");
-	REQUIRE(artifact.stage_interfaces[0].fields.size() == 1);
-	REQUIRE(artifact.stage_interfaces[0].fields[0].name == "color");
+	DiagnosticEngine diagnostics;
+	Linker linker{ diagnostics };
+	REQUIRE_FALSE(linker.add_artifact(module));
+	REQUIRE(diagnostics.has_error());
 }
 
 TEST_CASE("artifact round trips function display names") {

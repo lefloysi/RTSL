@@ -2,6 +2,7 @@
 
 #include "sema/stage_rules.hpp"
 
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -83,8 +84,17 @@ void merge_module(IRModule& dst, IRModule src) {
 	for (auto& uniform : src.uniforms) {
 		dst.uniforms.push_back(std::move(uniform));
 	}
+	// Carry stage interfaces through the link so a linked program keeps the
+	// vertex/fragment interface metadata backends consume. One interface per
+	// (type, role); later duplicates from other inputs are dropped.
 	for (auto& interface : src.stage_interfaces) {
-		dst.stage_interfaces.push_back(std::move(interface));
+		const bool present = std::any_of(dst.stage_interfaces.begin(), dst.stage_interfaces.end(),
+			[&](const StageInterface& existing) {
+				return existing.role == interface.role && existing.type_name == interface.type_name;
+			});
+		if (!present) {
+			dst.stage_interfaces.push_back(std::move(interface));
+		}
 	}
 }
 
@@ -272,6 +282,20 @@ bool report_stale_imported_exports(const Artifact& artifact, DiagnosticEngine& d
 	return found;
 }
 
+bool is_link_input_kind(ArtifactKind kind) {
+	return kind == ArtifactKind::object || kind == ArtifactKind::library;
+}
+
+std::string_view artifact_kind_name(ArtifactKind kind) {
+	switch (kind) {
+	case ArtifactKind::object: return "object";
+	case ArtifactKind::module: return "module interface";
+	case ArtifactKind::library: return "library";
+	case ArtifactKind::program: return "program";
+	}
+	return "unknown";
+}
+
 Linker::Linker(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {}
 
 bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
@@ -279,13 +303,17 @@ bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
 	if (!read_artifact(bytes, artifact, &diagnostics_)) {
 		return false;
 	}
-	inputs_.push_back(std::move(artifact));
-	return true;
+	return add_artifact(std::move(artifact));
 }
 
 bool Linker::add_artifact(Artifact artifact) {
 	if (artifact.bytes.empty()) {
 		diagnostics_.report(DiagnosticCode::link_empty_artifact, DiagnosticSeverity::error, {}, "<link>", "cannot link an empty artifact");
+		return false;
+	}
+	if (!is_link_input_kind(artifact.kind)) {
+		diagnostics_.report(DiagnosticCode::link_invalid_artifact_kind, DiagnosticSeverity::error, {}, "<link>",
+							"link input must be an object or library artifact, not " + std::string(artifact_kind_name(artifact.kind)));
 		return false;
 	}
 	inputs_.push_back(std::move(artifact));
@@ -328,8 +356,6 @@ Artifact Linker::link_program() {
 			program.structs.push_back(decl);
 		for (const auto& uniform : inputs_[i].uniforms)
 			program.uniforms.push_back(uniform);
-		for (const auto& interface : inputs_[i].stage_interfaces)
-			program.stage_interfaces.push_back(interface);
 		for (const auto& entry : inputs_[i].entries)
 			program.entries.push_back(entry);
 	}
@@ -363,8 +389,6 @@ Artifact Linker::link_library() {
 			library.structs.push_back(decl);
 		for (const auto& uniform : inputs_[i].uniforms)
 			library.uniforms.push_back(uniform);
-		for (const auto& interface : inputs_[i].stage_interfaces)
-			library.stage_interfaces.push_back(interface);
 		for (const auto& entry : inputs_[i].entries)
 			library.entries.push_back(entry);
 	}

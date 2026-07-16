@@ -32,8 +32,11 @@ TokenKind keyword_kind(std::string_view text) {
 	return TokenKind::identifier;
 }
 
-Lexer::Lexer(SourceManager& sources, DiagnosticEngine& diagnostics, u32 file_id)
-	: sources_(sources), diagnostics_(diagnostics), file_id_(file_id), input_(sources.buffer(file_id)) {}
+Lexer::Lexer(SourceManager& source_manager, DiagnosticEngine& diagnostic_engine, u32 source_file_id)
+	: sources(source_manager),
+	  diagnostics(diagnostic_engine),
+	  file_id(source_file_id),
+	  input(source_manager.buffer(source_file_id)) {}
 
 std::vector<Token> Lexer::lex() {
 	std::vector<Token> tokens;
@@ -41,7 +44,7 @@ std::vector<Token> Lexer::lex() {
 	while (true) {
 		skip_whitespace_and_comments();
 		if (at_end()) {
-			tokens.push_back(make_token(TokenKind::end_of_file, cursor_, cursor_));
+			tokens.push_back(make_token(TokenKind::end_of_file, cursor, cursor));
 			break;
 		}
 
@@ -61,11 +64,11 @@ std::vector<Token> Lexer::lex() {
 }
 
 char Lexer::peek(std::size_t lookahead) const {
-	return at_end(lookahead) ? '\0' : input_[cursor_ + lookahead];
+	return at_end(lookahead) ? '\0' : input[cursor + lookahead];
 }
 
 bool Lexer::at_end(std::size_t lookahead) const {
-	return cursor_ + lookahead >= input_.size();
+	return cursor + lookahead >= input.size();
 }
 
 void Lexer::skip_whitespace_and_comments() {
@@ -73,105 +76,105 @@ void Lexer::skip_whitespace_and_comments() {
 	while (consumed && !at_end()) {
 		consumed = false;
 		while (!at_end() && std::isspace(static_cast<unsigned char>(peek()))) {
-			++cursor_;
+			++cursor;
 			consumed = true;
 		}
 
 		if (peek() == '/' && peek(1) == '/') {
-			cursor_ += 2;
+			cursor += 2;
 			while (!at_end() && peek() != '\n') {
-				++cursor_;
+				++cursor;
 			}
 			consumed = true;
 		} else if (peek() == '/' && peek(1) == '*') {
-			const auto comment_begin = cursor_;
-			cursor_ += 2;
+			const auto comment_begin = cursor;
+			cursor += 2;
 			while (!at_end() && !(peek() == '*' && peek(1) == '/')) {
-				++cursor_;
+				++cursor;
 			}
 			if (at_end()) {
 				diagnose(comment_begin, "unterminated block comment");
 				return;
 			}
-			cursor_ += 2;
+			cursor += 2;
 			consumed = true;
 		}
 	}
 }
 
 Token Lexer::lex_identifier_or_keyword() {
-	const auto begin = cursor_;
-	++cursor_;
+	const auto begin = cursor;
+	++cursor;
 	while (!at_end() && is_identifier_continue(peek())) {
-		++cursor_;
+		++cursor;
 	}
-	const auto text = input_.substr(begin, cursor_ - begin);
-	return make_token(keyword_kind(text), begin, cursor_);
+	const auto text = input.substr(begin, cursor - begin);
+	return make_token(keyword_kind(text), begin, cursor);
 }
 
 Token Lexer::lex_number() {
-	const auto begin = cursor_;
+	const auto begin = cursor;
 	while (!at_end() && std::isdigit(static_cast<unsigned char>(peek()))) {
-		++cursor_;
+		++cursor;
 	}
 
 	bool is_float = false;
 	if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
 		is_float = true;
-		++cursor_;
+		++cursor;
 		while (!at_end() && std::isdigit(static_cast<unsigned char>(peek()))) {
-			++cursor_;
+			++cursor;
 		}
 	}
 
-	return make_token(is_float ? TokenKind::float_literal : TokenKind::integer_literal, begin, cursor_);
+	return make_token(is_float ? TokenKind::float_literal : TokenKind::integer_literal, begin, cursor);
 }
 
 Token Lexer::lex_string() {
-	const auto begin = cursor_;
-	++cursor_;
+	const auto begin = cursor;
+	++cursor;
 	while (!at_end() && peek() != '"') {
 		if (peek() == '\\' && !at_end(1)) {
-			cursor_ += 2;
+			cursor += 2;
 			continue;
 		}
-		++cursor_;
+		++cursor;
 	}
 	if (!at_end()) {
-		++cursor_;
+		++cursor;
 	}
-	return make_token(TokenKind::string_literal, begin, cursor_);
+	return make_token(TokenKind::string_literal, begin, cursor);
 }
 
 Token Lexer::lex_punctuation() {
-	const auto begin = cursor_;
-	const std::string_view rest = input_.substr(cursor_);
+	const auto begin = cursor;
+	const std::string_view rest = input.substr(cursor);
 
 	// Punctuator table from tokens.def. Entries are ordered longest-prefix
 	// first there, so taking the first match implements maximal munch for
 	// spellings of any length. Anything unmatched is an invalid character.
 #define RTSL_PUNCTUATOR(name, spelling)                    \
 	if (rest.starts_with(spelling)) {                      \
-		cursor_ += std::string_view(spelling).size();      \
-		return make_token(TokenKind::name, begin, cursor_); \
+		cursor += std::string_view(spelling).size();      \
+		return make_token(TokenKind::name, begin, cursor); \
 	}
 #include "frontend/tokens.def"
 
 	diagnose(begin, "invalid character in source");
-	++cursor_;
-	return make_token(TokenKind::invalid, begin, cursor_);
+	++cursor;
+	return make_token(TokenKind::invalid, begin, cursor);
 }
 
 Token Lexer::make_token(TokenKind kind, std::size_t begin, std::size_t end) const {
 	return {
 		kind,
-		input_.substr(begin, end - begin),
-		SourceSpan{ sources_.location_at(file_id_, begin), end - begin },
+		input.substr(begin, end - begin),
+		SourceSpan{ sources.location_at(file_id, begin), end - begin },
 	};
 }
 
 void Lexer::diagnose(std::size_t offset, std::string_view message) {
-	diagnostics_.report(DiagnosticCode::lexer_invalid_character, DiagnosticSeverity::error, sources_.location_at(file_id_, offset), sources_.name(file_id_), message);
+	diagnostics.report(DiagnosticCode::lexer_invalid_character, DiagnosticSeverity::error, sources.location_at(file_id, offset), sources.name(file_id), message);
 }
 
 } // namespace rtsl

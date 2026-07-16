@@ -22,13 +22,13 @@ namespace rtsl {
 //   2. The top scope holds declarations: imports, namespaces, types,
 //      functions, uniforms, layouts, and using declarations. Everything else
 //      is a diagnostic.
-//   3. A return boundary (`-> T : field(tag, ...)`) is part of the return
-//      type spec; tags are data-driven, not per-keyword grammar.
+//   3. Stage entries are ordinary typed functions. Target input/output and
+//      varying interfaces are transpiler output, not RTSL syntax.
 //
 // See parser.cpp for the full grammar (EBNF).
 class Parser {
   public:
-	Parser(SourceManager& sources, DiagnosticEngine& diagnostics, u32 file_id, std::span<const Token> tokens);
+	Parser(SourceManager& source_manager, DiagnosticEngine& diagnostic_engine, u32 source_file_id, std::span<const Token> token_stream);
 
 	[[nodiscard]] TranslationUnit parse_translation_unit();
 
@@ -84,7 +84,7 @@ class Parser {
 	// The single type rule. Consumes:
 	//   'const'? type_atom '&'?
 	//   type_atom := 'struct' scoped_name? ('{' struct_body '}' )?
-	//              | (ident | 'void' | 'auto') ('::' ident)* ('<' ... '>')?
+	//              | (ident | 'void') ('::' ident)* ('<' ... '>')?
 	// A struct body registers the type in the translation unit (generated name
 	// when anonymous). Returns an empty ParsedType if the cursor isn't on a
 	// type-starting token (cursor untouched in that case unless a body or
@@ -94,11 +94,8 @@ class Parser {
 	// Function pieces.
 	void parse_function_signature(Decl& decl);
 	void parse_parameter_list(std::vector<ParameterDecl>& out);
-	// Return boundary (post `-> T`, consumed `:`): `field(tag, ...) , ...`.
-	// Tags are recorded by spelling; sema owns their contextual meaning.
-	void parse_return_boundary(std::string base_type);
 	void maybe_parse_return_boundary(std::string_view base_type);
-
+	void parse_return_boundary(std::string base_type);
 	// Struct body: fields + member function declarations.
 	void parse_struct_body(std::vector<StructField>& fields,
 						   std::vector<StructMemberFunction>& member_functions,
@@ -156,15 +153,15 @@ class Parser {
 	void diagnose(const Token& token, std::string_view message);
 	void diagnose_here(std::string_view message);
 
-	TranslationUnit* unit_ = nullptr;
+	TranslationUnit* unit = nullptr;
 
-	SourceManager& sources_;
-	DiagnosticEngine& diagnostics_;
-	u32 file_id_ = 0;
-	std::span<const Token> tokens_;
-	std::size_t cursor_ = 0;
-	u32 next_anonymous_block_id_ = 0;
-	u32 next_anonymous_struct_id_ = 0;
+	SourceManager& sources;
+	DiagnosticEngine& diagnostics;
+	u32 file_id = 0;
+	std::span<const Token> tokens;
+	std::size_t cursor = 0;
+	u32 next_anonymous_block_id = 0;
+	u32 next_anonymous_struct_id = 0;
 };
 
 } // namespace rtsl

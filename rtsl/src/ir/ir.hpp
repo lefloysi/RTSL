@@ -36,8 +36,6 @@ struct DebugLocation {
 // literal on those instructions.
 enum class StorageClass : u08 {
 	Function = 0,
-	Input = 1,
-	Output = 2,
 	Uniform = 3,
 	UniformConstant = 4,
 	StorageBuffer = 5,
@@ -150,17 +148,21 @@ struct IRModule {
 	// Forward-only ordered pool: an entry may only reference earlier entries.
 	std::vector<IRInstruction> type_constant_pool;
 
-	// Module-scope OpVariable instructions (Input/Output/Uniform/...).
+	// Module-scope OpVariable instructions for resource and private storage.
 	std::vector<IRInstruction> global_variables;
 
 	std::vector<IRDecoration> decorations;
 	std::vector<IRFunction> functions;
 	std::vector<IRFunctionDebugInfo> function_debug;
 
-	// Reflection bridges. Not part of SSA semantics; they let the C API answer
-	// uniform, stage-variable, and entry queries directly.
+	// Reflection bridges for source-level metadata that survives into artifacts.
 	std::vector<StructDecl> structs;
 	std::vector<UniformBinding> uniforms;
+
+	// Stage interface reflection: authored varyings (from the return-boundary
+	// grammar) plus input/output interfaces derived from the entry signatures.
+	// Backend-neutral metadata only. RTIR carries no stage input, output, or
+	// varying instructions.
 	std::vector<StageInterface> stage_interfaces;
 
 	// Pending call targets, indexed by FunctionCall.literals[0]. Each entry
