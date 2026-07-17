@@ -30,6 +30,8 @@ RTSL v0.1 target:
 ## Formatting Rules
 
 - Use braces for local object construction and aggregate initialization.
+- Always use braces for `if`, `else`, `for`, `while`, and `do` bodies,
+  including single-statement bodies.
 - Prefer explicit initialization over declaration-style parentheses.
 - Keep indentation and layout consistent with the existing file.
 - Keep line breaks where they improve readability of complex expressions or
@@ -39,7 +41,7 @@ RTSL v0.1 target:
 ## Release Discipline
 
 - Keep implementation and documentation aligned with the intended v0.1 scope in
-  `spec/language.md`, `spec/backend-contract.md`, and `spec/compiler-pipeline.md`.
+  `README.md` and `docs/`.
   When user-directed design changes conflict with current docs, update the docs
   or the implementation so they converge on the intended behavior.
 - When a feature is listed as part of v0.1, treat missing support as a bug.
@@ -104,7 +106,7 @@ ledger `BLOCKED`, never `DONE`.
 
 - Reason from the intended RTSL language model before changing syntax,
   lowering, docs, or tests.
-- Keep documentation concise and normative. Document the language shape and
+- Keep documentation concise and practical. Document the language shape and
   observable behavior, not the rationale for every design decision.
 - Do not copy every review correction into prose. Apply the correction to the
   grammar, examples, implementation, and tests where it belongs.

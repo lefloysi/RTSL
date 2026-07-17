@@ -153,7 +153,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 	Sema sema{ sources_, diagnostics_ };
 	auto semantic_module = sema.analyze(ast);
 	for (const auto& imported : imported_modules) {
-		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.artifact.exports.begin(), imported.artifact.exports.end());
+		semantic_module.imported_exports.insert(semantic_module.imported_exports.end(), imported.artifact.module.exports.begin(), imported.artifact.module.exports.end());
 	}
 	for (const auto& decl : ast.declarations) {
 		if (decl.kind != DeclKind::import || !decl.exported) {
@@ -163,7 +163,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 			if (imported.name != decl.name) {
 				continue;
 			}
-			semantic_module.exports.insert(semantic_module.exports.end(), imported.artifact.exports.begin(), imported.artifact.exports.end());
+			semantic_module.exports.insert(semantic_module.exports.end(), imported.artifact.module.exports.begin(), imported.artifact.module.exports.end());
 			break;
 		}
 	}
@@ -174,28 +174,7 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 
 	if (!diagnostics_.has_error() && verify_ir(ir, &diagnostics_)) {
 		artifact.bytes = write_artifact(ArtifactKind::object, ir);
-		artifact.module = ir;
-		artifact.strings.clear();
-		artifact.structs = ir.structs;
-		artifact.imports = ir.imports;
-		artifact.imported_exports = ir.imported_exports;
-		artifact.exports = ir.exports;
-		artifact.uniforms = ir.uniforms;
-		artifact.stage_interfaces = ir.stage_interfaces;
-		artifact.entries.clear();
-		for (const auto& function : ir.functions) {
-			if (function.stage.empty()) {
-				continue;
-			}
-			const std::string entry_name = backend_entry_name(function.stage);
-			artifact.entries.push_back(Artifact::EntryPoint{
-				.name = entry_name,
-				.mangled_name = entry_name,
-				.stage = function.stage,
-				.function_id = function.result_id,
-			});
-		}
-		artifact.debug_bytes = write_debug_artifact(ir);
+		artifact.module = std::move(ir);
 	}
 }
 

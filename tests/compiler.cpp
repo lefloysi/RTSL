@@ -4,10 +4,12 @@
 #include "artifact/linker.hpp"
 #include "sema/mangler.hpp"
 #include "frontend/parser.hpp"
-#include "rtsl.h"
+#include "rtsl/sdk.hpp"
+#include "rtslc.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -22,6 +24,10 @@ bool has_diagnostic_code(CompilerInstance& compiler, DiagnosticCode code) {
 		}
 	}
 	return false;
+}
+
+std::span<const std::byte> as_bytes(rtsl_blob blob) {
+	return { reinterpret_cast<const std::byte*>(blob.data), blob.size };
 }
 } // namespace
 
@@ -62,8 +68,8 @@ TEST_CASE("compiler re-exports exported imports") {
 
 	const Artifact module = extract_module_interface(forwarder);
 	REQUIRE_FALSE(module.bytes.empty());
-	REQUIRE(module.exports.size() == 1);
-	REQUIRE(module.exports[0].name == "helper");
+	REQUIRE(module.module.exports.size() == 1);
+	REQUIRE(module.module.exports[0].name == "helper");
 }
 
 TEST_CASE("compiler reports source import cycles") {
@@ -134,20 +140,18 @@ TEST_CASE("linker emits program") {
 
 	Artifact loaded;
 	REQUIRE(read_artifact(program.bytes, loaded));
-	REQUIRE(loaded.entries.size() == 2);
+	REQUIRE(loaded.module.entries.size() == 2);
 	bool found_vertex_entry = false;
 	bool found_fragment_entry = false;
-	for (const auto& entry : loaded.entries) {
-		if (entry.stage == "vertex") {
-			REQUIRE(entry.name == "vert");
-			REQUIRE(entry.mangled_name == "vert");
-			REQUIRE(entry.function_id != IRId_None);
+	for (const auto& entry : loaded.module.entries) {
+		if (entry.stage == Stage::vertex) {
+			REQUIRE(entry.name == "vertex_entry");
+			REQUIRE(entry.function != ID<IRInstruction>{});
 			found_vertex_entry = true;
 		}
-		if (entry.stage == "fragment") {
-			REQUIRE(entry.name == "frag");
-			REQUIRE(entry.mangled_name == "frag");
-			REQUIRE(entry.function_id != IRId_None);
+		if (entry.stage == Stage::fragment) {
+			REQUIRE(entry.name == "fragment_entry");
+			REQUIRE(entry.function != ID<IRInstruction>{});
 			found_fragment_entry = true;
 		}
 	}
@@ -469,23 +473,19 @@ TEST_CASE("C ABI lifetime and errors") {
 	rtsl_module loaded_program = rtslLoadModule(ctx, program_bytes.data, program_bytes.size);
 	REQUIRE(loaded_program);
 	REQUIRE(rtslModuleGetKind(loaded_program) == RTSL_OUTPUT_PROGRAM);
-	REQUIRE(rtslModuleGetEntryCount(loaded_program) == 2);
-	rtsl_entry_info first_entry{};
-	rtsl_entry_info second_entry{};
-	REQUIRE(rtslModuleGetEntry(loaded_program, 0, &first_entry));
-	REQUIRE(rtslModuleGetEntry(loaded_program, 1, &second_entry));
-	REQUIRE(first_entry.name != nullptr);
-	REQUIRE(second_entry.name != nullptr);
-	REQUIRE(first_entry.stage != nullptr);
-	REQUIRE(second_entry.stage != nullptr);
-	const bool has_vert = std::strcmp(first_entry.name, "vert") == 0 || std::strcmp(second_entry.name, "vert") == 0;
-	const bool has_frag = std::strcmp(first_entry.name, "frag") == 0 || std::strcmp(second_entry.name, "frag") == 0;
-	const bool has_vertex_stage = std::strcmp(first_entry.stage, "vertex") == 0 || std::strcmp(second_entry.stage, "vertex") == 0;
-	const bool has_fragment_stage = std::strcmp(first_entry.stage, "fragment") == 0 || std::strcmp(second_entry.stage, "fragment") == 0;
-	REQUIRE(has_vert);
-	REQUIRE(has_frag);
-	REQUIRE(has_vertex_stage);
-	REQUIRE(has_fragment_stage);
+	auto sdk_program = load_program(as_bytes(program_bytes));
+	REQUIRE(sdk_program.has_value());
+	REQUIRE(sdk_program->entries().size() == 2);
+	const EntryPoint* vertex = sdk_program->entry(Stage::vertex);
+	const EntryPoint* fragment = sdk_program->entry(Stage::fragment);
+	REQUIRE(vertex != nullptr);
+	REQUIRE(fragment != nullptr);
+	REQUIRE(vertex->name == "vertex_entry");
+	REQUIRE(fragment->name == "fragment_entry");
+	const ir::Function* fn = sdk_program->find_function(vertex->function);
+	REQUIRE(fn != nullptr);
+	REQUIRE_FALSE(fn->blocks.empty());
+	REQUIRE_FALSE(fn->blocks.front().instructions.empty());
 
 	rtslDestroyModule(loaded_program);
 	rtslDestroyModule(program);
@@ -519,19 +519,19 @@ TEST_CASE("C ABI reflects uniforms from loaded linked program") {
 	rtsl_module loaded = rtslLoadModule(ctx, bytes.data, bytes.size);
 	REQUIRE(loaded);
 
-	REQUIRE(rtslModuleGetUniformCount(loaded) == 2);
-	rtsl_uniform_info first{};
-	rtsl_uniform_info second{};
-	REQUIRE(rtslModuleGetUniform(loaded, 0, &first));
-	REQUIRE(rtslModuleGetUniform(loaded, 1, &second));
-	REQUIRE(std::strcmp(first.qualified_name, "albedo.texture") == 0);
-	REQUIRE(first.kind == RTSL_UNIFORM_KIND_SAMPLED_IMAGE);
-	REQUIRE(first.group == 0);
-	REQUIRE(first.member == 0);
-	REQUIRE(std::strcmp(second.qualified_name, "albedo.tint") == 0);
-	REQUIRE(second.kind == RTSL_UNIFORM_KIND_UNIFORM_BUFFER);
-	REQUIRE(second.group == 0);
-	REQUIRE(second.member == 1);
+	auto sdk_program = load_program(as_bytes(bytes));
+	REQUIRE(sdk_program.has_value());
+	REQUIRE(sdk_program->resources().size() == 2);
+	const auto& first = sdk_program->resources()[0];
+	const auto& second = sdk_program->resources()[1];
+	REQUIRE(first.name == "albedo.texture");
+	REQUIRE(first.kind == ResourceKind::sampled_texture);
+	REQUIRE(first.descriptor.set == 0);
+	REQUIRE(first.descriptor.binding == 0);
+	REQUIRE(second.name == "albedo.tint");
+	REQUIRE(second.kind == ResourceKind::uniform_buffer);
+	REQUIRE(second.descriptor.set == 0);
+	REQUIRE(second.descriptor.binding == 1);
 
 	rtslDestroyModule(loaded);
 	rtslDestroyModule(program);
@@ -782,35 +782,30 @@ TEST_CASE("compiler builds stage interfaces from the return boundary") {
 	Artifact loaded;
 	REQUIRE(read_artifact(artifact.bytes, loaded));
 
-	const auto find = [&](StageRole role, std::string_view type) -> const StageInterface* {
-		for (const auto& i : loaded.module.stage_interfaces) {
-			if (i.role == role && i.type_name == type) return &i;
-		}
-		return nullptr;
-	};
-
-	// Authored varying: clip placement on position, smooth interpolation on uv.
-	const StageInterface* varying = find(StageRole::varying, "Vertex");
-	REQUIRE(varying != nullptr);
-	REQUIRE(varying->fields.size() == 2);
-	REQUIRE(varying->fields[0].name == "position");
-	REQUIRE(varying->fields[0].placement == StageFieldPlacement::clip_position);
-	REQUIRE(varying->fields[0].location == StageIOField::kNoLocation);
-	REQUIRE(varying->fields[1].name == "uv");
-	REQUIRE(varying->fields[1].interpolation == InterpolationKind::smooth);
-	REQUIRE(varying->fields[1].location == 0);
-
-	// Derived vertex input from the Point parameter struct.
-	const StageInterface* input = find(StageRole::input, "Point");
-	REQUIRE(input != nullptr);
-	REQUIRE(input->fields.size() == 2);
-
-	// Derived fragment color output at location 0.
-	const StageInterface* output = find(StageRole::output, "vec4");
-	REQUIRE(output != nullptr);
-	REQUIRE(output->fields.size() == 1);
-	REQUIRE(output->fields[0].name == "color");
-	REQUIRE(output->fields[0].location == 0);
+	const EntryPoint* vertex = nullptr;
+	const EntryPoint* fragment = nullptr;
+	for (const auto& entry : loaded.module.entries) {
+		if (entry.stage == Stage::vertex) vertex = &entry;
+		if (entry.stage == Stage::fragment) fragment = &entry;
+	}
+	REQUIRE(vertex != nullptr);
+	REQUIRE(fragment != nullptr);
+	REQUIRE(vertex->input.has_value());
+	REQUIRE(vertex->input->elements.size() == 2);
+	REQUIRE(vertex->output.has_value());
+	REQUIRE(vertex->output->elements.size() == 2);
+	REQUIRE(vertex->output->elements[0].name == "position");
+	REQUIRE(vertex->output->elements[0].builtin == Builtin::position);
+	REQUIRE_FALSE(vertex->output->elements[0].location.has_value());
+	REQUIRE(vertex->output->elements[1].name == "uv");
+	REQUIRE(vertex->output->elements[1].interpolation == Interpolation::smooth);
+	REQUIRE(vertex->output->elements[1].location == 0);
+	REQUIRE(fragment->input.has_value());
+	REQUIRE(fragment->input->elements.size() == 1);
+	REQUIRE(fragment->output.has_value());
+	REQUIRE(fragment->output->elements.size() == 1);
+	REQUIRE(fragment->output->elements[0].name == "color");
+	REQUIRE(fragment->output->elements[0].location == 0);
 }
 
 TEST_CASE("compiler rejects an unknown return-boundary tag") {
@@ -822,38 +817,6 @@ TEST_CASE("compiler rejects an unknown return-boundary tag") {
 	);
 	(void)artifact;
 	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_unknown_name));
-}
-
-TEST_CASE("C ABI reflects host-visible stage fields but not varyings") {
-	rtsl_context ctx = rtslCreateContext();
-	REQUIRE(ctx != nullptr);
-	const char* src =
-		"struct Point { vec3 position; vec2 uv; };\n"
-		"struct Vertex { vec4 position; vec2 uv; };\n"
-		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) { return Vertex(vec4(p.position, 1.0), p.uv); }\n"
-		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return vec4(v.uv, 0.0, 1.0); }\n";
-	rtsl_module module = rtslCompileSource(ctx, src, std::strlen(src), "abi_stage.rtsl");
-	REQUIRE(module != nullptr);
-
-	bool saw_input = false;
-	bool saw_output = false;
-	const size_t count = rtslModuleGetStageVariableCount(module);
-	for (size_t i = 0; i < count; ++i) {
-		rtsl_stage_variable var{};
-		REQUIRE(rtslModuleGetStageVariable(module, i, &var) == 1);
-		REQUIRE(var.role != RTSL_STAGE_ROLE_VARYING); // varyings are not host-visible
-		if (var.role == RTSL_STAGE_ROLE_INPUT) saw_input = true;
-		if (var.role == RTSL_STAGE_ROLE_OUTPUT) saw_output = true;
-	}
-	REQUIRE(saw_input);
-	REQUIRE(saw_output);
-
-	uint32_t location = 42;
-	REQUIRE(rtslModuleGetStageLocation(module, RTSL_STAGE_ROLE_OUTPUT, "color", &location) == 1);
-	REQUIRE(location == 0);
-
-	rtslDestroyModule(module);
-	rtslDestroyContext(ctx);
 }
 
 TEST_CASE("C ABI reports malformed artifact load failures distinctly") {
@@ -912,7 +875,7 @@ TEST_CASE("compiler classifies every declared resource type") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE_FALSE(artifact.bytes.empty());
-	REQUIRE(artifact.uniforms.size() == 7);
+	REQUIRE(artifact.module.resources.size() == 7);
 }
 
 TEST_CASE("compiler resolves using-imported uniform symbol") {

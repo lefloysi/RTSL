@@ -1,7 +1,5 @@
 #include "sema/mangler.hpp"
 
-#include "sema/stage_rules.hpp"
-
 #include <format>
 #include <vector>
 
@@ -51,27 +49,20 @@ static std::string encode_type(std::string_view type) {
 }
 
 std::string mangle_rtsl(std::string_view name, std::string_view stage, std::span<const std::string_view> parameter_types) {
+	std::string out;
 	if (!stage.empty()) {
-		const std::string prefix = backend_entry_name(stage);
-		if (name.starts_with(prefix)) {
-			return std::string(name);
-		}
-		std::string out{ prefix };
-		out.push_back('_');
-		out.append(name);
-		return out;
-	}
-
-	std::string out = "_Z";
-	const auto parts = split_qualified_name(name);
-	if (parts.size() > 1) {
-		out += "N";
+		out = "_ZN4rtsl5stage";
+		out += encode_source_name(stage);
+		for (const auto part : split_qualified_name(name)) out += encode_name_part(part);
+		out += "E";
+	} else {
+		out = "_Z";
+		const auto parts = split_qualified_name(name);
+		if (parts.size() > 1) out += "N";
 		for (const auto part : parts) {
 			out += encode_name_part(part);
 		}
-		out += "E";
-	} else {
-		out += encode_name_part(name);
+		if (parts.size() > 1) out += "E";
 	}
 
 	if (parameter_types.empty()) {

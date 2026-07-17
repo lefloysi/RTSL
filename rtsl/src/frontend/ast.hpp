@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rtsl/artifact.hpp"
+#include <artifact.hpp>
 #include "support/basic_source_manager.hpp"
 
 #include <string>

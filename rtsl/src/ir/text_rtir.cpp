@@ -17,30 +17,20 @@ std::string_view kind_name(ArtifactKind kind) {
 }
 
 void append_instruction(std::ostringstream& out, const IRInstruction& inst) {
-	if (inst.result_id != IRId_None) {
-		out << "%" << inst.result_id << " = ";
+	if (inst.result_id != ID<IRInstruction>{}) {
+		out << "%" << raw_id(inst.result_id) << " = ";
 	}
 	out << ir_op_name(inst.op);
-	if (inst.type_id != IRId_None)
-		out << " %" << inst.type_id;
-	for (IRId operand : inst.operands)
-		out << " %" << operand;
+	if (inst.type_id != ID<IRInstruction>{})
+		out << " %" << raw_id(inst.type_id);
+	for (ID<IRInstruction> operand : inst.operands)
+		out << " %" << raw_id(operand);
 	for (u32 literal : inst.literals)
 		out << " " << literal;
 	out << "\n";
 }
 
 } // namespace
-
-const char* ir_op_name(IROp op) {
-	// Mnemonic table generated from the same ops.def the enum came from.
-	switch (op) {
-#define RTSL_IR_OP(name, disasm_name) \
-	case IROp::name: return disasm_name;
-#include "ir/ops.def"
-	}
-	return "OpUnknown";
-}
 
 std::string disassemble_artifact(const Artifact& artifact) {
 	std::ostringstream out;
@@ -60,10 +50,10 @@ std::string disassemble_artifact(const Artifact& artifact) {
 	for (const auto& inst : artifact.module.global_variables)
 		append_instruction(out, inst);
 	for (const auto& fn : artifact.module.functions) {
-		out << "\n; function %" << fn.result_id;
+		out << "\n; function %" << raw_id(fn.result_id);
 		if (!fn.stage.empty())
 			out << " stage=" << fn.stage;
-		if (fn.generated)
+		if (fn.is_generated())
 			out << " generated";
 		out << "\n";
 		for (const auto& inst : fn.body)

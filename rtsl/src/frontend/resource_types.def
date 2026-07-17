@@ -1,6 +1,6 @@
 // resource_types.def — the opaque resource binding types RTSL exposes.
 //
-//   RTSL_RESOURCE_TYPE(spelling, binding_kind)
+//   RTSL_RESOURCE_TYPE(spelling, binding_kind, sdk_kind, dimension, arrayed)
 //
 // `spelling` is the identifier written in RTSL source for a resource binding's
 // value type (e.g. `uniform { UniformBuffer mvp; }` or `Sampler2D albedo;`).
@@ -12,22 +12,22 @@
 // analysis and IR lowering. This is the canonical v0.1 set.
 
 #ifndef RTSL_RESOURCE_TYPE
-#define RTSL_RESOURCE_TYPE(spelling, binding_kind)
+#define RTSL_RESOURCE_TYPE(spelling, binding_kind, sdk_kind, dimension, arrayed)
 #endif
 
 // Buffer resources (payload type supplied by a `layout` declaration).
-RTSL_RESOURCE_TYPE(UniformBuffer, uniform_buffer)
-RTSL_RESOURCE_TYPE(StorageBuffer, storage_buffer)
+RTSL_RESOURCE_TYPE(UniformBuffer, uniform_buffer, uniform_buffer, none, false)
+RTSL_RESOURCE_TYPE(StorageBuffer, storage_buffer, storage_buffer, none, false)
 
 // Sampled textures.
-RTSL_RESOURCE_TYPE(Sampler2D, sampled_image)
-RTSL_RESOURCE_TYPE(Sampler3D, sampled_image)
-RTSL_RESOURCE_TYPE(SamplerCube, sampled_image)
-RTSL_RESOURCE_TYPE(Sampler2DArray, sampled_image)
+RTSL_RESOURCE_TYPE(Sampler2D, sampled_image, sampled_texture, two, false)
+RTSL_RESOURCE_TYPE(Sampler3D, sampled_image, sampled_texture, three, false)
+RTSL_RESOURCE_TYPE(SamplerCube, sampled_image, sampled_texture, cube, false)
+RTSL_RESOURCE_TYPE(Sampler2DArray, sampled_image, sampled_texture, two, true)
 
 // Separate sampler / storage image.
-RTSL_RESOURCE_TYPE(Sampler, sampler)
-RTSL_RESOURCE_TYPE(Image2D, image)
-RTSL_RESOURCE_TYPE(Image3D, image)
+RTSL_RESOURCE_TYPE(Sampler, sampler, sampler, none, false)
+RTSL_RESOURCE_TYPE(Image2D, image, storage_image, two, false)
+RTSL_RESOURCE_TYPE(Image3D, image, storage_image, three, false)
 
 #undef RTSL_RESOURCE_TYPE

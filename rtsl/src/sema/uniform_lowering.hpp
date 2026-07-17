@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frontend/ast.hpp"
+#include "rtsl/sdk/program.hpp"
 
 #include <string>
 #include <string_view>
@@ -18,7 +19,14 @@ enum class ResourceBindingKind {
 	image,
 };
 
+struct ResourceTypeInfo {
+	ResourceBindingKind binding_kind = ResourceBindingKind::none;
+	ResourceKind kind = ResourceKind::uniform_buffer;
+	ImageShape image{};
+};
+
 [[nodiscard]] ResourceBindingKind resource_binding_kind(std::string_view spelling);
+[[nodiscard]] const ResourceTypeInfo* resource_type_info(std::string_view spelling);
 [[nodiscard]] bool is_buffer_binding(ResourceBindingKind kind);
 [[nodiscard]] bool is_opaque_resource_binding(ResourceBindingKind kind);
 

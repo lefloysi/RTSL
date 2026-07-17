@@ -28,12 +28,7 @@ class Linker {
 	std::vector<Artifact> inputs_;
 };
 
-// Extract the public-interface view of a library or object artifact. The
-// returned artifact is suitable for serializing as .rtslm: it keeps only
-// exported function signatures (with empty bodies, like forward
-// declarations) and the exported structs the signatures reference. Returns
-// an artifact with kind=module and an empty functions list when nothing is
-// exported, so callers can skip writing an .rtslm sidecar.
+// Module artifacts contain exported signatures and public reflection only.
 [[nodiscard]] Artifact extract_module_interface(const Artifact& source);
 
 } // namespace rtsl

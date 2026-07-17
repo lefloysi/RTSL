@@ -245,7 +245,7 @@ TEST_CASE("all unary operators parse") {
 }
 
 TEST_CASE("boolean literals parse as boolean literals") {
-	// `true`/`false` are boolean literals (spec/language.md), distinct from
+	// `true`/`false` are boolean literals, distinct from
 	// integer literals: they carry the bool type through sema and lower to
 	// OpConstantTrueFalse. text stays "1"/"0" as the encoded literal value.
 	auto r_true  = parse("fn t() { return true; }");

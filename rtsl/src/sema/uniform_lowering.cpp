@@ -10,11 +10,12 @@ namespace rtsl {
 
 struct ResourceBindingEntry {
 	std::string_view spelling;
-	ResourceBindingKind kind = ResourceBindingKind::none;
+	ResourceTypeInfo info{};
 };
 
 constexpr std::array kResourceBindingKinds{
-#define RTSL_RESOURCE_TYPE(spelling, binding_kind) ResourceBindingEntry{ #spelling, ResourceBindingKind::binding_kind },
+#define RTSL_RESOURCE_TYPE(spelling, binding_kind, sdk_kind, dimension, arrayed) \
+	ResourceBindingEntry{ #spelling, ResourceTypeInfo{ ResourceBindingKind::binding_kind, ResourceKind::sdk_kind, ImageShape{ ImageDimension::dimension, arrayed } } },
 #include "frontend/resource_types.def"
 };
 
@@ -82,12 +83,15 @@ bool is_resource_uniform_type(std::string_view type) {
 }
 
 ResourceBindingKind resource_binding_kind(std::string_view spelling) {
+	const ResourceTypeInfo* info = resource_type_info(spelling);
+	return info ? info->binding_kind : ResourceBindingKind::none;
+}
+
+const ResourceTypeInfo* resource_type_info(std::string_view spelling) {
 	for (const auto& entry : kResourceBindingKinds) {
-		if (entry.spelling == spelling) {
-			return entry.kind;
-		}
+		if (entry.spelling == spelling) return &entry.info;
 	}
-	return ResourceBindingKind::none;
+	return nullptr;
 }
 
 bool is_buffer_binding(ResourceBindingKind kind) {

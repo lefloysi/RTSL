@@ -1,23 +1,13 @@
 #pragma once
 
-#include "rtsl/basic_types.hpp"
+#include "basic_types.hpp"
 
 #include <string>
 #include <vector>
 
 namespace rtsl {
 
-enum class ArtifactKind : u16 {
-	object = 1,
-	module = 2,
-	library = 3,
-	program = 4,
-};
-
-constexpr u32 ArtifactMagic = 0x4c535452u;
-constexpr u16 ArtifactVersionMajor = 0;
-constexpr u16 ArtifactVersionMinor = 1;
-
+// Public symbol visible through a module interface.
 struct ExportSymbol {
 	std::string name;
 	std::string kind;
@@ -25,6 +15,8 @@ struct ExportSymbol {
 	u64 interface_hash = 0;
 };
 
+// Source-level struct field retained for reflection, module interfaces, and
+// resource layout metadata.
 struct StructField {
 	std::string type;
 	std::string name;
@@ -56,6 +48,9 @@ enum class AccessKind : u08 {
 	write_only = 2,
 };
 
+// Reflected resource binding after semantic analysis and lowering. `scope_name`
+// is the containing uniform block or namespace-like resource scope; `name` is
+// the binding inside that scope. `type_id` points into the loaded IR module.
 struct UniformBinding {
 	std::string scope_name;
 	std::string name;
@@ -64,16 +59,10 @@ struct UniformBinding {
 	AccessKind access = AccessKind::read_write;
 	u32 set = 0;
 	u32 member = 0;
-	u32 type_id = 0;
 	bool is_anonymous = false;
 	u32 anonymous_block_id = 0;
 };
 
-// Stage interface reflection. RTSL has no `input`/`output`/`varying` blocks or
-// stage globals; the return-boundary grammar `-> T : field(tag, ...)` is how a
-// stage entry declares its interface, and these records are the backend-neutral
-// result. Backends map them to target inputs/outputs/varyings; RTIR itself
-// carries no stage-I/O ops.
 enum class StageRole : u08 {
 	input,
 	varying,
@@ -91,16 +80,14 @@ enum class StageFieldPlacement : u08 {
 	clip_position = 1,
 };
 
-// One field of a stage interface payload with its ABI placement.
-// location == kNoLocation means "no user location" (for example clip position).
-// member_index is the struct member this field maps to, so a backend can
-// extract/insert it (`OpTypeStruct` carries no member names). kNoMember means
-// the entry's whole parameter/return value is the payload (e.g. a bare `vec4`
-// fragment color).
 struct StageIOField {
 	static constexpr u32 kNoLocation = static_cast<u32>(-1);
 	static constexpr u32 kNoMember = static_cast<u32>(-1);
+
 	std::string name;
+
+	// Source boundary tags, kept for tools and backend decisions that need the
+	// authored interface annotation.
 	std::vector<std::string> tags;
 	InterpolationKind interpolation = InterpolationKind::none;
 	StageFieldPlacement placement = StageFieldPlacement::user;
@@ -108,6 +95,9 @@ struct StageIOField {
 	u32 member_index = kNoMember;
 };
 
+// One logical stage interface payload. RTSL source declares interfaces through
+// function signatures and return-boundary fields; backends consume this
+// resolved model.
 struct StageInterface {
 	StageRole role = StageRole::varying;
 	std::string type_name;

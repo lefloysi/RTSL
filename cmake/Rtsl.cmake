@@ -1,6 +1,6 @@
 function(rtsl_add_program target_name)
     set(options EMBED)
-    set(oneValueArgs RTSLC OUTPUT_DIR NAMESPACE)
+    set(oneValueArgs RTSLC OUTPUT_DIR NAMESPACE EMBED_NAME)
     set(multiValueArgs SOURCES DEPENDS INCLUDE_DIRS)
     cmake_parse_arguments(RTSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -13,8 +13,12 @@ function(rtsl_add_program target_name)
     if(NOT RTSL_OUTPUT_DIR)
         set(RTSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/rtsl/${target_name}")
     endif()
-    if(NOT RTSL_NAMESPACE)
-        set(RTSL_NAMESPACE "${target_name}")
+    if(RTSL_NAMESPACE)
+        message(FATAL_ERROR "rtsl_add_program(${target_name}) NAMESPACE is not supported for embedded symbols; use EMBED_NAME")
+    endif()
+    list(LENGTH RTSL_SOURCES _rtsl_source_count)
+    if(RTSL_EMBED_NAME AND NOT _rtsl_source_count EQUAL 1)
+        message(FATAL_ERROR "rtsl_add_program(${target_name}) EMBED_NAME requires exactly one source")
     endif()
 
     set(_rtsl_include_args)
@@ -91,6 +95,7 @@ function(rtsl_add_program target_name)
     add_dependencies("${target_name}" "${target_name}-rtsl")
 
     if(RTSL_EMBED)
+        target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
         set(embed_cpp "${RTSL_OUTPUT_DIR}/${target_name}_rtsl_embed.cpp")
         string(JOIN ";" embed_inputs ${outputs})
         add_custom_command(
@@ -98,7 +103,7 @@ function(rtsl_add_program target_name)
             COMMAND "${CMAKE_COMMAND}"
                 -DRTSL_EMBED_INPUTS=${embed_inputs}
                 -DRTSL_EMBED_OUTPUT=${embed_cpp}
-                -DRTSL_EMBED_NAMESPACE=${RTSL_NAMESPACE}
+                -DRTSL_EMBED_NAME=${RTSL_EMBED_NAME}
                 -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
             DEPENDS ${outputs}
             VERBATIM
@@ -108,15 +113,19 @@ function(rtsl_add_program target_name)
     endif()
 endfunction()
 
-if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT AND DEFINED RTSL_EMBED_NAMESPACE)
-    file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <cstddef>\n#include <cstdint>\n\n")
+if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT)
+    file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <rtsl/sdk/program.hpp>\n\n#include <cstdint>\n\n")
 
     foreach(input_path IN LISTS RTSL_EMBED_INPUTS)
         get_filename_component(input_name "${input_path}" NAME_WE)
+        set(symbol_name "${input_name}_rtslp")
+        if(DEFINED RTSL_EMBED_NAME AND NOT RTSL_EMBED_NAME STREQUAL "")
+            set(symbol_name "${RTSL_EMBED_NAME}")
+        endif()
         file(READ "${input_path}" _hex HEX)
 
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "namespace ${RTSL_EMBED_NAMESPACE} {\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "alignas(16) const std::uint8_t ${input_name}_rtslp[] = {\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "namespace {\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "alignas(16) const std::uint8_t ${symbol_name}_data[] = {\n")
 
         string(LENGTH "${_hex}" _hex_length)
         math(EXPR _byte_count "${_hex_length} / 2")
@@ -138,7 +147,10 @@ if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT AND DEFINED RTSL_EMBE
         endif()
 
         file(APPEND "${RTSL_EMBED_OUTPUT}" "};\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "const std::size_t ${input_name}_rtslp_size = sizeof(${input_name}_rtslp);\n")
         file(APPEND "${RTSL_EMBED_OUTPUT}" "}\n\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "extern \"C\" const rtsl::ProgramBytes ${symbol_name} = {\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "    ${symbol_name}_data,\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "    sizeof(${symbol_name}_data)\n")
+        file(APPEND "${RTSL_EMBED_OUTPUT}" "};\n\n")
     endforeach()
 endif()

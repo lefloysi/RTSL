@@ -1,25 +1,43 @@
 #include "artifact/linker.hpp"
 
-#include "sema/stage_rules.hpp"
-
 #include <algorithm>
+#include <cstddef>
+#include <span>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace rtsl {
 
+[[nodiscard]] ID<IRInstruction> shifted_id(ID<IRInstruction> id, u32 offset) {
+	return ID<IRInstruction>{ raw_id(id) + offset };
+}
 
-// Apply a flat id offset to every IRId reference in an instruction so a
+// Apply a flat id offset to every ID<IRInstruction> reference in an instruction so a
 // freshly-loaded module's id space stops overlapping with the merged module's.
-void shift_instruction(IRInstruction& inst, IRId offset) {
-	if (inst.result_id != IRId_None)
-		inst.result_id += offset;
-	if (inst.type_id != IRId_None)
-		inst.type_id += offset;
+void shift_instruction(IRInstruction& inst, u32 offset) {
+	if (inst.result_id != ID<IRInstruction>{})
+		inst.result_id = shifted_id(inst.result_id, offset);
+	if (inst.type_id != ID<IRInstruction>{})
+		inst.type_id = shifted_id(inst.type_id, offset);
 	for (auto& operand : inst.operands) {
-		if (operand != IRId_None)
-			operand += offset;
+		if (operand != ID<IRInstruction>{})
+			operand = shifted_id(operand, offset);
 	}
+}
+
+void shift_interface(Interface& interface, u32 offset) {
+	interface.value_type = shifted_id(interface.value_type, offset);
+	if (interface.value) *interface.value = shifted_id(*interface.value, offset);
+	for (auto& element : interface.elements) {
+		element.type = shifted_id(element.type, offset);
+	}
+}
+
+void shift_entry(EntryPoint& entry, u32 offset) {
+	entry.function = shifted_id(entry.function, offset);
+	if (entry.input) shift_interface(*entry.input, offset);
+	if (entry.output) shift_interface(*entry.output, offset);
 }
 
 // Merge `src` into `dst`. After this, `dst.next_id` is the new high-water
@@ -27,8 +45,20 @@ void shift_instruction(IRInstruction& inst, IRId offset) {
 // (dst.next_id - 1). The shift relies on the convention that id 0 is the
 // reserved "no id" sentinel.
 void merge_module(IRModule& dst, IRModule src) {
-	const IRId offset = dst.next_id - 1;
-	dst.next_id += src.next_id - 1;
+	const u32 offset = raw_id(dst.next_id) - 1;
+	u32 descriptor_set_offset = 0;
+	if (!dst.resources.empty() && !src.resources.empty()) {
+		for (const auto& resource : dst.resources) {
+			descriptor_set_offset = std::max(descriptor_set_offset, resource.descriptor.set + 1);
+		}
+		for (auto& resource : src.resources) resource.descriptor.set += descriptor_set_offset;
+		for (auto& decoration : src.decorations) {
+			if (decoration.kind == IRDecorationKind::DescriptorSet && !decoration.literals.empty()) {
+				decoration.literals.front() += descriptor_set_offset;
+			}
+		}
+	}
+	dst.next_id = shifted_id(dst.next_id, raw_id(src.next_id) - 1);
 	dst.imports.insert(dst.imports.end(), src.imports.begin(), src.imports.end());
 	dst.imported_exports.insert(dst.imported_exports.end(), src.imported_exports.begin(), src.imported_exports.end());
 	dst.exports.insert(dst.exports.end(), src.exports.begin(), src.exports.end());
@@ -42,8 +72,8 @@ void merge_module(IRModule& dst, IRModule src) {
 		dst.global_variables.push_back(std::move(inst));
 	}
 	for (auto decoration : src.decorations) {
-		if (decoration.target != IRId_None)
-			decoration.target += offset;
+		if (decoration.target != ID<IRInstruction>{})
+			decoration.target = shifted_id(decoration.target, offset);
 		dst.decorations.push_back(std::move(decoration));
 	}
 
@@ -56,15 +86,13 @@ void merge_module(IRModule& dst, IRModule src) {
 	}
 
 	for (auto fn : src.functions) {
-		if (fn.result_id != IRId_None)
-			fn.result_id += offset;
-		if (fn.function_type_id != IRId_None)
-			fn.function_type_id += offset;
-		if (fn.return_type_id != IRId_None)
-			fn.return_type_id += offset;
+		if (fn.result_id != ID<IRInstruction>{})
+			fn.result_id = shifted_id(fn.result_id, offset);
+		if (fn.return_type_id != ID<IRInstruction>{})
+			fn.return_type_id = shifted_id(fn.return_type_id, offset);
 		for (auto& pid : fn.parameter_ids) {
-			if (pid != IRId_None)
-				pid += offset;
+			if (pid != ID<IRInstruction>{})
+				pid = shifted_id(pid, offset);
 		}
 		for (auto& inst : fn.body) {
 			shift_instruction(inst, offset);
@@ -75,26 +103,17 @@ void merge_module(IRModule& dst, IRModule src) {
 		dst.functions.push_back(std::move(fn));
 	}
 
-	for (auto debug : src.function_debug) {
-		dst.function_debug.push_back(std::move(debug));
-	}
 	for (auto& decl : src.structs) {
 		dst.structs.push_back(std::move(decl));
 	}
-	for (auto& uniform : src.uniforms) {
-		dst.uniforms.push_back(std::move(uniform));
+	for (auto resource : src.resources) {
+		resource.variable = shifted_id(resource.variable, offset);
+		resource.value_type = shifted_id(resource.value_type, offset);
+		dst.resources.push_back(std::move(resource));
 	}
-	// Carry stage interfaces through the link so a linked program keeps the
-	// vertex/fragment interface metadata backends consume. One interface per
-	// (type, role); later duplicates from other inputs are dropped.
-	for (auto& interface : src.stage_interfaces) {
-		const bool present = std::any_of(dst.stage_interfaces.begin(), dst.stage_interfaces.end(),
-			[&](const StageInterface& existing) {
-				return existing.role == interface.role && existing.type_name == interface.type_name;
-			});
-		if (!present) {
-			dst.stage_interfaces.push_back(std::move(interface));
-		}
+	for (auto entry : src.entries) {
+		shift_entry(entry, offset);
+		dst.entries.push_back(std::move(entry));
 	}
 }
 
@@ -106,7 +125,7 @@ bool inline_one_module_pass(IRModule& ir) {
 	for (auto& fn : ir.functions) {
 		std::vector<IRInstruction> new_body;
 		new_body.reserve(fn.body.size());
-		std::unordered_map<IRId, IRId> call_result_remap;
+		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> call_result_remap;
 		const auto apply_remap = [&](IRInstruction& inst) {
 			for (auto& op : inst.operands) {
 				if (auto it = call_result_remap.find(op); it != call_result_remap.end())
@@ -135,13 +154,12 @@ bool inline_one_module_pass(IRModule& ir) {
 			for (const auto& candidate : ir.functions) {
 				if (&candidate == &fn)
 					continue;
-				if (candidate.source_name != callee.mangled_name)
+				if (candidate.link_name != callee.mangled_name)
 					continue;
 				if (candidate.parameter_ids.size() != arg_count)
 					continue;
-				// A forward declaration with no body can't be inlined; keep
-				// looking for the real definition (which is the whole point
-				// of cross-module linking - the def may live in another input).
+				// Forward declarations are interface-only. Inline only real
+				// definitions from linked inputs.
 				if (candidate.body.empty())
 					continue;
 				target = &candidate;
@@ -154,15 +172,15 @@ bool inline_one_module_pass(IRModule& ir) {
 				continue;
 			}
 
-			std::unordered_map<IRId, IRId> local_remap;
+			std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> local_remap;
 			for (std::size_t i = 0; i < target->parameter_ids.size(); ++i) {
-				IRId arg_id = inst.operands[i + 1];
+				ID<IRInstruction> arg_id = inst.operands[i + 1];
 				if (auto it = call_result_remap.find(arg_id); it != call_result_remap.end())
 					arg_id = it->second;
 				local_remap[target->parameter_ids[i]] = arg_id;
 			}
 
-			IRId returned_id = IRId_None;
+			ID<IRInstruction> returned_id = ID<IRInstruction>{};
 			for (const auto& body_inst : target->body) {
 				if (body_inst.op == IROp::Label)
 					continue;
@@ -172,7 +190,7 @@ bool inline_one_module_pass(IRModule& ir) {
 					continue;
 				if (body_inst.op == IROp::ReturnValue) {
 					if (!body_inst.operands.empty()) {
-						IRId ret = body_inst.operands[0];
+						ID<IRInstruction> ret = body_inst.operands[0];
 						if (auto it = local_remap.find(ret); it != local_remap.end())
 							ret = it->second;
 						returned_id = ret;
@@ -180,8 +198,9 @@ bool inline_one_module_pass(IRModule& ir) {
 					continue;
 				}
 				IRInstruction copy = body_inst;
-				if (copy.result_id != IRId_None) {
-					const IRId fresh = ir.next_id++;
+				if (copy.result_id != ID<IRInstruction>{}) {
+					const ID<IRInstruction> fresh = ir.next_id;
+					ir.next_id = ID<IRInstruction>{ raw_id(ir.next_id) + 1 };
 					local_remap[copy.result_id] = fresh;
 					copy.result_id = fresh;
 				}
@@ -191,7 +210,7 @@ bool inline_one_module_pass(IRModule& ir) {
 				}
 				new_body.push_back(std::move(copy));
 			}
-			if (inst.result_id != IRId_None && returned_id != IRId_None) {
+			if (inst.result_id != ID<IRInstruction>{} && returned_id != ID<IRInstruction>{}) {
 				call_result_remap[inst.result_id] = returned_id;
 			}
 			progress = true;
@@ -221,28 +240,18 @@ bool report_unresolved_program_calls(const IRModule& ir, DiagnosticEngine& diagn
 	return found;
 }
 
-std::string_view string_from_id(const Artifact& artifact, StringId id) {
-	if (id.value >= artifact.strings.size()) {
+std::string exported_function_identity(const IRFunction& fn) {
+	if (!fn.is_exported()) {
 		return {};
 	}
-	return artifact.strings[id.value];
-}
-
-std::string exported_function_identity(const Artifact& artifact, const IRFunction& fn) {
-	if (!fn.exported) {
-		return {};
-	}
-	if (const std::string_view mangled = string_from_id(artifact, fn.mangled_name); !mangled.empty()) {
-		return std::string(mangled);
-	}
-	return fn.source_name;
+	return fn.link_name;
 }
 
 bool report_duplicate_exported_functions(const Artifact& artifact, DiagnosticEngine& diagnostics) {
 	std::unordered_set<std::string> identities;
 	bool found = false;
 	for (const auto& fn : artifact.module.functions) {
-		std::string identity = exported_function_identity(artifact, fn);
+		std::string identity = exported_function_identity(fn);
 		if (identity.empty()) {
 			continue;
 		}
@@ -296,6 +305,19 @@ std::string_view artifact_kind_name(ArtifactKind kind) {
 	return "unknown";
 }
 
+void serialize_program(Artifact& program, DiagnosticEngine& diagnostics) {
+	program.bytes = write_artifact(ArtifactKind::program, program.module);
+	const auto bytes = std::span<const std::byte>{
+		reinterpret_cast<const std::byte*>(program.bytes.data()),
+		program.bytes.size(),
+	};
+	if (auto loaded = load_program(bytes); !loaded) {
+		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
+			"linked program violates the SDK contract at " + loaded.error().context + ": " + loaded.error().message);
+		program.bytes.clear();
+	}
+}
+
 Linker::Linker(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {}
 
 bool Linker::add_artifact_bytes(std::span<const u08> bytes) {
@@ -339,25 +361,14 @@ Artifact Linker::link_program() {
 		if (diagnostics_.diagnostics().size() != error_count) {
 			return program;
 		}
-		program.bytes = write_artifact(ArtifactKind::program, program.module);
+		serialize_program(program, diagnostics_);
 		return program;
 	}
 
-	// Multi-input link: take the first input as the base, then merge each
-	// subsequent input's IR module into it with id remapping. After every
-	// input is merged, run the cross-module inliner so user-function calls
-	// that crossed module boundaries get their bodies spliced in (the same
-	// way the single-module inliner handled in-module calls at IR-gen time).
 	program = inputs_.front();
 	program.kind = ArtifactKind::program;
 	for (std::size_t i = 1; i < inputs_.size(); ++i) {
 		merge_module(program.module, std::move(inputs_[i].module));
-		for (const auto& decl : inputs_[i].structs)
-			program.structs.push_back(decl);
-		for (const auto& uniform : inputs_[i].uniforms)
-			program.uniforms.push_back(uniform);
-		for (const auto& entry : inputs_[i].entries)
-			program.entries.push_back(entry);
 	}
 	for (int iteration = 0; iteration < 64 && inline_one_module_pass(program.module); ++iteration) {}
 
@@ -370,7 +381,7 @@ Artifact Linker::link_program() {
 	if (diagnostics_.diagnostics().size() != error_count) {
 		return program;
 	}
-	program.bytes = write_artifact(ArtifactKind::program, program.module);
+	serialize_program(program, diagnostics_);
 	return program;
 }
 
@@ -385,17 +396,7 @@ Artifact Linker::link_library() {
 	library.kind = ArtifactKind::library;
 	for (std::size_t i = 1; i < inputs_.size(); ++i) {
 		merge_module(library.module, std::move(inputs_[i].module));
-		for (const auto& decl : inputs_[i].structs)
-			library.structs.push_back(decl);
-		for (const auto& uniform : inputs_[i].uniforms)
-			library.uniforms.push_back(uniform);
-		for (const auto& entry : inputs_[i].entries)
-			library.entries.push_back(entry);
 	}
-	// Try to resolve any cross-input calls now. Calls that still target
-	// symbols this library doesn't define survive as unresolved
-	// FunctionCalls - that's fine for a library; the program linker will
-	// resolve them later when more inputs are available.
 	for (int iteration = 0; iteration < 64 && inline_one_module_pass(library.module); ++iteration) {}
 
 	const bool invalid_exports = report_duplicate_exported_functions(library, diagnostics_);
@@ -417,49 +418,32 @@ Artifact extract_module_interface(const Artifact& source) {
 	module_artifact.module.imports = source.module.imports;
 	module_artifact.module.exports = source.module.exports;
 	for (const auto& fn : source.module.functions) {
-		if (!fn.exported)
+		if (!fn.is_exported())
 			continue;
-		// Public interface entry: signature only, no body. Importers see
-		// these as forward declarations and the linker resolves them
-		// against an actual definition in an .rtslo / .rtsll input.
 		module_artifact.module.functions.emplace_back(IRFunction{
 			.result_id = fn.result_id,
 			.return_type_id = fn.return_type_id,
 			.parameter_ids = fn.parameter_ids,
 			.stage = fn.stage,
-			.exported = true,
-			.source_name = fn.source_name,
+			.kind = IRFunction::Kind::exported,
+			.link_name = fn.link_name,
+			.display_name = fn.display_name,
 		});
 	}
-	// No exports means there's nothing to publish through .rtslm. Skip
-	// sidecar emission entirely so users don't get phantom module files
-	// sitting next to their compiled objects. A module may still have exports
-	// with no local function bodies when it only re-exports an imported
-	// interface.
 	if (module_artifact.module.exports.empty()) {
 		return module_artifact;
 	}
-	// Carry over full type declarations so exported signatures resolve
-	// to real struct definitions. Pruning down to just the structs that
-	// are actually transitively referenced is a later optimization.
 	module_artifact.module.structs = source.module.structs;
-	module_artifact.structs = source.structs;
-	module_artifact.exports = source.exports;
 	module_artifact.bytes = write_artifact(ArtifactKind::module, module_artifact.module);
 	return module_artifact;
 }
 
 static bool declares_graphics_stage(const Artifact& program) {
-	for (const auto& entry : program.entries) {
-		if (is_graphics_stage(entry.stage)) {
-			return true;
-		}
-	}
-	return false;
+	return !program.module.entries.empty();
 }
 
 void Linker::validate_program_stages(const Artifact& program) {
-	if (program.entries.empty()) {
+	if (program.module.entries.empty()) {
 		diagnostics_.report(DiagnosticCode::link_missing_entry, DiagnosticSeverity::error, {}, "<link>",
 							"program link requires at least one stage entry point");
 		return;
@@ -468,15 +452,15 @@ void Linker::validate_program_stages(const Artifact& program) {
 
 	bool has_vertex = false;
 	bool has_fragment = false;
-	for (const auto& entry : program.entries) {
-		if (is_vertex_stage(entry.stage)) {
+	for (const auto& entry : program.module.entries) {
+		if (entry.stage == Stage::vertex) {
 			if (has_vertex) {
 				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
 									"graphics program has more than one vertex stage entry point");
 			}
 			has_vertex = true;
 		}
-		if (is_fragment_stage(entry.stage)) {
+		if (entry.stage == Stage::fragment) {
 			if (has_fragment) {
 				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
 									"graphics program has more than one fragment stage entry point");

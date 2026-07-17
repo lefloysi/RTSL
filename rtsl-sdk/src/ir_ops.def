@@ -1,0 +1,6 @@
+#ifndef RTSL_IR_OP
+#error "Define RTSL_IR_OP(name, disasm_name) before including ir_ops.def"
+#endif
+
+#define RTSL_SDK_OP(name, display_name) RTSL_IR_OP(name, display_name)
+#include "rtsl/sdk/ops.def"

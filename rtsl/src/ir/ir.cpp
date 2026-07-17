@@ -6,6 +6,7 @@
 #include "support/hashing.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -16,13 +17,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-// Lower the SemanticModule into the typed SSA IR described in docs/rtir.md.
-//
-// The lowering walks each function body, tokenizes its statements, and runs a
-// Pratt-style expression parser that emits IRInstructions against an id
-// builder. Types are deduplicated through a signature -> IRId table so vec3,
-// vec4, mat4, etc. each have a single canonical id reused everywhere.
 
 namespace rtsl {
 
@@ -74,16 +68,20 @@ class IRBuilder {
 		DiagnosticEngine* diagnostics = nullptr)
 		: module_(module), callable_names_(std::move(callable_names)), callable_targets_(std::move(callable_targets)), diagnostics_(diagnostics) {}
 
-	[[nodiscard]] IRId fresh_id() { return module_.next_id++; }
+	[[nodiscard]] ID<IRInstruction> fresh_id() {
+		const ID<IRInstruction> id = module_.next_id;
+		module_.next_id = ID<IRInstruction>{ raw_id(module_.next_id) + 1 };
+		return id;
+	}
 
 	// Append a type/constant pool entry and return its id. The entry is keyed
 	// by a stable string signature so identical types map to the same id.
-	IRId intern_type(std::string_view signature, IROp op, IRId type_id, std::span<const IRId> operands, std::span<const u32> literals) {
+	ID<IRInstruction> intern_type(std::string_view signature, IROp op, ID<IRInstruction> type_id, std::span<const ID<IRInstruction>> operands, std::span<const u32> literals) {
 		auto it = type_cache_.find(signature);
 		if (it != type_cache_.end()) {
 			return it->second;
 		}
-		const IRId id = fresh_id();
+		const ID<IRInstruction> id = fresh_id();
 		IRInstruction inst;
 		inst.op = op;
 		inst.result_id = id;
@@ -95,17 +93,17 @@ class IRBuilder {
 		return id;
 	}
 
-	IRId intern_type(std::string_view signature, IROp op, IRId type_id, std::initializer_list<IRId> operands, std::initializer_list<u32> literals) {
-		return intern_type(signature, op, type_id, std::span<const IRId>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
+	ID<IRInstruction> intern_type(std::string_view signature, IROp op, ID<IRInstruction> type_id, std::initializer_list<ID<IRInstruction>> operands, std::initializer_list<u32> literals) {
+		return intern_type(signature, op, type_id, std::span<const ID<IRInstruction>>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
 	}
 
-	IRId intern_constant(std::string_view signature, IROp op, IRId type_id, std::span<const IRId> operands, std::span<const u32> literals) {
+	ID<IRInstruction> intern_constant(std::string_view signature, IROp op, ID<IRInstruction> type_id, std::span<const ID<IRInstruction>> operands, std::span<const u32> literals) {
 		// Constants share the same pool as types; deduped via the same cache.
 		return intern_type(signature, op, type_id, operands, literals);
 	}
 
-	IRId intern_constant(std::string_view signature, IROp op, IRId type_id, std::initializer_list<IRId> operands, std::initializer_list<u32> literals) {
-		return intern_constant(signature, op, type_id, std::span<const IRId>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
+	ID<IRInstruction> intern_constant(std::string_view signature, IROp op, ID<IRInstruction> type_id, std::initializer_list<ID<IRInstruction>> operands, std::initializer_list<u32> literals) {
+		return intern_constant(signature, op, type_id, std::span<const ID<IRInstruction>>(operands.begin(), operands.size()), std::span<const u32>(literals.begin(), literals.size()));
 	}
 
 	void add_global_variable(IRInstruction inst) {
@@ -147,20 +145,20 @@ class IRBuilder {
 
   private:
 	IRModule& module_;
-	StringMap<IRId> type_cache_;
+	StringMap<ID<IRInstruction>> type_cache_;
 	StringSet callable_names_;
 	std::vector<CallableTarget> callable_targets_;
 	DiagnosticEngine* diagnostics_ = nullptr;
 };
 
 // ----------------------------------------------------------------------------
-// TypeRegistry: name (source spelling) -> IRId for the type/constant pool.
+// TypeRegistry: name (source spelling) -> ID<IRInstruction> for the type/constant pool.
 // Also resolves member layouts so the lowerer knows the type of `p.position`,
 // the index of a struct field, etc.
 // ----------------------------------------------------------------------------
 
 struct TypeInfo {
-	IRId id = IRId_None;
+	ID<IRInstruction> id = ID<IRInstruction>{};
 	enum class Kind { Void,
 					  Bool,
 					  Int,
@@ -173,8 +171,8 @@ struct TypeInfo {
 	Kind kind = Kind::Unknown;
 	u32 width = 0;									   // scalar width in bits
 	u32 components = 0;								   // vector component count, matrix column count
-	IRId element_type_id = IRId_None;				   // vector element / matrix column type
-	std::vector<std::pair<std::string, IRId>> members; // struct member name -> member type id
+	ID<IRInstruction> element_type_id = ID<IRInstruction>{};				   // vector element / matrix column type
+	std::vector<std::pair<std::string, ID<IRInstruction>>> members; // struct member name -> member type id
 };
 
 class TypeRegistry {
@@ -194,20 +192,20 @@ class TypeRegistry {
 	// `layout X : struct { … };` declarations with the same field shape still
 	// get separate ids — a binding's type identity is tied to its binding
 	// path, not just its member list.
-	IRId register_anon_struct(std::string_view nonce, std::span<const StructField> fields) {
-		std::vector<IRId> member_ids;
-		std::vector<std::pair<std::string, IRId>> members;
+	ID<IRInstruction> register_anon_struct(std::string_view nonce, std::span<const StructField> fields) {
+		std::vector<ID<IRInstruction>> member_ids;
+		std::vector<std::pair<std::string, ID<IRInstruction>>> members;
 		member_ids.reserve(fields.size());
 		members.reserve(fields.size());
 		std::string signature = "layout:";
 		signature += nonce;
 		for (const auto& field : fields) {
-			const IRId member_id = find_or_unknown(field.type);
+			const ID<IRInstruction> member_id = find_or_unknown(field.type);
 			member_ids.push_back(member_id);
 			members.emplace_back(field.name, member_id);
 			signature += ":" + field.type;
 		}
-		const IRId id = builder_.intern_type(signature, IROp::TypeStruct, IRId_None, std::move(member_ids), {});
+		const ID<IRInstruction> id = builder_.intern_type(signature, IROp::TypeStruct, ID<IRInstruction>{}, std::move(member_ids), {});
 		return id;
 	}
 
@@ -215,27 +213,27 @@ class TypeRegistry {
 		// Two-pass: build the type id from currently known member types. If a
 		// member type is itself a struct still being defined, fall back to a
 		// forward-declared opaque entry that the linker can patch later.
-		std::vector<IRId> member_ids;
+		std::vector<ID<IRInstruction>> member_ids;
 		member_ids.reserve(decl.fields.size());
-		std::vector<std::pair<std::string, IRId>> members;
+		std::vector<std::pair<std::string, ID<IRInstruction>>> members;
 		members.reserve(decl.fields.size());
 		std::string signature = "struct{" + decl.name + "}";
 		for (const auto& field : decl.fields) {
-			const IRId member_id = find_or_unknown(field.type);
+			const ID<IRInstruction> member_id = find_or_unknown(field.type);
 			member_ids.push_back(member_id);
 			members.emplace_back(field.name, member_id);
 			signature += ":" + field.type;
 		}
-		const IRId id = builder_.intern_type(signature, IROp::TypeStruct, IRId_None, std::move(member_ids), {});
+		const ID<IRInstruction> id = builder_.intern_type(signature, IROp::TypeStruct, ID<IRInstruction>{}, std::move(member_ids), {});
 		auto& info = info_[decl.name];
 		info.id = id;
 		info.kind = TypeInfo::Kind::Struct;
 		info.members = std::move(members);
 	}
 
-	[[nodiscard]] IRId find(std::string_view name) const {
+	[[nodiscard]] ID<IRInstruction> find(std::string_view name) const {
 		const auto it = info_.find(name);
-		return it == info_.end() ? IRId_None : it->second.id;
+		return it == info_.end() ? ID<IRInstruction>{} : it->second.id;
 	}
 
 	[[nodiscard]] const TypeInfo* info(std::string_view name) const {
@@ -243,7 +241,7 @@ class TypeRegistry {
 		return it == info_.end() ? nullptr : &it->second;
 	}
 
-	[[nodiscard]] const TypeInfo* info_by_id(IRId id) const {
+	[[nodiscard]] const TypeInfo* info_by_id(ID<IRInstruction> id) const {
 		for (const auto& [name, info] : info_) {
 			if (info.id == id) {
 				return &info;
@@ -252,7 +250,7 @@ class TypeRegistry {
 		return nullptr;
 	}
 
-	[[nodiscard]] std::string_view name_by_id(IRId id) const {
+	[[nodiscard]] std::string_view name_by_id(ID<IRInstruction> id) const {
 		for (const auto& [name, info] : info_) {
 			if (info.id == id) {
 				return name;
@@ -263,15 +261,15 @@ class TypeRegistry {
 
 	// Resolve an unknown name to "unknown" (Id 0). Lowering treats this as
 	// opaque — operations are still emitted but the backend gets to refuse.
-	[[nodiscard]] IRId find_or_unknown(std::string_view name) const {
-		const IRId id = find(name);
-		return id ? id : IRId_None;
+	[[nodiscard]] ID<IRInstruction> find_or_unknown(std::string_view name) const {
+		const ID<IRInstruction> id = find(name);
+		return id ? id : ID<IRInstruction>{};
 	}
 
 	// Find the registered vector type with the given element scalar and
 	// component count (vec2/vec3/vec4 and their integer/unsigned siblings are
 	// all primed at construction). One component resolves to the scalar itself.
-	[[nodiscard]] IRId vector_of(IRId element, u32 components) const {
+	[[nodiscard]] ID<IRInstruction> vector_of(ID<IRInstruction> element, u32 components) const {
 		if (components <= 1) {
 			return element;
 		}
@@ -284,22 +282,21 @@ class TypeRegistry {
 		return element;
 	}
 
-	// Pointer type intern helper. Pointer types live in the pool too.
-	[[nodiscard]] IRId pointer_to(IRId pointee, StorageClass sc) {
-		if (pointee == IRId_None) {
+	[[nodiscard]] ID<IRInstruction> pointer_to(ID<IRInstruction> pointee, StorageClass sc) {
+		if (pointee == ID<IRInstruction>{}) {
 			pointee = find("void");
 		}
-		return builder_.intern_type(std::format("ptr:{}:{}", pointee, static_cast<u32>(sc)), IROp::TypePointer, IRId_None, { pointee }, { static_cast<u32>(sc) });
+		return builder_.intern_type(std::format("ptr:{}:{}", raw_id(pointee), static_cast<u32>(sc)), IROp::TypePointer, ID<IRInstruction>{}, { pointee }, { static_cast<u32>(sc) });
 	}
 
   private:
-	IRId scalar(std::string_view name, TypeInfo::Kind kind, u32 width, IROp op) {
+	ID<IRInstruction> scalar(std::string_view name, TypeInfo::Kind kind, u32 width, IROp op) {
 		std::span<const u32> literals;
 		u32 width_literal = width;
 		if (op != IROp::TypeBool && op != IROp::TypeVoid) {
 			literals = std::span<const u32>(&width_literal, 1);
 		}
-		const IRId id = builder_.intern_type(std::format("scalar:{}", name), op, IRId_None, {}, literals);
+		const ID<IRInstruction> id = builder_.intern_type(std::format("scalar:{}", name), op, ID<IRInstruction>{}, {}, literals);
 		auto& info = info_.try_emplace(std::string(name)).first->second;
 		info.id = id;
 		info.kind = kind;
@@ -307,8 +304,8 @@ class TypeRegistry {
 		return id;
 	}
 
-	void vector(std::string_view name, IRId elem, u32 n) {
-		const IRId id = builder_.intern_type(std::format("vec:{}:{}", elem, n), IROp::TypeVector, IRId_None, { elem }, { n });
+	void vector(std::string_view name, ID<IRInstruction> elem, u32 n) {
+		const ID<IRInstruction> id = builder_.intern_type(std::format("vec:{}:{}", raw_id(elem), n), IROp::TypeVector, ID<IRInstruction>{}, { elem }, { n });
 		auto& info = info_.try_emplace(std::string(name)).first->second;
 		info.id = id;
 		info.kind = TypeInfo::Kind::Vector;
@@ -316,8 +313,8 @@ class TypeRegistry {
 		info.element_type_id = elem;
 	}
 
-	void matrix(std::string_view name, IRId col_vec, u32 n) {
-		const IRId id = builder_.intern_type(std::format("mat:{}:{}", col_vec, n), IROp::TypeMatrix, IRId_None, { col_vec }, { n });
+	void matrix(std::string_view name, ID<IRInstruction> col_vec, u32 n) {
+		const ID<IRInstruction> id = builder_.intern_type(std::format("mat:{}:{}", raw_id(col_vec), n), IROp::TypeMatrix, ID<IRInstruction>{}, { col_vec }, { n });
 		auto& info = info_.try_emplace(std::string(name)).first->second;
 		info.id = id;
 		info.kind = TypeInfo::Kind::Matrix;
@@ -326,7 +323,7 @@ class TypeRegistry {
 	}
 
 	void opaque(std::string_view name, TypeInfo::Kind kind, IROp op) {
-		const IRId id = builder_.intern_type(std::format("opaque:{}", name), op, IRId_None, {}, {});
+		const ID<IRInstruction> id = builder_.intern_type(std::format("opaque:{}", name), op, ID<IRInstruction>{}, {}, {});
 		auto& info = info_.try_emplace(std::string(name)).first->second;
 		info.id = id;
 		info.kind = kind;
@@ -454,8 +451,8 @@ class Lex {
 // ----------------------------------------------------------------------------
 
 struct Value {
-	IRId id = IRId_None;
-	IRId type_id = IRId_None;
+	ID<IRInstruction> id = ID<IRInstruction>{};
+	ID<IRInstruction> type_id = ID<IRInstruction>{};
 };
 
 class FunctionLowerer {
@@ -463,12 +460,14 @@ class FunctionLowerer {
 	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn,
 		std::span<const UniformBinding> uniforms,
 		const StringMap<std::string>& using_uniforms,
-		const StringMap<IRId>& uniform_var_ids,
-		const StringMap<IRId>& uniform_var_type_ids)
+		const StringMap<ID<IRInstruction>>& uniform_var_ids,
+		const StringMap<ID<IRInstruction>>& uniform_var_type_ids,
+		const StringMap<ID<IRInstruction>>& uniform_value_type_ids)
 		: builder_(builder), types_(types), fn_(fn), uniforms_(uniforms),
-		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids), uniform_var_type_ids_(uniform_var_type_ids) {}
+		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids),
+		  uniform_var_type_ids_(uniform_var_type_ids), uniform_value_type_ids_(uniform_value_type_ids) {}
 
-	void bind_parameter(std::string_view name, std::string_view type, IRId param_id) {
+	void bind_parameter(std::string_view name, std::string_view type, ID<IRInstruction> param_id) {
 		locals_.insert_or_assign(std::string(name), Local{
 			.id = param_id,
 			.type_id = types_.find(type),
@@ -488,14 +487,14 @@ class FunctionLowerer {
 		ctor_field_values_.clear();
 		const TypeInfo* info = ctor_owner_type_id_ ? types_.info_by_id(ctor_owner_type_id_) : nullptr;
 		if (info) {
-			ctor_field_values_.assign(info->members.size(), IRId_None);
+			ctor_field_values_.assign(info->members.size(), ID<IRInstruction>{});
 		}
 	}
-	[[nodiscard]] bool in_constructor() const { return ctor_owner_type_id_ != IRId_None; }
+	[[nodiscard]] bool in_constructor() const { return ctor_owner_type_id_ != ID<IRInstruction>{}; }
 
 	// Try to record `field = value` against the constructor's implicit `this`.
 	// Returns true if the field was recognized and stored.
-	bool record_constructor_field(std::string_view field, IRId value) {
+	bool record_constructor_field(std::string_view field, ID<IRInstruction> value) {
 		if (!in_constructor()) {
 			return false;
 		}
@@ -524,10 +523,10 @@ class FunctionLowerer {
 		construct.result_id = builder_.fresh_id();
 		construct.type_id = ctor_owner_type_id_;
 		construct.operands.reserve(ctor_field_values_.size());
-		for (IRId id : ctor_field_values_) {
+		for (ID<IRInstruction> id : ctor_field_values_) {
 			construct.operands.push_back(id);
 		}
-		const IRId result_id = construct.result_id;
+		const ID<IRInstruction> result_id = construct.result_id;
 		fn_.body.push_back(std::move(construct));
 		IRInstruction ret;
 		ret.op = IROp::ReturnValue;
@@ -600,8 +599,8 @@ class FunctionLowerer {
 
   private:
 	struct Local {
-		IRId id = IRId_None;
-		IRId type_id = IRId_None;
+		ID<IRInstruction> id = ID<IRInstruction>{};
+		ID<IRInstruction> type_id = ID<IRInstruction>{};
 		std::string type_name;
 		bool is_pointer = false;
 	};
@@ -628,26 +627,26 @@ class FunctionLowerer {
 			builder_.diagnose("expression statement has no effect");
 			return;
 		}
-		if (lower_expr(expr).id == IRId_None) {
+		if (lower_expr(expr).id == ID<IRInstruction>{}) {
 			return;
 		}
 	}
 
-	void emit_branch(IRId target) {
+	void emit_branch(ID<IRInstruction> target) {
 		IRInstruction inst;
 		inst.op = IROp::Branch;
 		inst.operands = { target };
 		fn_.body.push_back(std::move(inst));
 	}
 
-	void emit_branch_conditional(IRId cond, IRId true_label, IRId false_label) {
+	void emit_branch_conditional(ID<IRInstruction> cond, ID<IRInstruction> true_label, ID<IRInstruction> false_label) {
 		IRInstruction inst;
 		inst.op = IROp::BranchConditional;
 		inst.operands = { cond, true_label, false_label };
 		fn_.body.push_back(std::move(inst));
 	}
 
-	IRId emit_label() {
+	ID<IRInstruction> emit_label() {
 		IRInstruction label;
 		label.op = IROp::Label;
 		label.result_id = builder_.fresh_id();
@@ -664,7 +663,7 @@ class FunctionLowerer {
 			return Value{ constant_bool(true), types_.find("bool") };
 		}
 		const Value cond = lower_expr(expr);
-		if (cond.id == IRId_None) {
+		if (cond.id == ID<IRInstruction>{}) {
 			builder_.diagnose("condition does not produce a value");
 			return Value{ constant_bool(true), types_.find("bool") };
 		}
@@ -677,9 +676,9 @@ class FunctionLowerer {
 		merge.op = IROp::SelectionMerge;
 		merge.operands = { builder_.fresh_id() };
 		fn_.body.push_back(std::move(merge));
-		const IRId merge_label = fn_.body.back().operands.front();
-		const IRId then_label = builder_.fresh_id();
-		const IRId else_label = builder_.fresh_id();
+		const ID<IRInstruction> merge_label = fn_.body.back().operands.front();
+		const ID<IRInstruction> then_label = builder_.fresh_id();
+		const ID<IRInstruction> else_label = builder_.fresh_id();
 		emit_branch_conditional(cond.id, then_label, else_label);
 		IRInstruction then_inst;
 		then_inst.op = IROp::Label;
@@ -702,9 +701,9 @@ class FunctionLowerer {
 	}
 
 	void lower_while(const Decl::BodyStatement& statement) {
-		const IRId merge_label = builder_.fresh_id();
-		const IRId head_label = builder_.fresh_id();
-		const IRId body_label = builder_.fresh_id();
+		const ID<IRInstruction> merge_label = builder_.fresh_id();
+		const ID<IRInstruction> head_label = builder_.fresh_id();
+		const ID<IRInstruction> body_label = builder_.fresh_id();
 		emit_branch(head_label);
 
 		IRInstruction head_inst;
@@ -734,9 +733,9 @@ class FunctionLowerer {
 	}
 
 	void lower_do_while(const Decl::BodyStatement& statement) {
-		const IRId body_label = builder_.fresh_id();
-		const IRId cond_label = builder_.fresh_id();
-		const IRId merge_label = builder_.fresh_id();
+		const ID<IRInstruction> body_label = builder_.fresh_id();
+		const ID<IRInstruction> cond_label = builder_.fresh_id();
+		const ID<IRInstruction> merge_label = builder_.fresh_id();
 		emit_branch(body_label);
 
 		IRInstruction body_inst;
@@ -766,10 +765,10 @@ class FunctionLowerer {
 	}
 
 	void lower_for(const Decl::BodyStatement& statement) {
-		const IRId head_label = builder_.fresh_id();
-		const IRId body_label = builder_.fresh_id();
-		const IRId continue_label = builder_.fresh_id();
-		const IRId merge_label = builder_.fresh_id();
+		const ID<IRInstruction> head_label = builder_.fresh_id();
+		const ID<IRInstruction> body_label = builder_.fresh_id();
+		const ID<IRInstruction> continue_label = builder_.fresh_id();
+		const ID<IRInstruction> merge_label = builder_.fresh_id();
 		emit_branch(head_label);
 
 		IRInstruction head_inst;
@@ -835,8 +834,8 @@ class FunctionLowerer {
 			}
 		}
 
-		const IRId type_id = types_.find(type_name);
-		const IRId ptr_ty = types_.pointer_to(type_id, StorageClass::Function);
+		const ID<IRInstruction> type_id = types_.find(type_name);
+		const ID<IRInstruction> ptr_ty = types_.pointer_to(type_id, StorageClass::Function);
 		IRInstruction var;
 		var.op = IROp::Variable;
 		var.result_id = builder_.fresh_id();
@@ -937,8 +936,8 @@ class FunctionLowerer {
 
 	void store_member(const Local& local, std::span<const std::string> path, const Value& v) {
 		// Resolve the member type and index chain.
-		IRId cur_type = local.type_id;
-		std::vector<IRId> indices;
+		ID<IRInstruction> cur_type = local.type_id;
+		std::vector<ID<IRInstruction>> indices;
 		for (const auto& name : path) {
 			const TypeInfo* info = types_.info_by_id(cur_type);
 			if (!info)
@@ -976,7 +975,7 @@ class FunctionLowerer {
 			insert.type_id = local.type_id;
 			insert.operands = { local.id, v.id };
 			for (auto idx : indices) {
-				insert.literals.push_back(idx); // store index ids; backend reads as literals
+				insert.literals.push_back(raw_id(idx)); // constant ids are encoded as literal indices here.
 			}
 			fn_.body.push_back(std::move(insert));
 			// Rebind the local SSA to the new value.
@@ -985,7 +984,7 @@ class FunctionLowerer {
 			return;
 		}
 		// Pointer path: OpAccessChain + OpStore.
-		const IRId ptr_ty = types_.pointer_to(cur_type, StorageClass::Function);
+		const ID<IRInstruction> ptr_ty = types_.pointer_to(cur_type, StorageClass::Function);
 		IRInstruction chain;
 		chain.op = IROp::AccessChain;
 		chain.result_id = builder_.fresh_id();
@@ -993,7 +992,7 @@ class FunctionLowerer {
 		chain.operands = { local.id };
 		for (auto idx : indices)
 			chain.operands.push_back(idx);
-		const IRId chain_id = chain.result_id;
+		const ID<IRInstruction> chain_id = chain.result_id;
 		fn_.body.push_back(std::move(chain));
 
 		IRInstruction store;
@@ -1004,7 +1003,7 @@ class FunctionLowerer {
 
 	// Reverse lookup is only used to update the SSA binding of a value local
 	// after a CompositeInsert. Linear scan is fine — locals_ is small.
-	[[nodiscard]] std::string local_name_for(IRId id) const {
+	[[nodiscard]] std::string local_name_for(ID<IRInstruction> id) const {
 		for (const auto& [name, info] : locals_) {
 			if (info.id == id)
 				return name;
@@ -1020,7 +1019,7 @@ class FunctionLowerer {
 			return;
 		}
 		const Value v = lower_expr(expr);
-		if (v.id == IRId_None)
+		if (v.id == ID<IRInstruction>{})
 			return;
 		IRInstruction r;
 		r.op = IROp::ReturnValue;
@@ -1053,7 +1052,7 @@ class FunctionLowerer {
 		case Decl::Expr::Kind::unary:
 			if (!expr.children.empty()) {
 				const Value child = lower_expr(expr.children.front());
-				if (child.id == IRId_None)
+				if (child.id == ID<IRInstruction>{})
 					return {};
 				if (expr.op == "-")
 					return emit_negate(child);
@@ -1069,7 +1068,7 @@ class FunctionLowerer {
 			if (expr.children.size() == 2) {
 				const Value lhs = lower_expr(expr.children[0]);
 				const Value rhs = lower_expr(expr.children[1]);
-				if (lhs.id == IRId_None || rhs.id == IRId_None)
+				if (lhs.id == ID<IRInstruction>{} || rhs.id == ID<IRInstruction>{})
 					return {};
 				if (expr.op == "+")
 					return emit_binop(IROp::FAdd, lhs, rhs);
@@ -1095,7 +1094,7 @@ class FunctionLowerer {
 				std::vector<Value> args;
 				for (std::size_t i = 1; i < expr.children.size(); ++i) {
 					args.push_back(lower_expr(expr.children[i]));
-					if (args.back().id == IRId_None)
+					if (args.back().id == ID<IRInstruction>{})
 						return {};
 				}
 				return emit_call(expr.children.front().text, args);
@@ -1173,29 +1172,29 @@ class FunctionLowerer {
 		}
 	}
 
-	IRId constant_uint(u32 value) {
+	ID<IRInstruction> constant_uint(u32 value) {
 		const std::string sig = "cu:" + std::to_string(value);
-		const IRId ty = types_.find("u32");
+		const ID<IRInstruction> ty = types_.find("u32");
 		return builder_.intern_constant(sig, IROp::ConstantUInt, ty, {}, { value });
 	}
 
-	IRId constant_int(i32 value) {
+	ID<IRInstruction> constant_int(i32 value) {
 		const std::string sig = "ci:" + std::to_string(value);
-		const IRId ty = types_.find("i32");
+		const ID<IRInstruction> ty = types_.find("i32");
 		return builder_.intern_constant(sig, IROp::ConstantInt, ty, {}, { static_cast<u32>(value) });
 	}
 
-	IRId constant_float(float value) {
+	ID<IRInstruction> constant_float(float value) {
 		u32 bits;
 		std::memcpy(&bits, &value, sizeof(bits));
 		const std::string sig = "cf:" + std::to_string(bits);
-		const IRId ty = types_.find("f32");
+		const ID<IRInstruction> ty = types_.find("f32");
 		return builder_.intern_constant(sig, IROp::ConstantFloat, ty, {}, { bits });
 	}
 
-	IRId constant_bool(bool value) {
+	ID<IRInstruction> constant_bool(bool value) {
 		const std::string sig = value ? "cb:1" : "cb:0";
-		const IRId ty = types_.find("bool");
+		const ID<IRInstruction> ty = types_.find("bool");
 		return builder_.intern_constant(sig, IROp::ConstantBool, ty, {}, { value ? 1u : 0u });
 	}
 
@@ -1203,7 +1202,7 @@ class FunctionLowerer {
 	// (float ordered, signed, or unsigned). Vector operands compare per element,
 	// so the element kind drives the choice. Returns nullopt for non-comparison
 	// operators.
-	[[nodiscard]] std::optional<IROp> comparison_op(std::string_view op, IRId operand_type) const {
+	[[nodiscard]] std::optional<IROp> comparison_op(std::string_view op, ID<IRInstruction> operand_type) const {
 		TypeInfo::Kind kind = TypeInfo::Kind::Float;
 		if (const TypeInfo* info = types_.info_by_id(operand_type)) {
 			kind = info->kind == TypeInfo::Kind::Vector
@@ -1221,7 +1220,7 @@ class FunctionLowerer {
 		return std::nullopt;
 	}
 
-	[[nodiscard]] TypeInfo::Kind scalar_kind_of(IRId type_id) const {
+	[[nodiscard]] TypeInfo::Kind scalar_kind_of(ID<IRInstruction> type_id) const {
 		const TypeInfo* info = types_.info_by_id(type_id);
 		return info ? info->kind : TypeInfo::Kind::Float;
 	}
@@ -1281,40 +1280,50 @@ class FunctionLowerer {
 			}
 		}
 		if (const auto vit = uniform_var_ids_.find(lookup_name); vit != uniform_var_ids_.end()) {
-			const IRId var_id = vit->second;
-			const IRId ptr_ty = uniform_var_type_ids_.at(lookup_name);
-			// Load the value through the pointer.
-			const TypeInfo* info_ptr = nullptr;
-			(void)info_ptr;
-			// Find pointee type by scanning the type pool — cheap because the
-			// pool is small at compile time.
-			IRId pointee_ty = IRId_None;
+			const ID<IRInstruction> var_id = vit->second;
+			const ID<IRInstruction> ptr_ty = uniform_var_type_ids_.at(lookup_name);
+			const ID<IRInstruction> value_ty = uniform_value_type_ids_.at(lookup_name);
+			// Find the physical pointee and storage class by scanning the small
+			// compile-time type pool.
+			ID<IRInstruction> pointee_ty = ID<IRInstruction>{};
+			StorageClass storage = StorageClass::Uniform;
 			for (const auto& inst : builder_.module().type_constant_pool) {
 				if (inst.op == IROp::TypePointer && inst.result_id == ptr_ty) {
 					pointee_ty = inst.operands.front();
+					storage = static_cast<StorageClass>(inst.literals.front());
 					break;
 				}
+			}
+			ID<IRInstruction> load_from = var_id;
+			if (pointee_ty != value_ty) {
+				IRInstruction chain;
+				chain.op = IROp::AccessChain;
+				chain.result_id = builder_.fresh_id();
+				chain.type_id = types_.pointer_to(value_ty, storage);
+				chain.operands = { var_id, constant_uint(0) };
+				load_from = chain.result_id;
+				fn_.body.push_back(std::move(chain));
 			}
 			IRInstruction load;
 			load.op = IROp::Load;
 			load.result_id = builder_.fresh_id();
-			load.type_id = pointee_ty;
-			load.operands = { var_id };
+			load.type_id = value_ty;
+			load.operands = { load_from };
 			fn_.body.push_back(std::move(load));
-			return Value{ load.result_id, pointee_ty };
+			return Value{ load.result_id, value_ty };
 		}
 		builder_.diagnose(std::format("unknown name '{}'", name));
-		return Value{ IRId_None, IRId_None };
+		return Value{ ID<IRInstruction>{}, ID<IRInstruction>{} };
 	}
 
-	Value emit_member_load_from_pointer(const Local& local, u32 index, IRId member_type) {
-		const IRId ptr_ty = types_.pointer_to(member_type, StorageClass::Function);
+	Value emit_member_load_from_pointer(const Local& local, u32 index, ID<IRInstruction> member_type) {
+		const ID<IRInstruction> ptr_ty = types_.pointer_to(member_type, StorageClass::Function);
 		IRInstruction chain;
 		chain.op = IROp::AccessChain;
 		chain.result_id = builder_.fresh_id();
 		chain.type_id = ptr_ty;
 		chain.operands = { local.id, constant_uint(index) };
-		const IRId chain_id = chain.result_id;
+		const ID<IRInstruction> chain_id = chain.result_id;
 		fn_.body.push_back(std::move(chain));
 
 		IRInstruction load;
@@ -1355,7 +1364,7 @@ class FunctionLowerer {
 				fn_.body.push_back(std::move(extract));
 				return Value{ extract.result_id, info->element_type_id };
 			}
-			const IRId result_ty = types_.vector_of(info->element_type_id, static_cast<u32>(indices.size()));
+			const ID<IRInstruction> result_ty = types_.vector_of(info->element_type_id, static_cast<u32>(indices.size()));
 			IRInstruction shuffle;
 			shuffle.op = IROp::VectorShuffle;
 			shuffle.result_id = builder_.fresh_id();
@@ -1386,11 +1395,11 @@ class FunctionLowerer {
 
 	Value emit_call(std::string_view callee, std::span<const Value> args) {
 		// Constructor of a known type.
-		if (const IRId type_id = types_.find(callee); type_id) {
+		if (const ID<IRInstruction> type_id = types_.find(callee); type_id) {
 			// Type construction is structural: first try a declared member-init
 			// function, then fall back to aggregate construction only when the
 			// argument list exactly matches the type's fields.
-			if (const Value inlined = try_inline_constructor(type_id, args); inlined.id != IRId_None) {
+			if (const Value inlined = try_inline_constructor(type_id, args); inlined.id != ID<IRInstruction>{}) {
 				return inlined;
 			}
 			if (const TypeInfo* info = types_.info_by_id(type_id); info && info->kind == TypeInfo::Kind::Struct) {
@@ -1442,7 +1451,7 @@ class FunctionLowerer {
 		// operand[0] is the resolved function id (0 = unresolved until the
 		// inliner runs); operand[1..N] are the argument values.
 		call.operands.reserve(args.size() + 1);
-		call.operands.push_back(IRId_None);
+		call.operands.push_back(ID<IRInstruction>{});
 		for (const auto& a : args) {
 			call.operands.push_back(a.id);
 		}
@@ -1465,7 +1474,7 @@ class FunctionLowerer {
 		});
 		call.literals = { name_index };
 		fn_.body.push_back(std::move(call));
-		return Value{ call.result_id, IRId_None };
+		return Value{ call.result_id, ID<IRInstruction>{} };
 	}
 
 	// If a previously-lowered IRFunction matches `Type::Type(args...)` for
@@ -1474,13 +1483,13 @@ class FunctionLowerer {
 	// its result ids is replaced with a fresh id local to this function. The
 	// constructor's terminating ReturnValue is consumed: its operand becomes
 	// the call's result. Returns Value{} on no match.
-	[[nodiscard]] Value try_inline_constructor(IRId type_id, std::span<const Value> args) {
+	[[nodiscard]] Value try_inline_constructor(ID<IRInstruction> type_id, std::span<const Value> args) {
 		const auto& functions = builder_.module().functions;
 		const IRFunction* ctor = nullptr;
 		for (const auto& candidate : functions) {
 			if (!candidate.stage.empty())
 				continue;
-			if (!candidate.is_constructor)
+			if (!candidate.is_constructor())
 				continue;
 			if (candidate.return_type_id != type_id)
 				continue;
@@ -1488,7 +1497,7 @@ class FunctionLowerer {
 				continue;
 			bool params_match = true;
 			for (std::size_t i = 0; i < args.size(); ++i) {
-				const IRId param_id = candidate.parameter_ids[i];
+				const ID<IRInstruction> param_id = candidate.parameter_ids[i];
 				auto param_it = std::find_if(candidate.body.begin(), candidate.body.end(),
 					[&](const IRInstruction& inst) { return inst.result_id == param_id; });
 				if (param_it == candidate.body.end() || param_it->type_id != args[i].type_id) {
@@ -1504,7 +1513,7 @@ class FunctionLowerer {
 		if (!ctor)
 			return Value{};
 
-		std::unordered_map<IRId, IRId> remap;
+		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> remap;
 		for (std::size_t i = 0; i < ctor->parameter_ids.size() && i < args.size(); ++i) {
 			remap[ctor->parameter_ids[i]] = args[i].id;
 		}
@@ -1519,7 +1528,7 @@ class FunctionLowerer {
 				continue;
 			if (inst.op == IROp::ReturnValue) {
 				if (!inst.operands.empty()) {
-					const IRId operand = inst.operands.front();
+					const ID<IRInstruction> operand = inst.operands.front();
 					auto it = remap.find(operand);
 					result.id = it != remap.end() ? it->second : operand;
 					result.type_id = ctor->return_type_id;
@@ -1527,8 +1536,8 @@ class FunctionLowerer {
 				continue;
 			}
 			IRInstruction copy = inst;
-			if (copy.result_id != IRId_None) {
-				const IRId fresh = builder_.fresh_id();
+			if (copy.result_id != ID<IRInstruction>{}) {
+				const ID<IRInstruction> fresh = builder_.fresh_id();
 				remap[copy.result_id] = fresh;
 				copy.result_id = fresh;
 			}
@@ -1563,7 +1572,7 @@ class FunctionLowerer {
 		return Value{ inst.result_id, v.type_id };
 	}
 
-	Value emit_unop(IROp op, const Value& v, IRId result_ty) {
+	Value emit_unop(IROp op, const Value& v, ID<IRInstruction> result_ty) {
 		IRInstruction inst;
 		inst.op = op;
 		inst.result_id = builder_.fresh_id();
@@ -1596,7 +1605,7 @@ class FunctionLowerer {
 		return emit_binop(ir_op, lhs, rhs);
 	}
 
-	Value emit_binop_typed(IROp op, const Value& lhs, const Value& rhs, IRId result_ty) {
+	Value emit_binop_typed(IROp op, const Value& lhs, const Value& rhs, ID<IRInstruction> result_ty) {
 		IRInstruction inst;
 		inst.op = op;
 		inst.result_id = builder_.fresh_id();
@@ -1611,15 +1620,16 @@ class FunctionLowerer {
 	IRFunction& fn_;
 	std::span<const UniformBinding> uniforms_;
 	const StringMap<std::string>& using_uniforms_;
-	const StringMap<IRId>& uniform_var_ids_;
-	const StringMap<IRId>& uniform_var_type_ids_;
+	const StringMap<ID<IRInstruction>>& uniform_var_ids_;
+	const StringMap<ID<IRInstruction>>& uniform_var_type_ids_;
+	const StringMap<ID<IRInstruction>>& uniform_value_type_ids_;
 	std::unordered_map<std::string, Local, TransparentStringHash, std::equal_to<>> locals_;
 
 	// Constructor lowering state. Active when the current function is a
 	// member-init body for `Type::Type(...)`. See begin_constructor.
 	std::string ctor_owner_name_;
-	IRId ctor_owner_type_id_ = IRId_None;
-	std::vector<IRId> ctor_field_values_;
+	ID<IRInstruction> ctor_owner_type_id_ = ID<IRInstruction>{};
+	std::vector<ID<IRInstruction>> ctor_field_values_;
 };
 
 // Resolve every IROp::FunctionCall against the functions defined in this
@@ -1639,7 +1649,7 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 	// Maps the FunctionCall's result_id to the inlined callee's returned
 	// value id, so subsequent instructions in fn that referenced the call
 	// result get rewired to the actual return value.
-	std::unordered_map<IRId, IRId> call_result_remap;
+	std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> call_result_remap;
 	const auto apply_remap = [&](IRInstruction& inst) {
 		for (auto& op : inst.operands) {
 			if (auto it = call_result_remap.find(op); it != call_result_remap.end())
@@ -1668,7 +1678,7 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 		for (const auto& candidate : ir.functions) {
 			if (&candidate == &fn)
 				continue;
-			if (candidate.source_name != callee.mangled_name)
+			if (candidate.link_name != callee.mangled_name)
 				continue;
 			if (candidate.parameter_ids.size() != arg_count)
 				continue;
@@ -1689,15 +1699,15 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 			continue;
 		}
 
-		std::unordered_map<IRId, IRId> local_remap;
+		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> local_remap;
 		for (std::size_t i = 0; i < target->parameter_ids.size(); ++i) {
-			IRId arg_id = inst.operands[i + 1];
+			ID<IRInstruction> arg_id = inst.operands[i + 1];
 			if (auto it = call_result_remap.find(arg_id); it != call_result_remap.end())
 				arg_id = it->second;
 			local_remap[target->parameter_ids[i]] = arg_id;
 		}
 
-		IRId returned_id = IRId_None;
+		ID<IRInstruction> returned_id = ID<IRInstruction>{};
 		for (const auto& body_inst : target->body) {
 			if (body_inst.op == IROp::Label)
 				continue;
@@ -1707,7 +1717,7 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 				continue;
 			if (body_inst.op == IROp::ReturnValue) {
 				if (!body_inst.operands.empty()) {
-					IRId ret = body_inst.operands[0];
+					ID<IRInstruction> ret = body_inst.operands[0];
 					if (auto it = local_remap.find(ret); it != local_remap.end())
 						ret = it->second;
 					returned_id = ret;
@@ -1715,8 +1725,8 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 				continue;
 			}
 			IRInstruction copy = body_inst;
-			if (copy.result_id != IRId_None) {
-				const IRId fresh = builder.fresh_id();
+			if (copy.result_id != ID<IRInstruction>{}) {
+				const ID<IRInstruction> fresh = builder.fresh_id();
 				local_remap[copy.result_id] = fresh;
 				copy.result_id = fresh;
 			}
@@ -1726,7 +1736,7 @@ bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
 			}
 			new_body.push_back(std::move(copy));
 		}
-		if (inst.result_id != IRId_None && returned_id != IRId_None) {
+		if (inst.result_id != ID<IRInstruction>{} && returned_id != ID<IRInstruction>{}) {
 			call_result_remap[inst.result_id] = returned_id;
 		}
 		progress = true;
@@ -1771,32 +1781,22 @@ void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
 }
 
 // ----------------------------------------------------------------------------
-// Buffer-payload layout computation. Given a struct's fields and a rule
-// (std140 / std430 / scalar), compute per-field offsets, matrix strides, and
-// total struct size.
-//
-// All three rules share a common shape: every field's start is rounded up to
-// its "base alignment", then advanced by its "size". The rules only differ in
-// the alignment/size numbers for aggregate types (vec3, matNxM, arrays, and
-// nested structs). Scalars behave identically everywhere.
+// Resource buffer layout: field offsets, matrix strides, and total size for
+// std140, std430, and scalar layout.
 // ----------------------------------------------------------------------------
 
-// A parsed type name for layout purposes. `column_count` == 0 means "not a
-// matrix". Only the type shapes RTSL exposes today are handled — scalars,
-// vectors, and matrices. Anything else falls back to a conservative "unknown"
-// which the caller diagnoses.
+// Parsed resource-layout type. `column_count == 0` means non-matrix.
 struct TypeShape {
 	enum class Kind : u08 { Unknown,
 						   Scalar,
 						   Vector,
 						   Matrix } kind = Kind::Unknown;
-	u32 scalar_size = 0;  // bytes per scalar component (4 today)
+	u32 scalar_size = 0;
 	u32 components = 0;	  // vec2 → 2, vec3 → 3, vec4 → 4, mat4 → 4 (rows)
 	u32 column_count = 0; // matN → N columns; 0 for non-matrix
 };
 
 [[nodiscard]] TypeShape classify_type_shape(std::string_view type) {
-	// Scalars — 4-byte components across the board today.
 	if (type == "f32" || type == "i32" || type == "u32" || type == "bool") {
 		return { TypeShape::Kind::Scalar, 4, 1, 0 };
 	}
@@ -1917,7 +1917,6 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	ir.imported_exports = module.imported_exports;
 	ir.exports = module.exports;
 	ir.structs = module.structs;
-	ir.uniforms = module.uniforms;
 	// Authored varying interfaces (from `-> T : field(tag), ...`) arrive resolved
 	// from sema. The vertex-input and fragment-output interfaces are derived
 	// below from the entry signatures.
@@ -1962,7 +1961,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	};
 	const auto check_type = [&](std::string_view where, std::string_view type) {
-		if (types.find(type) == IRId_None) {
+		if (types.find(type) == ID<IRInstruction>{}) {
 			report_unknown_type(where, type);
 		}
 	};
@@ -1986,16 +1985,36 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		check_type(std::format("uniform '{}'", uniform.name), uniform.type);
 	}
 
-	const auto resource_backend_type = [&](ResourceBindingKind kind) -> IRId {
+	const auto resource_backend_type = [&](ResourceBindingKind kind, std::string_view spelling) -> ID<IRInstruction> {
+		const ResourceTypeInfo* info = resource_type_info(spelling);
+		if (!info) return ID<IRInstruction>{};
 		switch (kind) {
 		case ResourceBindingKind::sampler:
-			return builder.intern_type("resource:Sampler", IROp::TypeSampler, IRId_None, {}, {});
-		case ResourceBindingKind::sampled_image:
-			return builder.intern_type("resource:Sampler2D", IROp::TypeSampledImage, IRId_None, {}, {});
-		case ResourceBindingKind::image:
-			return builder.intern_type("resource:Image2D", IROp::TypeImage, IRId_None, {}, {});
+			return builder.intern_type(std::format("resource:{}", spelling), IROp::TypeSampler, ID<IRInstruction>{}, {}, {});
+		case ResourceBindingKind::sampled_image: {
+			const std::array image_operands{ types.find("f32") };
+			const std::array image_literals{
+				static_cast<u32>(info->image.dimension),
+				info->image.arrayed ? 1u : 0u,
+				static_cast<u32>(ir::ImageClass::sampled),
+			};
+			const ID<IRInstruction> image = builder.intern_type(std::format("resource-image:{}", spelling),
+				IROp::TypeImage, ID<IRInstruction>{}, image_operands, image_literals);
+			return builder.intern_type(std::format("resource:{}", spelling), IROp::TypeSampledImage,
+				ID<IRInstruction>{}, { image }, {});
+		}
+		case ResourceBindingKind::image: {
+			const std::array image_operands{ types.find("f32") };
+			const std::array image_literals{
+				static_cast<u32>(info->image.dimension),
+				info->image.arrayed ? 1u : 0u,
+				static_cast<u32>(ir::ImageClass::storage),
+			};
+			return builder.intern_type(std::format("resource:{}", spelling), IROp::TypeImage,
+				ID<IRInstruction>{}, image_operands, image_literals);
+		}
 		default:
-			return IRId_None;
+			return ID<IRInstruction>{};
 		}
 	};
 
@@ -2023,9 +2042,9 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		return u.name;
 	};
 	std::unordered_map<std::string, std::size_t> uniform_by_qualified;
-	uniform_by_qualified.reserve(ir.uniforms.size());
-	for (std::size_t i = 0; i < ir.uniforms.size(); ++i) {
-		uniform_by_qualified.emplace(qualified_name_of(ir.uniforms[i]), i);
+	uniform_by_qualified.reserve(module.uniforms.size());
+	for (std::size_t i = 0; i < module.uniforms.size(); ++i) {
+		uniform_by_qualified.emplace(qualified_name_of(module.uniforms[i]), i);
 	}
 
 	const auto qualified_from_path = [](std::span<const std::string> path) {
@@ -2048,9 +2067,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		return true;
 	};
 
-	// For each uniform, remember the first layout that attached to it so we
-	// can (1) look up the resolved payload type during OpVariable emission
-	// and (2) ODR-check any later layout targeting the same binding.
+	// First layout wins unless a later declaration conflicts with it.
 	std::unordered_map<std::size_t, std::size_t> first_layout_for_uniform;
 	for (std::size_t li = 0; li < module.layouts.size(); ++li) {
 		const auto& layout = module.layouts[li];
@@ -2064,7 +2081,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			}
 			continue;
 		}
-		const auto& target = ir.uniforms[it->second];
+		const auto& target = module.uniforms[it->second];
 		if (!is_buffer_binding(resource_binding_kind(target.type))) {
 			if (diagnostics) {
 				diagnostics->report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
@@ -2085,10 +2102,11 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	// Emit one global Variable per uniform with the right storage class and
 	// a matching set/binding decoration pair. The mangled binding name is what
 	// the SSA body references.
-	StringMap<IRId> uniform_var_ids;
-	StringMap<IRId> uniform_var_type_ids;
-	for (std::size_t uidx = 0; uidx < ir.uniforms.size(); ++uidx) {
-		auto& uniform = ir.uniforms[uidx];
+	StringMap<ID<IRInstruction>> uniform_var_ids;
+	StringMap<ID<IRInstruction>> uniform_var_type_ids;
+	StringMap<ID<IRInstruction>> uniform_value_type_ids;
+	for (std::size_t uidx = 0; uidx < module.uniforms.size(); ++uidx) {
+		const auto& uniform = module.uniforms[uidx];
 		const std::string mangled = uniform_binding_name(uniform);
 		const ResourceBindingKind binding_kind = resource_binding_kind(uniform.type);
 		const bool is_ubo = binding_kind == ResourceBindingKind::uniform_buffer;
@@ -2101,12 +2119,10 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		else if (is_ssbo)
 			sc = StorageClass::StorageBuffer;
 
-		IRId value_ty = IRId_None;
-		// Resolved layout for the payload struct (only populated when the
-		// payload is a struct with inline fields we can lay out). Used below
-		// to emit Block/Offset/MatrixStride decorations against `value_ty`.
-		std::optional<BufferLayout> payload_layout;
-		std::size_t payload_field_count = 0;
+		ID<IRInstruction> value_ty = ID<IRInstruction>{};
+		ID<IRInstruction> loaded_value_ty = ID<IRInstruction>{};
+		std::optional<BufferLayout> buffer_layout;
+		std::size_t buffer_field_count = 0;
 		if (needs_layout) {
 			const auto qn = qualified_name_of(uniform);
 			const auto layout_it = first_layout_for_uniform.find(uidx);
@@ -2116,59 +2132,77 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 										std::format("{} '{}' has no layout", is_ubo ? "UniformBuffer" : "StorageBuffer", qn));
 				}
 				value_ty = types.find("void");
+				loaded_value_ty = value_ty;
 			} else {
 				const auto& layout = module.layouts[layout_it->second];
 				const LayoutRule rule = resolve_layout_rule(layout.rule, is_ssbo);
 				if (layout.is_inline_struct) {
 					value_ty = types.register_anon_struct(qn, layout.inline_fields);
-					payload_layout = compute_buffer_layout(layout.inline_fields, rule);
-					payload_field_count = layout.inline_fields.size();
+					loaded_value_ty = value_ty;
+					buffer_layout = compute_buffer_layout(layout.inline_fields, rule);
+					buffer_field_count = layout.inline_fields.size();
 				} else {
-					value_ty = types.find(layout.type_spelling);
-					if (value_ty == IRId_None && diagnostics) {
+					loaded_value_ty = types.find(layout.type_spelling);
+					if (loaded_value_ty == ID<IRInstruction>{} && diagnostics) {
 						diagnostics->report(DiagnosticCode::layout_unknown_type, DiagnosticSeverity::error, layout.span.begin, module.source_name,
 											std::format("unknown type '{}' in layout for '{}'", layout.type_spelling, qn));
-						value_ty = types.find("void");
+						loaded_value_ty = types.find("void");
 					}
-					// Non-struct payload (e.g. `layout foo : mat4;`). Wrap the
-					// type in a synthetic one-field struct for layout purposes
-					// so the Block/Offset decoration story is uniform.
-					StructField wrapper{ .type = layout.type_spelling, .name = "value" };
-					payload_layout = compute_buffer_layout(std::span<const StructField>(&wrapper, 1), rule);
-					payload_field_count = 1;
+					const auto declaration = std::ranges::find(module.structs, layout.type_spelling, &StructDecl::name);
+					if (declaration != module.structs.end()) {
+						value_ty = loaded_value_ty;
+						buffer_layout = compute_buffer_layout(declaration->fields, rule);
+						buffer_field_count = declaration->fields.size();
+					} else if (loaded_value_ty) {
+						StructField wrapper{ .type = layout.type_spelling, .name = "value" };
+						const std::array fields{ wrapper };
+						value_ty = types.register_anon_struct(qn + ":block", fields);
+						buffer_layout = compute_buffer_layout(fields, rule);
+						buffer_field_count = 1;
+					} else {
+						value_ty = loaded_value_ty;
+					}
 				}
 			}
 		} else {
-			value_ty = is_resource ? resource_backend_type(binding_kind) : types.find(uniform.type);
+			value_ty = is_resource ? resource_backend_type(binding_kind, uniform.type) : types.find(uniform.type);
+			loaded_value_ty = value_ty;
 		}
-		const IRId ptr_ty = types.pointer_to(value_ty, sc);
-		// Record the value type id on the reflection record so the C API can
-		// hand back a SPIR-V-style type pointer instead of a stringified type.
-		uniform.type_id = value_ty;
+		const ID<IRInstruction> ptr_ty = types.pointer_to(value_ty, sc);
 		IRInstruction var;
 		var.op = IROp::Variable;
 		var.result_id = builder.fresh_id();
 		var.type_id = ptr_ty;
 		var.literals.push_back(static_cast<u32>(sc));
 		builder.add_global_variable(std::move(var));
-		const IRId var_id = ir.global_variables.back().result_id;
+		const ID<IRInstruction> var_id = ir.global_variables.back().result_id;
 		uniform_var_ids[mangled] = var_id;
 		uniform_var_type_ids[mangled] = ptr_ty;
+		uniform_value_type_ids[mangled] = loaded_value_ty;
+
+		const ResourceTypeInfo* resource_type = resource_type_info(uniform.type);
+		Resource resource{
+			.name = uniform.scope_name.empty() ? uniform.name : uniform.scope_name + "." + uniform.name,
+			.kind = resource_type ? resource_type->kind : ResourceKind::uniform_buffer,
+			.image = resource_type ? resource_type->image : ImageShape{},
+			.access = static_cast<Access>(uniform.access),
+			.descriptor = DescriptorBinding{ .set = uniform.set, .binding = uniform.member },
+			.variable = var_id,
+			.value_type = value_ty,
+		};
+		ir.resources.push_back(std::move(resource));
 
 		builder.add_decoration({ .target = var_id, .kind = IRDecorationKind::DescriptorSet, .literals = { uniform.set } });
 		builder.add_decoration({ .target = var_id, .kind = IRDecorationKind::Binding, .literals = { uniform.member } });
 
-		// Buffer-payload layout decorations. The struct type gets `Block`
-		// (UBO) or `BufferBlock` (SSBO); each member gets its offset;
-		// matrices additionally get MatrixStride + ColMajor. SPIR-V requires
-		// all three for a UBO/SSBO to validate.
-		if (payload_layout) {
+		// Buffer block decorations must stay on the value type and its fields.
+		if (buffer_layout) {
 			builder.add_decoration({
 				.target = value_ty,
-				.kind = is_ssbo ? IRDecorationKind::BufferBlock : IRDecorationKind::Block,
+				.kind = IRDecorationKind::Block,
 			});
-			for (std::size_t m = 0; m < payload_field_count && m < payload_layout->members.size(); ++m) {
-				const auto& ml = payload_layout->members[m];
+			for (std::size_t m = 0; m < buffer_field_count && m < buffer_layout->members.size(); ++m) {
+				const auto& ml = buffer_layout->members[m];
 				const u32 member_index = static_cast<u32>(m);
 				builder.add_decoration({
 					.target = value_ty,
@@ -2206,13 +2240,13 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		if (use.kind == UsingImport::Kind::symbol) {
 			const auto qn = qualified_from_using_path(use.path);
 			if (const auto it = uniform_by_qualified.find(qn); it != uniform_by_qualified.end()) {
-				using_uniforms[use.imported_name] = uniform_binding_name(ir.uniforms[it->second]);
+				using_uniforms[use.imported_name] = uniform_binding_name(module.uniforms[it->second]);
 			}
 			continue;
 		}
 		if (use.kind == UsingImport::Kind::namespace_scope) {
 			const auto scope = qualified_from_using_path(use.path);
-			for (const auto& uniform : ir.uniforms) {
+			for (const auto& uniform : module.uniforms) {
 				if (!uniform.is_anonymous && uniform.scope_name == scope) {
 					using_uniforms[uniform.name] = uniform_binding_name(uniform);
 				}
@@ -2259,8 +2293,11 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		fn.return_type_id = is_constructor ? types.find(ctor_owner) : types.find(symbol.return_type);
 		fn.result_id = builder.fresh_id();
 		fn.stage = stage;
-		fn.exported = symbol.exported;
-		fn.is_constructor = is_constructor;
+		if (is_constructor) {
+			fn.kind = IRFunction::Kind::constructor;
+		} else if (symbol.exported) {
+			fn.kind = IRFunction::Kind::exported;
+		}
 		std::vector<std::string> parameter_identity_storage;
 		std::vector<std::string_view> parameter_types;
 		parameter_identity_storage.reserve(parameters.size());
@@ -2269,11 +2306,12 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			parameter_identity_storage.push_back(parameter_identity(parameter));
 			parameter_types.push_back(parameter_identity_storage.back());
 		}
-		fn.source_name = mangle_rtsl(symbol.name, stage, parameter_types);
-		fn.display_name_text = symbol.name;
+		fn.link_name = mangle_rtsl(symbol.name, stage, parameter_types);
+		fn.display_name = symbol.name;
 		ir.functions.push_back(std::move(fn));
 
-		FunctionLowerer lowerer{ builder, types, ir.functions.back(), ir.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids };
+		FunctionLowerer lowerer{ builder, types, ir.functions.back(), module.uniforms, using_uniforms,
+			uniform_var_ids, uniform_var_type_ids, uniform_value_type_ids };
 		if (is_constructor) {
 			lowerer.begin_constructor(ctor_owner);
 		}
@@ -2378,6 +2416,69 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 	}
 
+	const auto make_interface = [&](std::string_view type_name, StageRole role,
+		std::optional<ir::Id> value) -> std::optional<Interface> {
+		if (type_name.empty() || type_name == "void") return std::nullopt;
+		const StageInterface* reflected = find_interface(ir.stage_interfaces, type_name, role);
+		if (!reflected) return std::nullopt;
+
+		const ID<IRInstruction> value_type = types.find(type_name);
+		if (!value_type) return std::nullopt;
+		const TypeInfo* type_info = types.info_by_id(value_type);
+
+		Interface result{ .value_type = value_type, .value = value };
+		result.elements.reserve(reflected->fields.size());
+		for (const StageIOField& field : reflected->fields) {
+			std::optional<u32> member;
+			ID<IRInstruction> field_type = value_type;
+			if (field.member_index != StageIOField::kNoMember) {
+				member = field.member_index;
+				if (type_info && field.member_index < type_info->members.size()) {
+					field_type = type_info->members[field.member_index].second;
+				}
+			}
+			std::optional<u32> location;
+			if (field.location != StageIOField::kNoLocation) location = field.location;
+			result.elements.push_back(InterfaceElement{
+				.name = field.name,
+				.type = field_type,
+				.member = member,
+				.location = location,
+				.builtin = field.placement == StageFieldPlacement::clip_position
+					? Builtin::position : Builtin::none,
+				.interpolation = static_cast<Interpolation>(field.interpolation),
+			});
+		}
+		return result;
+	};
+
+	for (const auto& symbol : module.symbols) {
+		if (symbol.kind != DeclKind::function || symbol.stage.empty() || !symbol.has_body) continue;
+		const auto function = std::find_if(ir.functions.begin(), ir.functions.end(), [&](const IRFunction& candidate) {
+			return candidate.display_name == symbol.name && candidate.stage == symbol.stage;
+		});
+		if (function == ir.functions.end()) continue;
+
+		const bool vertex = is_vertex_stage(symbol.stage);
+		const std::string_view input_type = symbol.parameters.empty()
+			? std::string_view{} : std::string_view{ symbol.parameters.front().type };
+		const std::optional<ir::Id> input_value = function->parameter_ids.empty()
+			? std::nullopt : std::optional<ir::Id>{ function->parameter_ids.front() };
+		EntryPoint entry{
+			.name = symbol.name,
+			.stage = vertex ? Stage::vertex : Stage::fragment,
+			.function = function->result_id,
+			.input = make_interface(input_type, vertex ? StageRole::input : StageRole::varying, input_value),
+			.output = make_interface(symbol.return_type, vertex ? StageRole::varying : StageRole::output, std::nullopt),
+		};
+		if (!vertex && entry.input) {
+			std::erase_if(entry.input->elements, [](const InterfaceElement& element) {
+				return element.builtin == Builtin::position;
+			});
+		}
+		ir.entries.push_back(std::move(entry));
+	}
+
 	inline_resolved_calls(ir, builder);
 
 	return ir;
@@ -2392,13 +2493,13 @@ bool verify_ir(const IRModule& module, DiagnosticEngine* diagnostics) {
 	};
 
 	// SSA invariant: every defined result id is unique across the whole module.
-	std::unordered_set<IRId> defined;
-	const auto define = [&](IRId id, std::string_view what) -> bool {
-		if (id == IRId_None) {
+	std::unordered_set<ID<IRInstruction>> defined;
+	const auto define = [&](ID<IRInstruction> id, std::string_view what) -> bool {
+		if (id == ID<IRInstruction>{}) {
 			return true;
 		}
 		if (!defined.insert(id).second) {
-			return fail(std::format("duplicate SSA result id %{} ({})", id, what));
+			return fail(std::format("duplicate SSA result id %{} ({})", raw_id(id), what));
 		}
 		return true;
 	};
@@ -2410,7 +2511,7 @@ bool verify_ir(const IRModule& module, DiagnosticEngine* diagnostics) {
 	}
 	for (const auto& fn : module.functions) {
 		if (!define(fn.result_id, "function")) return false;
-		for (const IRId pid : fn.parameter_ids) {
+		for (const ID<IRInstruction> pid : fn.parameter_ids) {
 			if (!define(pid, "parameter")) return false;
 		}
 		for (const auto& inst : fn.body) {

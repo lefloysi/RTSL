@@ -164,7 +164,7 @@ std::unordered_set<std::string_view> collect_known_types(const SemanticModule& m
 #define RTSL_VECTOR_TYPE(spelling, element, components) known.insert(#spelling);
 #define RTSL_MATRIX_TYPE(spelling, column_type, columns) known.insert(#spelling);
 #include "frontend/value_types.def"
-#define RTSL_RESOURCE_TYPE(spelling, binding_kind) known.insert(#spelling);
+#define RTSL_RESOURCE_TYPE(spelling, binding_kind, sdk_kind, dimension, arrayed) known.insert(#spelling);
 #include "frontend/resource_types.def"
 	for (const auto& decl : module.structs) {
 		known.insert(decl.name);
