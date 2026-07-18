@@ -127,6 +127,7 @@ struct LayoutDecl {
 	std::vector<std::string> path;
 	LayoutRule rule = LayoutRule::unset;
 	bool is_inline_struct = false;
+	bool is_runtime_array = false;
 	std::string type_spelling;              // only when !is_inline_struct
 	std::vector<StructField> inline_fields; // only when is_inline_struct
 	SourceSpan span{};

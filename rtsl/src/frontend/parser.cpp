@@ -952,6 +952,13 @@ void Parser::parse_layout() {
 		layout.inline_fields = std::move(type.fields);
 	} else {
 		layout.type_spelling = std::move(type.spelling);
+		if (consume(TokenKind::left_bracket)) {
+			layout.is_runtime_array = true;
+			if (!expect(TokenKind::right_bracket, "expected ']' in runtime-array layout")) {
+				skip_to_declaration_boundary();
+				return;
+			}
+		}
 	}
 
 	if (!expect(TokenKind::semicolon, "expected ';' after layout declaration")) {

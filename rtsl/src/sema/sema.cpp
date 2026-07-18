@@ -268,12 +268,29 @@ bool is_struct_type(std::span<const StructDecl> structs, std::string_view struct
 
 struct StdlibFunction {
 	std::string_view name;
-	std::string_view return_type;
+	enum class ReturnRule {
+		fixed_vec4,
+		same,
+		argument_2,
+		unsigned_shape,
+		texture_dimensions,
+	};
+	enum class ArgumentRule {
+		sampled_image,
+		unary_float,
+		binary_float,
+		mix,
+		smoothstep,
+		sampled_texture,
+	};
+	ReturnRule return_rule = ReturnRule::same;
+	ArgumentRule argument_rule = ArgumentRule::unary_float;
 	u32 parameter_count = 0;
 };
 
 constexpr StdlibFunction kStdlibFunctions[] = {
-#define RTSL_STDLIB_FN(name, return_type, parameter_count) StdlibFunction{ #name, #return_type, parameter_count },
+#define RTSL_STDLIB_FN(name, operation, return_rule, argument_rule, parameter_count) \
+	StdlibFunction{ #name, StdlibFunction::ReturnRule::return_rule, StdlibFunction::ArgumentRule::argument_rule, parameter_count },
 #include "sema/stdlib.def"
 };
 
@@ -317,6 +334,63 @@ bool is_coordinate_type(std::string_view type) {
 	return type == "f32" || type == "vec2" || type == "vec3" || type == "vec4";
 }
 
+bool is_float_shape(std::string_view type) {
+	return type == "f32" || (is_vector_type(type) && vector_element(type) == "f32");
+}
+
+std::string unsigned_shape(std::string_view type) {
+	if (type == "f32") {
+		return "u32";
+	}
+	return is_vector_type(type) ? vector_spelling("u32", type.back() - '0') : std::string{};
+}
+
+std::string texture_dimension_type(std::string_view type) {
+	if (type == "Sampler2D" || type == "SamplerCube") {
+		return "ivec2";
+	}
+	if (type == "Sampler3D" || type == "Sampler2DArray") {
+		return "ivec3";
+	}
+	return {};
+}
+
+std::string stdlib_return_type(const StdlibFunction& function, std::span<const std::string> arguments) {
+	switch (function.return_rule) {
+	case StdlibFunction::ReturnRule::fixed_vec4: return "vec4";
+	case StdlibFunction::ReturnRule::same: return arguments.empty() ? std::string{} : arguments[0];
+	case StdlibFunction::ReturnRule::argument_2: return arguments.size() < 3 ? std::string{} : arguments[2];
+	case StdlibFunction::ReturnRule::unsigned_shape: return arguments.empty() ? std::string{} : unsigned_shape(arguments[0]);
+	case StdlibFunction::ReturnRule::texture_dimensions: return arguments.empty() ? std::string{} : texture_dimension_type(arguments[0]);
+	}
+	return {};
+}
+
+bool scalar_or_same_shape(std::string_view candidate, std::string_view shape) {
+	return candidate == shape || candidate == "f32";
+}
+
+bool stdlib_arguments_match(const StdlibFunction& function, std::span<const std::string> arguments) {
+	if (arguments.size() != function.parameter_count) {
+		return false;
+	}
+	switch (function.argument_rule) {
+	case StdlibFunction::ArgumentRule::sampled_image:
+		return is_sampled_resource_type(arguments[0]) && is_coordinate_type(arguments[1]);
+	case StdlibFunction::ArgumentRule::unary_float:
+		return is_float_shape(arguments[0]);
+	case StdlibFunction::ArgumentRule::binary_float:
+		return is_float_shape(arguments[0]) && scalar_or_same_shape(arguments[1], arguments[0]);
+	case StdlibFunction::ArgumentRule::mix:
+		return is_float_shape(arguments[0]) && arguments[1] == arguments[0] && scalar_or_same_shape(arguments[2], arguments[0]);
+	case StdlibFunction::ArgumentRule::smoothstep:
+		return is_float_shape(arguments[2]) && scalar_or_same_shape(arguments[0], arguments[2]) && scalar_or_same_shape(arguments[1], arguments[2]);
+	case StdlibFunction::ArgumentRule::sampled_texture:
+		return !texture_dimension_type(arguments[0]).empty();
+	}
+	return false;
+}
+
 std::string inline_layout_type_name(std::string_view qualified_name) {
 	return std::format("<layout:{}>", qualified_name);
 }
@@ -353,7 +427,7 @@ std::string uniform_value_type(std::string_view qualified_name, const SemanticMo
 			if (layout.is_inline_struct) {
 				return inline_layout_type_name(qualified_name);
 			}
-			return layout.type_spelling;
+			return layout.is_runtime_array ? layout.type_spelling + "[]" : layout.type_spelling;
 		}
 		return {};
 	}
@@ -453,18 +527,18 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 		}
 		const std::string_view callee = expr.children.front().text;
 		// Constructor: calling a type name yields that type.
-		if (known.contains(callee) && !is_scalar_type(callee)) {
-			// A struct/vector/matrix constructor produces its named type. (Bare
-			// scalar "constructors" like f32(x) are casts; handled as unknown.)
-			if (!callee.empty()) return std::string(callee);
-		}
-		if (const StdlibFunction* fn = find_stdlib_function(callee, expr.children.size() - 1)) {
-			return std::string(fn->return_type);
+		if (known.contains(callee)) {
+			if (!callee.empty()) {
+				return std::string(callee);
+			}
 		}
 		std::vector<std::string> argument_types;
 		argument_types.reserve(expr.children.size() - 1);
 		for (std::size_t i = 1; i < expr.children.size(); ++i) {
 			argument_types.push_back(infer_expr_type(expr.children[i], locals, module, known));
+		}
+		if (const StdlibFunction* fn = find_stdlib_function(callee, argument_types.size())) {
+			return stdlib_return_type(*fn, argument_types);
 		}
 		if (const SemanticSymbol* target = select_call_target(module.symbols, callee, argument_types)) {
 			return target->return_type;
@@ -483,6 +557,9 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 		}
 		const std::string lhs = infer_expr_type(expr.children[0], locals, module, known);
 		const std::string rhs = infer_expr_type(expr.children[1], locals, module, known);
+		if (expr.op == "[]") {
+			return lhs.ends_with("[]") ? lhs.substr(0, lhs.size() - 2) : std::string{};
+		}
 		if (!lhs.empty() && lhs == rhs) {
 			return lhs;
 		}
@@ -566,19 +643,17 @@ void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticM
 	if (expr.kind == Decl::Expr::Kind::call && !expr.children.empty()) {
 		const std::string_view callee = expr.children.front().text;
 		const auto candidates = function_candidates(module.symbols, callee);
-		if (!candidates.empty() || find_stdlib_function(callee, expr.children.size() - 1)) {
-			if (find_stdlib_function(callee, expr.children.size() - 1)) {
-				if (callee == "sample" && expr.children.size() == 3) {
-					const std::string resource_type = infer_expr_type(expr.children[1], locals, module, known);
-					const std::string coordinate_type = infer_expr_type(expr.children[2], locals, module, known);
-					if (!resource_type.empty() && !is_sampled_resource_type(resource_type)) {
-						diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-										   std::format("sample first argument must be a sampled image resource, not '{}'", resource_type));
-					}
-					if (!coordinate_type.empty() && !is_coordinate_type(coordinate_type)) {
-						diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-										   std::format("sample coordinates must be f32 or a float vector, not '{}'", coordinate_type));
-					}
+		const StdlibFunction* stdlib = find_stdlib_function(callee, expr.children.size() - 1);
+		if (!candidates.empty() || stdlib) {
+			if (stdlib) {
+				std::vector<std::string> argument_types;
+				argument_types.reserve(expr.children.size() - 1);
+				for (std::size_t i = 1; i < expr.children.size(); ++i) {
+					argument_types.push_back(infer_expr_type(expr.children[i], locals, module, known));
+				}
+				if (!stdlib_arguments_match(*stdlib, argument_types)) {
+					diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
+						std::format("invalid argument types for standard-library call '{}'", callee));
 				}
 				for (const auto& child : expr.children) {
 					check_calls(child, locals, module, known, diagnostics);
@@ -619,6 +694,21 @@ void check_member_access(const Decl::Expr& expr, const LocalEnv& locals, const S
 	}
 }
 
+void check_indexing(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module,
+	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+	if (expr.kind == Decl::Expr::Kind::binary && expr.op == "[]" && expr.children.size() == 2) {
+		const std::string base = infer_expr_type(expr.children[0], locals, module, known);
+		const std::string index = infer_expr_type(expr.children[1], locals, module, known);
+		if (!base.ends_with("[]") || (index != "i32" && index != "u32")) {
+			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
+				"indexing requires a runtime array and an i32 or u32 index");
+		}
+	}
+	for (const auto& child : expr.children) {
+		check_indexing(child, locals, module, known, diagnostics);
+	}
+}
+
 // One traversal of a function body, checking each statement's declared local
 // types, the calls in its expressions, and — for `return` statements — the
 // returned value against `return_type` (empty means "not a checkable type,
@@ -630,6 +720,7 @@ void check_body_statement(const Decl::BodyStatement& statement, std::string_view
 	}
 	check_calls(statement.expr, locals, module, known, diagnostics);
 	check_member_access(statement.expr, locals, module, known, diagnostics);
+	check_indexing(statement.expr, locals, module, known, diagnostics);
 	if (statement.kind == Decl::BodyStatementKind::return_stmt && statement.expr.kind != Decl::Expr::Kind::unknown) {
 		const std::string value = infer_expr_type(statement.expr, locals, module, known);
 		if (!types_compatible(return_type, value)) {
@@ -720,7 +811,7 @@ LayoutRule resolve_layout_rule(LayoutRule declared, bool is_storage_buffer) {
 
 void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
 	const auto layouts_match = [](const LayoutDecl& a, const LayoutDecl& b) {
-		if (a.rule != b.rule || a.is_inline_struct != b.is_inline_struct || a.type_spelling != b.type_spelling ||
+		if (a.rule != b.rule || a.is_inline_struct != b.is_inline_struct || a.is_runtime_array != b.is_runtime_array || a.type_spelling != b.type_spelling ||
 			a.inline_fields.size() != b.inline_fields.size()) {
 			return false;
 		}
@@ -754,6 +845,10 @@ void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
 			continue;
 		}
 		layout.rule = resolve_layout_rule(layout.rule, target.type == "StorageBuffer");
+		if (layout.is_runtime_array && target.type != "StorageBuffer") {
+			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
+				"runtime-array layouts require a StorageBuffer binding");
+		}
 		const auto [existing_it, inserted] = first_layout_for_uniform.emplace(target_it->second, li);
 		if (!inserted && !layouts_match(module.layouts[existing_it->second], layout)) {
 			diagnostics.report(DiagnosticCode::layout_duplicate, DiagnosticSeverity::error, layout.span.begin, module.source_name,

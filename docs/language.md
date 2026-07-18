@@ -69,3 +69,41 @@ varying.
 RTSL source does not declare `input`, `output`, or `varying` blocks. After
 linking, `rtsl::Program::entries()` exposes each stage's validated input
 and output interface directly to transpilers.
+
+## Storage-buffer arrays
+
+A storage-buffer layout can expose a runtime-sized array. The array is the
+entire buffer payload and supports dynamic `i32` or `u32` indexing.
+
+```rtsl
+uniform terrain {
+    readonly StorageBuffer cells;
+}
+
+layout terrain::cells : uvec4[];
+
+fn read_cell(u32 index) -> uvec4 {
+    return terrain::cells[index];
+}
+```
+
+Runtime-array layouts are valid only for `StorageBuffer` bindings. Their
+physical layout is `std430`; element stride is reflected in linked RTIR.
+
+## Standard library
+
+RTSL provides these scalar and float-vector operations:
+
+- `abs`, `floor`, `fract`, and `sqrt`
+- `min`, `max`, and `mod`
+- `mix` and `smoothstep`
+- `float_bits_to_uint` for width-preserving float-to-unsigned bit casts
+- `texture_size` for base-mip texture dimensions
+- `sample` for implicit-LOD texture sampling
+
+Scalar edge/factor arguments are accepted where the corresponding operation
+has a vector result. Numeric scalar and equal-width vector constructors perform
+explicit conversions, such as `f32(value)` and `vec2(texture_size(texture))`.
+
+Signed and unsigned integer values support arithmetic and the `&`, `|`, `^`,
+and `~` bitwise operators.

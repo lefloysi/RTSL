@@ -8,6 +8,8 @@ transpile individual shader stages.
 
 - complete vertex and fragment program model
 - typed stage inputs and outputs derived from ordinary structs
+- runtime-sized storage-buffer arrays with dynamic indexing
+- scalar/vector math, bit casts, bitwise operations, and texture-size queries
 - imports, object files, module interfaces, libraries, and linked programs
 - `rtslc` command-line compiler and linker
 - immutable C++23 SDK for backend authors

@@ -28,7 +28,7 @@ std::expected<Program, LoadError> compile_hlsl_program(std::string_view source) 
 	}
 	Artifact artifact = linker.link_program();
 	if (compiler.diagnostics().has_error()) {
-		return std::unexpected(LoadError{ .message = "program link failed" });
+		return std::unexpected(LoadError{ .message = compiler.diagnostics().diagnostics().front().message });
 	}
 	return load_program(std::as_bytes(std::span{ artifact.bytes }));
 }
@@ -115,4 +115,29 @@ TEST_CASE("HLSL transpiler compiles structured control flow") {
 	INFO(diagnostic);
 	REQUIRE(program.has_value());
 	require_compiles(*program, Stage::fragment, "fragment-control-flow");
+}
+
+TEST_CASE("HLSL transpiler compiles terrain shader language surface") {
+	auto program = compile_hlsl_program(
+		"uniform { readonly StorageBuffer cells; Sampler2D atlas; }\n"
+		"layout cells : uvec4[];\n"
+		"struct Point { vec3 position; vec2 uv; };\n"
+		"struct Vertex { vec4 position; vec2 uv; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {\n"
+		"    return Vertex(vec4(p.position, 1.0), p.uv);\n"
+		"}\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
+		"    uvec2 bits = float_bits_to_uint(abs(v.uv));\n"
+		"    u32 mask = (~u32(0) | u32(1)) ^ u32(2);\n"
+		"    u32 index = (bits.x + u32(1)) & mask & u32(3);\n"
+		"    uvec4 packed = cells[index];\n"
+		"    vec2 dimensions = vec2(texture_size(atlas));\n"
+		"    f32 value = sqrt(max(0.0, min(1.0, mod(f32(packed.x), dimensions.x))));\n"
+		"    f32 wave = smoothstep(0.0, 1.0, fract(abs(v.uv.y))) + floor(v.uv.x);\n"
+		"    return mix(sample(atlas, v.uv), vec4(value), wave);\n"
+		"}\n");
+	const std::string diagnostic = program.has_value() ? "loaded" : program.error().context + ": " + program.error().message;
+	INFO(diagnostic);
+	REQUIRE(program.has_value());
+	require_compiles(*program, Stage::fragment, "fragment-terrain-surface");
 }

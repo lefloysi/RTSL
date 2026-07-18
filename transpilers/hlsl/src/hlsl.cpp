@@ -207,6 +207,7 @@ class Emitter {
 		case ir::TypeKind::sampled_image:
 			return std::nullopt;
 		case ir::TypeKind::array:
+		case ir::TypeKind::runtime_array:
 		case ir::TypeKind::function:
 			break;
 		}
@@ -220,6 +221,12 @@ class Emitter {
 		for (const auto& value : program.types()) {
 			if (value.kind != ir::TypeKind::structure) {
 				continue;
+			}
+			if (value.members.size() == 1) {
+				const ir::Type* member = type(value.members.front());
+				if (member && member->kind == ir::TypeKind::runtime_array) {
+					continue;
+				}
 			}
 			line(std::format("struct {} {{", type_name(value.id)));
 			++indent;
@@ -264,7 +271,19 @@ class Emitter {
 				line(std::format("Texture2D<float4> {}_texture : register(t{}, space{});", name, binding, space));
 				line(std::format("SamplerState {}_sampler : register(s{}, space{});", name, binding, space));
 				break;
-			case ResourceKind::storage_buffer:
+			case ResourceKind::storage_buffer: {
+				const ir::Type* block = type(resource->value_type);
+				const ir::Type* array = block && block->kind == ir::TypeKind::structure && block->members.size() == 1
+					? type(block->members.front()) : nullptr;
+				const auto element = array && array->kind == ir::TypeKind::runtime_array
+					? hlsl_type(array->element_type) : std::nullopt;
+				if (!element) {
+					return fail(ErrorCode::unsupported_resource, "resources.storage_buffer", "storage buffer must contain one runtime array", resource->variable);
+				}
+				const bool read_only = resource->access == Access::read_only;
+				line(std::format("{}<{}> {} : register({}{}, space{});", read_only ? "StructuredBuffer" : "RWStructuredBuffer", *element, name, read_only ? "t" : "u", binding, space));
+				break;
+			}
 			case ResourceKind::storage_image:
 				return fail(ErrorCode::unsupported_resource, "resources", "storage resources are not implemented by the HLSL backend", resource->variable);
 			}
@@ -505,19 +524,36 @@ class Emitter {
 			return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "access chain base is not a known pointer", instruction.result_id, instruction.op);
 		}
 		current = type(current->element_type);
-		for (const ir::Id index_id : arguments->indices) {
+		const auto resource = resource_by_variable.find(arguments->base);
+		for (std::size_t position = 0; position < arguments->indices.size(); ++position) {
+			const ir::Id index_id = arguments->indices[position];
 			const auto index = constant_unsigned(index_id);
-			if (!index || !current) {
-				return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "access chain requires constant valid indices", instruction.result_id, instruction.op);
+			if (!current) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "access chain traverses an unknown type", instruction.result_id, instruction.op);
 			}
 			if (current->kind == ir::TypeKind::structure) {
+				if (position == 0 && resource != resource_by_variable.end() && resource->second->kind == ResourceKind::storage_buffer && index == 0 &&
+					current->members.size() == 1) {
+					const ir::Type* member = type(current->members.front());
+					if (member && member->kind == ir::TypeKind::runtime_array) {
+						current = member;
+						continue;
+					}
+				}
+				if (!index) {
+					return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "struct access requires a constant index", instruction.result_id, instruction.op);
+				}
 				if (*index >= current->members.size()) {
 					return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "struct access index is out of range", instruction.result_id, instruction.op);
 				}
 				*result += "." + field_name(static_cast<std::uint32_t>(*index));
 				current = type(current->members[static_cast<std::size_t>(*index)]);
-			} else if (current->kind == ir::TypeKind::vector || current->kind == ir::TypeKind::matrix || current->kind == ir::TypeKind::array) {
-				*result += std::format("[{}]", *index);
+			} else if (current->kind == ir::TypeKind::vector || current->kind == ir::TypeKind::matrix || current->kind == ir::TypeKind::array || current->kind == ir::TypeKind::runtime_array) {
+				const auto index_expression = expression(index_id);
+				if (!index_expression) {
+					return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "array access references an unknown index", instruction.result_id, instruction.op);
+				}
+				*result += std::format("[{}]", *index_expression);
 				current = type(current->element_type);
 			} else {
 				return fail(ErrorCode::unsupported_instruction, "instructions.access_chain", "access chain traverses a non-composite type", instruction.result_id, instruction.op);
@@ -697,19 +733,51 @@ class Emitter {
 		case ir::Op::CompositeInsert: return emit_insert(instruction);
 		case ir::Op::VectorShuffle: return emit_shuffle(instruction);
 		case ir::Op::FNegate:
+		case ir::Op::SNegate:
 		case ir::Op::LogicalNot: {
 			const auto* arguments = instruction.arguments_if<ir::UnaryArguments>();
 			const auto operand = arguments ? expression(arguments->operand) : std::nullopt;
 			if (!operand) {
 				return false;
 			}
-			return assign(instruction.result_id, std::format("({}{})", instruction.op == ir::Op::FNegate ? "-" : "!", *operand));
+			return assign(instruction.result_id, std::format("({}{})", instruction.op == ir::Op::LogicalNot ? "!" : "-", *operand));
 		}
 		case ir::Op::FMod: {
 			const auto* arguments = instruction.arguments_if<ir::BinaryArguments>();
 			const auto lhs = arguments ? expression(arguments->lhs) : std::nullopt;
 			const auto rhs = arguments ? expression(arguments->rhs) : std::nullopt;
-			return lhs && rhs ? assign(instruction.result_id, std::format("fmod({}, {})", *lhs, *rhs)) : false;
+			return lhs && rhs ? assign(instruction.result_id, std::format("({0} - {1} * floor({0} / {1}))", *lhs, *rhs)) : false;
+		}
+		case ir::Op::BitwiseNot:
+		case ir::Op::FAbs:
+		case ir::Op::Floor:
+		case ir::Op::Fract:
+		case ir::Op::Sqrt: {
+			const auto* arguments = instruction.arguments_if<ir::UnaryArguments>();
+			const auto operand = arguments ? expression(arguments->operand) : std::nullopt;
+			if (!operand) {
+				return false;
+			}
+			const std::string_view function = instruction.op == ir::Op::FAbs ? "abs"
+				: instruction.op == ir::Op::Floor ? "floor"
+				: instruction.op == ir::Op::Fract ? "frac" : "sqrt";
+			return assign(instruction.result_id, instruction.op == ir::Op::BitwiseNot
+				? std::format("(~{})", *operand) : std::format("{}({})", function, *operand));
+		}
+		case ir::Op::FMin:
+		case ir::Op::FMax: {
+			const auto* arguments = instruction.arguments_if<ir::BinaryArguments>();
+			const auto lhs = arguments ? expression(arguments->lhs) : std::nullopt;
+			const auto rhs = arguments ? expression(arguments->rhs) : std::nullopt;
+			return lhs && rhs ? assign(instruction.result_id, std::format("{}({}, {})", instruction.op == ir::Op::FMin ? "min" : "max", *lhs, *rhs)) : false;
+		}
+		case ir::Op::FMix:
+		case ir::Op::SmoothStep: {
+			const auto* arguments = instruction.arguments_if<ir::TernaryArguments>();
+			const auto first = arguments ? expression(arguments->first) : std::nullopt;
+			const auto second = arguments ? expression(arguments->second) : std::nullopt;
+			const auto third = arguments ? expression(arguments->third) : std::nullopt;
+			return first && second && third ? assign(instruction.result_id, std::format("{}({}, {}, {})", instruction.op == ir::Op::FMix ? "lerp" : "smoothstep", *first, *second, *third)) : false;
 		}
 		case ir::Op::MatrixTimesVector:
 		case ir::Op::MatrixTimesMatrix: {
@@ -741,9 +809,30 @@ class Emitter {
 			if (!operand || !target) {
 				return false;
 			}
-			const std::string function_name = target->kind == ir::TypeKind::floating ? "asfloat" :
-				target->kind == ir::TypeKind::signed_integer ? "asint" : "asuint";
+			const ir::Type* scalar = target->kind == ir::TypeKind::vector ? type(target->element_type) : target;
+			if (!scalar) {
+				return false;
+			}
+			const std::string function_name = scalar->kind == ir::TypeKind::floating ? "asfloat" :
+				scalar->kind == ir::TypeKind::signed_integer ? "asint" : "asuint";
 			return assign(instruction.result_id, std::format("{}({})", function_name, *operand));
+		}
+		case ir::Op::ImageQuerySize: {
+			const auto* arguments = instruction.arguments_if<ir::UnaryArguments>();
+			const auto image = arguments ? expression(arguments->operand) : std::nullopt;
+			const ir::Type* result = type(instruction.type_id);
+			if (!image || !result || result->kind != ir::TypeKind::vector || result->element_count < 2 || result->element_count > 3) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.image_query_size", "texture size query has an invalid shape", instruction.result_id, instruction.op);
+			}
+			std::string outputs;
+			for (std::uint32_t component = 0; component < result->element_count; ++component) {
+				if (component) {
+					outputs += ", ";
+				}
+				outputs += std::format("{}[{}]", value_name(instruction.result_id), component);
+			}
+			line(std::format("{}_texture.GetDimensions({});", *image, outputs));
+			return true;
 		}
 		case ir::Op::ImageSampleImplicitLod: {
 			const auto* arguments = instruction.arguments_if<ir::BinaryArguments>();
@@ -821,6 +910,9 @@ class Emitter {
 		case ir::Op::UGreaterEqual: operation = ">="; break;
 		case ir::Op::LogicalAnd: operation = "&&"; break;
 		case ir::Op::LogicalOr: operation = "||"; break;
+		case ir::Op::BitwiseAnd: operation = "&"; break;
+		case ir::Op::BitwiseOr: operation = "|"; break;
+		case ir::Op::BitwiseXor: operation = "^"; break;
 		default:
 			return fail(ErrorCode::unsupported_instruction, "instructions", "RTIR operation is not supported by the HLSL backend", instruction.result_id, instruction.op);
 		}

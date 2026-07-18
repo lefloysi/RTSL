@@ -1,6 +1,6 @@
 // stdlib.def — v0.1 standard-library function signatures.
 //
-//   RTSL_STDLIB_FN(name, return_type, parameter_count)
+//   RTSL_STDLIB_FN(name, operation, return_rule, argument_rule, parameter_count)
 //
 // Parameter types are checked by the operation-specific semantic rules until
 // the stdlib grows a richer signature model. This table owns the callable names
@@ -10,6 +10,17 @@
 #define RTSL_STDLIB_FN(name, return_type, parameter_count)
 #endif
 
-RTSL_STDLIB_FN(sample, vec4, 2)
+RTSL_STDLIB_FN(sample, ImageSampleImplicitLod, fixed_vec4, sampled_image, 2)
+RTSL_STDLIB_FN(abs, FAbs, same, unary_float, 1)
+RTSL_STDLIB_FN(floor, Floor, same, unary_float, 1)
+RTSL_STDLIB_FN(fract, Fract, same, unary_float, 1)
+RTSL_STDLIB_FN(sqrt, Sqrt, same, unary_float, 1)
+RTSL_STDLIB_FN(min, FMin, same, binary_float, 2)
+RTSL_STDLIB_FN(max, FMax, same, binary_float, 2)
+RTSL_STDLIB_FN(mod, FMod, same, binary_float, 2)
+RTSL_STDLIB_FN(mix, FMix, same, mix, 3)
+RTSL_STDLIB_FN(smoothstep, SmoothStep, argument_2, smoothstep, 3)
+RTSL_STDLIB_FN(float_bits_to_uint, Bitcast, unsigned_shape, unary_float, 1)
+RTSL_STDLIB_FN(texture_size, ImageQuerySize, texture_dimensions, sampled_texture, 1)
 
 #undef RTSL_STDLIB_FN

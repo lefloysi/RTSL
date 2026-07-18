@@ -167,6 +167,7 @@ struct TypeInfo {
 					  Vector,
 					  Matrix,
 					  Struct,
+					  RuntimeArray,
 					  Unknown };
 	Kind kind = Kind::Unknown;
 	u32 width = 0;									   // scalar width in bits
@@ -291,6 +292,20 @@ class TypeRegistry {
 			pointee = find("void");
 		}
 		return builder_.intern_type(std::format("ptr:{}:{}", raw_id(pointee), static_cast<u32>(sc)), IROp::TypePointer, ID<IRInstruction>{}, { pointee }, { static_cast<u32>(sc) });
+	}
+
+	ID<IRInstruction> runtime_array(std::string_view element_name) {
+		const std::string name = std::string(element_name) + "[]";
+		if (const ID<IRInstruction> existing = find(name)) {
+			return existing;
+		}
+		const ID<IRInstruction> element = find(element_name);
+		const ID<IRInstruction> id = builder_.intern_type(std::format("runtime_array:{}", raw_id(element)), IROp::TypeRuntimeArray, ID<IRInstruction>{}, { element }, {});
+		auto& info = info_[name];
+		info.id = id;
+		info.kind = TypeInfo::Kind::RuntimeArray;
+		info.element_type_id = element;
+		return id;
 	}
 
   private:
@@ -458,6 +473,36 @@ struct Value {
 	ID<IRInstruction> id = ID<IRInstruction>{};
 	ID<IRInstruction> type_id = ID<IRInstruction>{};
 };
+
+enum class IntrinsicResultRule {
+	fixed_vec4,
+	same,
+	argument_2,
+	unsigned_shape,
+	texture_dimensions,
+};
+
+struct Intrinsic {
+	std::string_view name;
+	IROp operation = IROp::Nop;
+	IntrinsicResultRule result_rule = IntrinsicResultRule::same;
+	u32 parameter_count = 0;
+};
+
+constexpr Intrinsic kIntrinsics[] = {
+#define RTSL_STDLIB_FN(name, operation, return_rule, argument_rule, parameter_count) \
+	Intrinsic{ #name, IROp::operation, IntrinsicResultRule::return_rule, parameter_count },
+#include "sema/stdlib.def"
+};
+
+const Intrinsic* find_intrinsic(std::string_view name, std::size_t parameter_count) {
+	for (const Intrinsic& intrinsic : kIntrinsics) {
+		if (intrinsic.name == name && intrinsic.parameter_count == parameter_count) {
+			return &intrinsic;
+		}
+	}
+	return nullptr;
+}
 
 class FunctionLowerer {
   public:
@@ -1056,14 +1101,21 @@ class FunctionLowerer {
 		case Decl::Expr::Kind::unary:
 			if (!expr.children.empty()) {
 				const Value child = lower_expr(expr.children.front());
-				if (child.id == ID<IRInstruction>{})
+				if (child.id == ID<IRInstruction>{}) {
 					return {};
-				if (expr.op == "-")
+				}
+				if (expr.op == "-") {
 					return emit_negate(child);
-				if (expr.op == "!")
+				}
+				if (expr.op == "!") {
 					return emit_unop(IROp::LogicalNot, child, types_.find("bool"));
-				if (expr.op == "+")
+				}
+				if (expr.op == "~") {
+					return emit_unop(IROp::BitwiseNot, child, child.type_id);
+				}
+				if (expr.op == "+") {
 					return child;
+				}
 				builder_.diagnose(expr.span.begin, std::format("unsupported unary operator '{}'", expr.op));
 				return {};
 			}
@@ -1072,24 +1124,42 @@ class FunctionLowerer {
 			if (expr.children.size() == 2) {
 				const Value lhs = lower_expr(expr.children[0]);
 				const Value rhs = lower_expr(expr.children[1]);
-				if (lhs.id == ID<IRInstruction>{} || rhs.id == ID<IRInstruction>{})
+				if (lhs.id == ID<IRInstruction>{} || rhs.id == ID<IRInstruction>{}) {
 					return {};
-				if (expr.op == "+")
-					return emit_binop(IROp::FAdd, lhs, rhs);
-				if (expr.op == "-")
-					return emit_binop(IROp::FSub, lhs, rhs);
-				if (expr.op == "*")
+				}
+				if (expr.op == "+" || expr.op == "-") {
+					return emit_additive(expr.op == "+", lhs, rhs);
+				}
+				if (expr.op == "*") {
 					return emit_mul_like(TokKind::star, lhs, rhs);
-				if (expr.op == "/")
+				}
+				if (expr.op == "/") {
 					return emit_mul_like(TokKind::slash, lhs, rhs);
-				if (expr.op == "%")
+				}
+				if (expr.op == "%") {
 					return emit_mul_like(TokKind::percent, lhs, rhs);
-				if (expr.op == "&&")
+				}
+				if (expr.op == "&") {
+					return emit_binop(IROp::BitwiseAnd, lhs, rhs);
+				}
+				if (expr.op == "|") {
+					return emit_binop(IROp::BitwiseOr, lhs, rhs);
+				}
+				if (expr.op == "^") {
+					return emit_binop(IROp::BitwiseXor, lhs, rhs);
+				}
+				if (expr.op == "[]") {
+					return emit_index(lhs, rhs, expr.span.begin);
+				}
+				if (expr.op == "&&") {
 					return emit_binop_typed(IROp::LogicalAnd, lhs, rhs, types_.find("bool"));
-				if (expr.op == "||")
+				}
+				if (expr.op == "||") {
 					return emit_binop_typed(IROp::LogicalOr, lhs, rhs, types_.find("bool"));
-				if (const auto cmp = comparison_op(expr.op, lhs.type_id))
+				}
+				if (const auto cmp = comparison_op(expr.op, lhs.type_id)) {
 					return emit_binop_typed(*cmp, lhs, rhs, types_.find("bool"));
+				}
 				builder_.diagnose(expr.span.begin, std::format("unsupported binary operator '{}'", expr.op));
 			}
 			return {};
@@ -1226,7 +1296,14 @@ class FunctionLowerer {
 
 	[[nodiscard]] TypeInfo::Kind scalar_kind_of(ID<IRInstruction> type_id) const {
 		const TypeInfo* info = types_.info_by_id(type_id);
-		return info ? info->kind : TypeInfo::Kind::Float;
+		if (!info) {
+			return TypeInfo::Kind::Unknown;
+		}
+		if (info->kind == TypeInfo::Kind::Vector) {
+			const TypeInfo* element = types_.info_by_id(info->element_type_id);
+			return element ? element->kind : TypeInfo::Kind::Unknown;
+		}
+		return info->kind;
 	}
 
 	// Name lookup that handles locals, parameters, struct field names (when
@@ -1287,6 +1364,10 @@ class FunctionLowerer {
 			const ID<IRInstruction> var_id = vit->second;
 			const ID<IRInstruction> ptr_ty = uniform_var_type_ids_.at(lookup_name);
 			const ID<IRInstruction> value_ty = uniform_value_type_ids_.at(lookup_name);
+			if (const TypeInfo* value_info = types_.info_by_id(value_ty);
+				value_info && value_info->kind == TypeInfo::Kind::RuntimeArray) {
+				return Value{ var_id, value_ty };
+			}
 			// Find the physical pointee and storage class by scanning the small
 			// compile-time type pool.
 			ID<IRInstruction> pointee_ty = ID<IRInstruction>{};
@@ -1397,9 +1478,124 @@ class FunctionLowerer {
 		return base;
 	}
 
+	Value splat(const Value& value, ID<IRInstruction> target_type) {
+		const TypeInfo* target = types_.info_by_id(target_type);
+		if (!target || target->kind != TypeInfo::Kind::Vector || value.type_id != target->element_type_id) {
+			return value;
+		}
+		IRInstruction construct;
+		construct.op = IROp::CompositeConstruct;
+		construct.result_id = builder_.fresh_id();
+		construct.type_id = target_type;
+		construct.operands.assign(target->components, value.id);
+		fn_.body.push_back(std::move(construct));
+		return Value{ fn_.body.back().result_id, target_type };
+	}
+
+	Value convert(const Value& value, ID<IRInstruction> target_type, SourceLocation location) {
+		if (value.type_id == target_type) {
+			return value;
+		}
+		const TypeInfo* source = types_.info_by_id(value.type_id);
+		const TypeInfo* target = types_.info_by_id(target_type);
+		if (!source || !target) {
+			return {};
+		}
+		const TypeInfo::Kind source_kind = source->kind == TypeInfo::Kind::Vector ? scalar_kind_of(source->element_type_id) : source->kind;
+		const TypeInfo::Kind target_kind = target->kind == TypeInfo::Kind::Vector ? scalar_kind_of(target->element_type_id) : target->kind;
+		const u32 source_components = source->kind == TypeInfo::Kind::Vector ? source->components : 1;
+		const u32 target_components = target->kind == TypeInfo::Kind::Vector ? target->components : 1;
+		if (source_components != target_components) {
+			builder_.diagnose(location, "numeric conversion requires matching scalar or vector shapes");
+			return {};
+		}
+		IROp operation = IROp::Nop;
+		if (source_kind == TypeInfo::Kind::Float && target_kind == TypeInfo::Kind::UInt) {
+			operation = IROp::ConvertFToU;
+		} else if (source_kind == TypeInfo::Kind::Float && target_kind == TypeInfo::Kind::Int) {
+			operation = IROp::ConvertFToS;
+		} else if (source_kind == TypeInfo::Kind::Int && target_kind == TypeInfo::Kind::Float) {
+			operation = IROp::ConvertSToF;
+		} else if (source_kind == TypeInfo::Kind::UInt && target_kind == TypeInfo::Kind::Float) {
+			operation = IROp::ConvertUToF;
+		} else if ((source_kind == TypeInfo::Kind::Int && target_kind == TypeInfo::Kind::UInt) ||
+			(source_kind == TypeInfo::Kind::UInt && target_kind == TypeInfo::Kind::Int)) {
+			operation = IROp::Bitcast;
+		}
+		if (operation == IROp::Nop) {
+			builder_.diagnose(location, "unsupported numeric conversion");
+			return {};
+		}
+		return emit_unop(operation, value, target_type);
+	}
+
+	ID<IRInstruction> intrinsic_result_type(const Intrinsic& intrinsic, std::span<const Value> args) {
+		switch (intrinsic.result_rule) {
+		case IntrinsicResultRule::fixed_vec4: return types_.find("vec4");
+		case IntrinsicResultRule::same: return args[0].type_id;
+		case IntrinsicResultRule::argument_2: return args[2].type_id;
+		case IntrinsicResultRule::unsigned_shape: {
+			const TypeInfo* source = types_.info_by_id(args[0].type_id);
+			return source && source->kind == TypeInfo::Kind::Vector ? types_.vector_of(types_.find("u32"), source->components) : types_.find("u32");
+		}
+		case IntrinsicResultRule::texture_dimensions: {
+			for (const auto& type : builder_.module().type_constant_pool) {
+				if (type.result_id != args[0].type_id || type.op != IROp::TypeSampledImage || type.operands.empty()) {
+					continue;
+				}
+				for (const auto& image : builder_.module().type_constant_pool) {
+					if (image.result_id != type.operands[0] || image.op != IROp::TypeImage || image.literals.size() < 2) {
+						continue;
+					}
+					const bool three_components = image.literals[0] == static_cast<u32>(ir::ImageDimension::three) || image.literals[1] != 0;
+					return types_.find(three_components ? "ivec3" : "ivec2");
+				}
+			}
+			return types_.find("ivec2");
+		}
+		}
+		return {};
+	}
+
+	Value emit_intrinsic(const Intrinsic& intrinsic, std::span<const Value> source_args) {
+		std::vector<Value> args{ source_args.begin(), source_args.end() };
+		const ID<IRInstruction> result_type = intrinsic_result_type(intrinsic, args);
+		if (intrinsic.operation == IROp::FMin || intrinsic.operation == IROp::FMax || intrinsic.operation == IROp::FMod) {
+			args[1] = splat(args[1], args[0].type_id);
+		}
+		if (intrinsic.operation == IROp::FMix) {
+			args[2] = splat(args[2], args[0].type_id);
+		}
+		if (intrinsic.operation == IROp::SmoothStep) {
+			args[0] = splat(args[0], args[2].type_id);
+			args[1] = splat(args[1], args[2].type_id);
+		}
+		IRInstruction instruction;
+		instruction.op = intrinsic.operation;
+		instruction.result_id = builder_.fresh_id();
+		instruction.type_id = result_type;
+		for (const Value& argument : args) {
+			instruction.operands.push_back(argument.id);
+		}
+		fn_.body.push_back(std::move(instruction));
+		return Value{ fn_.body.back().result_id, result_type };
+	}
+
 	Value emit_call(std::string_view callee, std::span<const Value> args, SourceLocation location) {
 		// Constructor of a known type.
 		if (const ID<IRInstruction> type_id = types_.find(callee); type_id) {
+			const TypeInfo* target = types_.info_by_id(type_id);
+			if (args.size() == 1 && target && (target->kind == TypeInfo::Kind::Int || target->kind == TypeInfo::Kind::UInt || target->kind == TypeInfo::Kind::Float)) {
+				return convert(args[0], type_id, location);
+			}
+			if (args.size() == 1 && target && target->kind == TypeInfo::Kind::Vector) {
+				if (args[0].type_id == target->element_type_id) {
+					return splat(args[0], type_id);
+				}
+				if (const TypeInfo* source = types_.info_by_id(args[0].type_id); source && source->kind == TypeInfo::Kind::Vector) {
+					return convert(args[0], type_id, location);
+				}
+			}
 			// Type construction is structural: first try a declared member-init
 			// function, then fall back to aggregate construction only when the
 			// argument list exactly matches the type's fields.
@@ -1430,15 +1626,8 @@ class FunctionLowerer {
 			fn_.body.push_back(std::move(construct));
 			return Value{ fn_.body.back().result_id, type_id };
 		}
-		// Texture / sample primitive.
-		if (callee == "sample" && args.size() == 2) {
-			IRInstruction inst;
-			inst.op = IROp::ImageSampleImplicitLod;
-			inst.result_id = builder_.fresh_id();
-			inst.type_id = types_.find("vec4");
-			inst.operands = { args[0].id, args[1].id };
-			fn_.body.push_back(std::move(inst));
-			return Value{ inst.result_id, types_.find("vec4") };
+		if (const Intrinsic* intrinsic = find_intrinsic(callee, args.size())) {
+			return emit_intrinsic(*intrinsic, args);
 		}
 		// User function: emit a generic FunctionCall referencing the callee by
 		// name. The single-module inliner (or the linker, for cross-module
@@ -1568,7 +1757,7 @@ class FunctionLowerer {
 
 	Value emit_negate(const Value& v) {
 		IRInstruction inst;
-		inst.op = IROp::FNegate;
+		inst.op = scalar_kind_of(v.type_id) == TypeInfo::Kind::Float ? IROp::FNegate : IROp::SNegate;
 		inst.result_id = builder_.fresh_id();
 		inst.type_id = v.type_id;
 		inst.operands = { v.id };
@@ -1586,6 +1775,36 @@ class FunctionLowerer {
 		return Value{ inst.result_id, result_ty };
 	}
 
+	Value emit_additive(bool addition, const Value& lhs, const Value& rhs) {
+		const bool is_float = scalar_kind_of(lhs.type_id) == TypeInfo::Kind::Float;
+		return emit_binop(addition ? (is_float ? IROp::FAdd : IROp::IAdd)
+								  : (is_float ? IROp::FSub : IROp::ISub),
+			lhs, rhs);
+	}
+
+	Value emit_index(const Value& base, const Value& index, SourceLocation location) {
+		const TypeInfo* array = types_.info_by_id(base.type_id);
+		if (!array || array->kind != TypeInfo::Kind::RuntimeArray) {
+			builder_.diagnose(location, "indexing currently requires a storage-buffer runtime array");
+			return {};
+		}
+		IRInstruction chain;
+		chain.op = IROp::AccessChain;
+		chain.result_id = builder_.fresh_id();
+		chain.type_id = types_.pointer_to(array->element_type_id, StorageClass::StorageBuffer);
+		chain.operands = { base.id, constant_uint(0), index.id };
+		const ID<IRInstruction> chain_id = chain.result_id;
+		fn_.body.push_back(std::move(chain));
+
+		IRInstruction load;
+		load.op = IROp::Load;
+		load.result_id = builder_.fresh_id();
+		load.type_id = array->element_type_id;
+		load.operands = { chain_id };
+		fn_.body.push_back(std::move(load));
+		return Value{ load.result_id, array->element_type_id };
+	}
+
 	Value emit_mul_like(TokKind op, const Value& lhs, const Value& rhs) {
 		// Pick the right SPIR-V-ish opcode based on the operand types.
 		const TypeInfo* lhs_info = types_.info_by_id(lhs.type_id);
@@ -1601,11 +1820,15 @@ class FunctionLowerer {
 				return emit_binop_typed(IROp::VectorTimesScalar, lhs, rhs, lhs.type_id);
 			}
 		}
-		IROp ir_op = IROp::FMul;
-		if (op == TokKind::slash)
-			ir_op = IROp::FDiv;
-		else if (op == TokKind::percent)
-			ir_op = IROp::FMod;
+		const TypeInfo::Kind scalar_kind = scalar_kind_of(lhs.type_id);
+		IROp ir_op = scalar_kind == TypeInfo::Kind::Float ? IROp::FMul : IROp::IMul;
+		if (op == TokKind::slash) {
+			ir_op = scalar_kind == TypeInfo::Kind::Float ? IROp::FDiv
+				: scalar_kind == TypeInfo::Kind::UInt ? IROp::UDiv : IROp::SDiv;
+		} else if (op == TokKind::percent) {
+			ir_op = scalar_kind == TypeInfo::Kind::Float ? IROp::FMod
+				: scalar_kind == TypeInfo::Kind::UInt ? IROp::UMod : IROp::SMod;
+		}
 		return emit_binop(ir_op, lhs, rhs);
 	}
 
@@ -2061,7 +2284,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		return qn;
 	};
 	const auto layouts_match = [](const LayoutDecl& a, const LayoutDecl& b) {
-		if (a.is_inline_struct != b.is_inline_struct) return false;
+		if (a.is_inline_struct != b.is_inline_struct || a.is_runtime_array != b.is_runtime_array) return false;
 		if (!a.is_inline_struct) return a.type_spelling == b.type_spelling;
 		if (a.inline_fields.size() != b.inline_fields.size()) return false;
 		for (std::size_t i = 0; i < a.inline_fields.size(); ++i) {
@@ -2145,6 +2368,21 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 					loaded_value_ty = value_ty;
 					buffer_layout = compute_buffer_layout(layout.inline_fields, rule);
 					buffer_field_count = layout.inline_fields.size();
+				} else if (layout.is_runtime_array) {
+					loaded_value_ty = types.runtime_array(layout.type_spelling);
+					StructField wrapper{ .type = layout.type_spelling + "[]", .name = "values" };
+					const std::array fields{ wrapper };
+					value_ty = types.register_anon_struct(qn + ":block", fields);
+					const StructField element{ .type = layout.type_spelling, .name = "element" };
+					const std::array elements{ element };
+					const BufferLayout element_layout = compute_buffer_layout(elements, rule);
+					const u32 stride = element_layout.members.empty() ? 0 : align_up(element_layout.members[0].consumed_size, element_layout.members[0].base_alignment);
+					buffer_layout = BufferLayout{
+						.members = { MemberLayout{ .offset = 0, .base_alignment = element_layout.alignment } },
+						.alignment = element_layout.alignment,
+					};
+					buffer_field_count = 1;
+					builder.add_decoration({ .target = loaded_value_ty, .kind = IRDecorationKind::ArrayStride, .literals = { stride } });
 				} else {
 					loaded_value_ty = types.find(layout.type_spelling);
 					if (loaded_value_ty == ID<IRInstruction>{} && diagnostics) {

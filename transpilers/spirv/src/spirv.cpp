@@ -111,7 +111,7 @@ constexpr std::array direct_operations{
 	DirectOperation{ ir::Op::FSub, spv::Op::OpFSub },
 	DirectOperation{ ir::Op::FMul, spv::Op::OpFMul },
 	DirectOperation{ ir::Op::FDiv, spv::Op::OpFDiv },
-	DirectOperation{ ir::Op::FMod, spv::Op::OpFRem },
+	DirectOperation{ ir::Op::FMod, spv::Op::OpFMod },
 	DirectOperation{ ir::Op::FNegate, spv::Op::OpFNegate },
 	DirectOperation{ ir::Op::IAdd, spv::Op::OpIAdd },
 	DirectOperation{ ir::Op::ISub, spv::Op::OpISub },
@@ -149,6 +149,11 @@ constexpr std::array direct_operations{
 	DirectOperation{ ir::Op::ConvertSToF, spv::Op::OpConvertSToF },
 	DirectOperation{ ir::Op::ConvertUToF, spv::Op::OpConvertUToF },
 	DirectOperation{ ir::Op::Bitcast, spv::Op::OpBitcast },
+	DirectOperation{ ir::Op::BitwiseAnd, spv::Op::OpBitwiseAnd },
+	DirectOperation{ ir::Op::BitwiseOr, spv::Op::OpBitwiseOr },
+	DirectOperation{ ir::Op::BitwiseXor, spv::Op::OpBitwiseXor },
+	DirectOperation{ ir::Op::BitwiseNot, spv::Op::OpNot },
+	DirectOperation{ ir::Op::SNegate, spv::Op::OpSNegate },
 	DirectOperation{ ir::Op::SampledImage, spv::Op::OpSampledImage },
 	DirectOperation{ ir::Op::ImageSampleImplicitLod, spv::Op::OpImageSampleImplicitLod },
 	DirectOperation{ ir::Op::ImageSampleExplicitLod, spv::Op::OpImageSampleExplicitLod },
@@ -217,6 +222,10 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::UnaryArgument
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::BinaryArguments& arguments) {
 	words.insert(words.end(), { arguments.lhs.value, arguments.rhs.value });
+}
+
+void append_arguments(std::vector<std::uint32_t>& words, const ir::TernaryArguments& arguments) {
+	words.insert(words.end(), { arguments.first.value, arguments.second.value, arguments.third.value });
 }
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::BranchArguments& arguments) {
@@ -294,6 +303,9 @@ class SpirvEmitter {
 			if (type.kind == ir::TypeKind::void_) {
 				void_type = type.id;
 			}
+			if (type.kind == ir::TypeKind::signed_integer && type.bit_width == 32) {
+				signed_int_type = type.id;
+			}
 		}
 		if (!void_type) {
 			return std::unexpected(make_error(ErrorCode::unsupported_type, "types", "program has no void type"));
@@ -310,6 +322,12 @@ class SpirvEmitter {
 		}
 
 		glsl_ext = fresh_id();
+		if (uses_image_queries()) {
+			if (!signed_int_type) {
+				return std::unexpected(make_error(ErrorCode::unsupported_type, "types", "image size query requires i32"));
+			}
+			image_query_lod = fresh_id();
+		}
 		source_function_type = fresh_id();
 		wrapper_function_type = fresh_id();
 		wrapper_function = fresh_id();
@@ -367,6 +385,36 @@ class SpirvEmitter {
 		return ir::Id{ next_id++ };
 	}
 
+	bool uses_image_queries() const {
+		return std::ranges::any_of(function->blocks, [](const ir::Block& block) {
+			return std::ranges::any_of(block.instructions, [](const ir::Instruction& instruction) {
+				return instruction.op == ir::Op::ImageQuerySize;
+			});
+		});
+	}
+
+	std::optional<ir::Id> value_type(ir::Id id) const {
+		if (const ir::Constant* constant = program.find_constant(id)) {
+			return constant->type;
+		}
+		if (const ir::Global* global = program.find_global(id)) {
+			return global->type;
+		}
+		for (const auto& parameter : function->parameters) {
+			if (parameter.id == id) {
+				return parameter.type;
+			}
+		}
+		for (const auto& block : function->blocks) {
+			for (const auto& instruction : block.instructions) {
+				if (instruction.result_id == id) {
+					return instruction.type_id;
+				}
+			}
+		}
+		return std::nullopt;
+	}
+
 	ir::Id pointer_type(ir::Id value_type, spv::StorageClass storage) {
 		for (const auto& pointer : pointer_types) {
 			if (pointer.value_type == value_type && pointer.storage == storage) {
@@ -406,6 +454,9 @@ class SpirvEmitter {
 
 	void emit_preamble() {
 		emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::Shader) });
+		if (uses_image_queries()) {
+			emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::ImageQuery) });
+		}
 		for (const auto* resource : selected_resources) {
 			if (resource->kind != ResourceKind::storage_image) {
 				continue;
@@ -558,6 +609,10 @@ class SpirvEmitter {
 			operands.insert(operands.end(), { type.element_type.value, type.array_length.value });
 			emit(types_globals, spv::Op::OpTypeArray, operands);
 			return true;
+		case ir::TypeKind::runtime_array:
+			operands.push_back(type.element_type.value);
+			emit(types_globals, spv::Op::OpTypeRuntimeArray, operands);
+			return true;
 		case ir::TypeKind::function:
 			operands.push_back(type.element_type.value);
 			for (const auto parameter : type.members) {
@@ -631,6 +686,9 @@ class SpirvEmitter {
 				emit(types_globals, spv::Op::OpConstantComposite, operands);
 				break;
 			}
+		}
+		if (image_query_lod) {
+			emit(types_globals, spv::Op::OpConstant, { signed_int_type.value, image_query_lod.value, 0 });
 		}
 
 		for (const auto* resource : selected_resources) {
@@ -706,6 +764,36 @@ class SpirvEmitter {
 		case ir::Op::Cross: {
 			const std::array prefix{ glsl_ext.value, static_cast<std::uint32_t>(GLSLstd450Cross) };
 			return emit_result_instruction(spv::Op::OpExtInst, instruction, prefix);
+		}
+		case ir::Op::FAbs:
+		case ir::Op::Floor:
+		case ir::Op::Fract:
+		case ir::Op::Sqrt:
+		case ir::Op::FMin:
+		case ir::Op::FMax:
+		case ir::Op::FMix:
+		case ir::Op::SmoothStep: {
+			const std::uint32_t operation = instruction.op == ir::Op::FAbs ? GLSLstd450FAbs
+				: instruction.op == ir::Op::Floor ? GLSLstd450Floor
+				: instruction.op == ir::Op::Fract ? GLSLstd450Fract
+				: instruction.op == ir::Op::Sqrt ? GLSLstd450Sqrt
+				: instruction.op == ir::Op::FMin ? GLSLstd450FMin
+				: instruction.op == ir::Op::FMax ? GLSLstd450FMax
+				: instruction.op == ir::Op::FMix ? GLSLstd450FMix : GLSLstd450SmoothStep;
+			const std::array prefix{ glsl_ext.value, operation };
+			return emit_result_instruction(spv::Op::OpExtInst, instruction, prefix);
+		}
+		case ir::Op::ImageQuerySize: {
+			const auto* arguments = instruction.arguments_if<ir::UnaryArguments>();
+			const auto sampled_type_id = arguments ? value_type(arguments->operand) : std::nullopt;
+			const ir::Type* sampled_type = sampled_type_id ? program.find_type(*sampled_type_id) : nullptr;
+			if (!arguments || !sampled_type || sampled_type->kind != ir::TypeKind::sampled_image) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.image_query_size", "image query operand is not a sampled image", instruction.result_id, instruction.op);
+			}
+			const ir::Id image = fresh_id();
+			emit(functions, spv::Op::OpImage, { sampled_type->element_type.value, image.value, arguments->operand.value });
+			emit(functions, spv::Op::OpImageQuerySizeLod, { instruction.type_id.value, instruction.result_id.value, image.value, image_query_lod.value });
+			return true;
 		}
 		case ir::Op::Branch:
 			emit_instruction_arguments(spv::Op::OpBranch, instruction);
@@ -868,6 +956,8 @@ class SpirvEmitter {
 
 	ir::Id void_type{};
 	ir::Id glsl_ext{};
+	ir::Id signed_int_type{};
+	ir::Id image_query_lod{};
 	ir::Id source_function_type{};
 	ir::Id wrapper_function_type{};
 	ir::Id wrapper_function{};

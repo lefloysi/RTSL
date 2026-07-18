@@ -102,6 +102,12 @@ struct BinaryArguments {
 	Id rhs{};
 };
 
+struct TernaryArguments {
+	Id first{};
+	Id second{};
+	Id third{};
+};
+
 struct BranchArguments {
 	Id target{};
 };
@@ -149,6 +155,7 @@ using InstructionArguments = std::variant<
 	VectorShuffleArguments,
 	UnaryArguments,
 	BinaryArguments,
+	TernaryArguments,
 	BranchArguments,
 	BranchConditionalArguments,
 	SelectionMergeArguments,
@@ -215,6 +222,7 @@ enum class TypeKind : std::uint8_t {
 	structure,
 	pointer,
 	array,
+	runtime_array,
 	function,
 	image,
 	sampler,

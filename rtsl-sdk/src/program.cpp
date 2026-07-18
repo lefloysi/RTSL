@@ -53,7 +53,7 @@ ir::StorageClass storage_class(std::uint32_t value) {
 }
 
 bool is_type_op(IROp op) {
-	return op >= IROp::TypeVoid && op <= IROp::TypeSampledImage;
+	return (op >= IROp::TypeVoid && op <= IROp::TypeSampledImage) || op == IROp::TypeRuntimeArray;
 }
 
 bool is_constant_op(IROp op) {
@@ -109,6 +109,11 @@ std::expected<ir::Type, LoadError> make_type(const IRInstruction& instruction) {
 		type.kind = ir::TypeKind::array;
 		type.element_type = instruction.operands[0];
 		type.array_length = instruction.operands[1];
+		break;
+	case IROp::TypeRuntimeArray:
+		if (!exact(1, 0)) return malformed();
+		type.kind = ir::TypeKind::runtime_array;
+		type.element_type = instruction.operands[0];
 		break;
 	case IROp::TypeFunction:
 		if (instruction.operands.empty() || !instruction.literals.empty()) return malformed();
@@ -310,6 +315,13 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 	case IROp::ConvertSToF:
 	case IROp::ConvertUToF:
 	case IROp::Bitcast:
+	case IROp::BitwiseNot:
+	case IROp::FAbs:
+	case IROp::Floor:
+	case IROp::Fract:
+	case IROp::Sqrt:
+	case IROp::ImageQuerySize:
+	case IROp::SNegate:
 		valid = exact(1, 0);
 		if (valid) instruction.arguments = ir::UnaryArguments{ .operand = source.operands[0] };
 		break;
@@ -323,8 +335,19 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 	case IROp::ULess: case IROp::ULessEqual: case IROp::UGreater: case IROp::UGreaterEqual:
 	case IROp::LogicalAnd: case IROp::LogicalOr: case IROp::SampledImage:
 	case IROp::ImageSampleImplicitLod: case IROp::ImageRead:
+	case IROp::BitwiseAnd: case IROp::BitwiseOr: case IROp::BitwiseXor:
+	case IROp::FMin: case IROp::FMax:
 		valid = exact(2, 0);
 		if (valid) instruction.arguments = ir::BinaryArguments{ .lhs = source.operands[0], .rhs = source.operands[1] };
+		break;
+	case IROp::FMix:
+	case IROp::SmoothStep:
+		valid = exact(3, 0);
+		if (valid) instruction.arguments = ir::TernaryArguments{
+			.first = source.operands[0],
+			.second = source.operands[1],
+			.third = source.operands[2],
+		};
 		break;
 	case IROp::ImageSampleExplicitLod:
 		valid = exact(3, 0);
@@ -381,7 +404,8 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 		source.op == IROp::CompositeExtract || source.op == IROp::CompositeInsert ||
 		source.op == IROp::VectorShuffle ||
 		(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
-		(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead);
+		(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
+		(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate);
 	if (produces_value != static_cast<bool>(source.result_id) ||
 		produces_value != static_cast<bool>(source.type_id)) {
 		valid = false;
@@ -420,6 +444,8 @@ bool ir::Instruction::references(ir::Id id) const noexcept {
 			return value.operand == id;
 		} else if constexpr (std::is_same_v<Arguments, ir::BinaryArguments>) {
 			return value.lhs == id || value.rhs == id;
+		} else if constexpr (std::is_same_v<Arguments, ir::TernaryArguments>) {
+			return value.first == id || value.second == id || value.third == id;
 		} else if constexpr (std::is_same_v<Arguments, ir::BranchArguments>) {
 			return value.target == id;
 		} else if constexpr (std::is_same_v<Arguments, ir::BranchConditionalArguments>) {
@@ -542,7 +568,7 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 		data->constants.reserve(module.type_constant_pool.size());
 		std::vector<bool> pool_definitions(id_limit, false);
 		for (const IRInstruction& instruction : module.type_constant_pool) {
-			if (static_cast<std::size_t>(instruction.op) >= ir::op_count)
+			if (static_cast<std::size_t>(instruction.op) >= wire_op_count)
 				return std::unexpected(invalid_program("type_constant_pool", "pool entry has an invalid opcode"));
 			for (const ir::Id operand : instruction.operands) {
 				if (!operand || operand.value >= id_limit || !pool_definitions[operand.value])

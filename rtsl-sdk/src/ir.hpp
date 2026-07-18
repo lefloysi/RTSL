@@ -4,6 +4,7 @@
 #include "reflection.hpp"
 #include "rtsl/sdk/program.hpp"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,11 @@ enum class IROp : u16 {
 #define RTSL_WIRE_OP(name, display_name) name,
 #include "wire_ops.def"
 };
+
+inline constexpr std::size_t wire_op_count = 0
+#define RTSL_WIRE_OP(name, display_name) +1
+#include "wire_ops.def"
+;
 
 [[nodiscard]] inline constexpr const char* ir_op_name(IROp op) {
 	switch (op) {
