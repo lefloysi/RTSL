@@ -111,4 +111,27 @@ None.
 
 ## Continuation notes
 
+Follow-up cleanup completed:
+
+- Moved the SPIR-V target from `rtsl-spirv/` to `transpilers/spirv/` and
+  updated build, install, and documentation paths.
+- Removed the legacy draft HLSL bridge from the DX12 backend; DX12 now reports
+  unsupported graphics-program finalization explicitly and defaults off.
+- Removed the triangle embed wrapper header and declared its generated program
+  directly in the consuming source.
+- Rebuilt `rt-vk13` and the full triangle executable successfully.
+- Rebuilt the standalone test targets from the relocated transpiler path; all
+  6 CTest tests passed.
+- Preserved full expression source spans through unary, binary, member, and
+  call parsing, then threaded expression locations through IR diagnostics.
+- Added a regression test proving RTSL3201 reports the unknown identifier's
+  actual line and column; all 6 CTest tests still pass.
+- Removed stale glslang/SPIRV-Cross dependencies and updated the architecture
+  document to describe the direct RTIR-to-target-transpiler path.
+- Centralized Vulkan descriptor-kind mapping and graphics-program cleanup,
+  removed unused bridge includes, and made invalid stage handling explicit.
+- The final Vulkan sources compile. The current relink is deferred because the
+  user has the triangle example open and it owns `rt-vk13.dll`; the existing
+  process was deliberately left running.
+
 DONE.

@@ -14,10 +14,11 @@ endif()
 
 # RTSL is split into sibling project folders:
 #
-#   rtsl/       compiler library project
-#   rtslc/      command line tool project
-#   rtsl-sdk/   shared core project used by compiler and transpilers
-#   rtsl-spirv/ SPIR-V transpiler project; depends only on rtsl-sdk
+#   rtsl/               compiler library project
+#   rtslc/              command line tool project
+#   rtsl-sdk/           shared core project used by compiler and transpilers
+#   transpilers/hlsl/   HLSL transpiler project; depends only on rtsl-sdk
+#   transpilers/spirv/  SPIR-V transpiler project; depends only on rtsl-sdk
 
 set(_rtsl_src "${CMAKE_CURRENT_SOURCE_DIR}/rtsl/src")
 set(_rtsl_include "${CMAKE_CURRENT_SOURCE_DIR}/rtsl/include")
@@ -63,17 +64,18 @@ target_include_directories(rtsl-sdk
         "${_rtsl_sdk_src}"
 )
 
-add_subdirectory(rtsl-spirv)
+add_subdirectory(transpilers/hlsl)
+add_subdirectory(transpilers/spirv)
 
 set(_rtsl_package_dir "${CMAKE_INSTALL_LIBDIR}/cmake/RTSL")
 
-install(TARGETS rtsl-sdk rtsl-spirv
+install(TARGETS rtsl-sdk rtsl-hlsl rtsl-spirv
 	EXPORT RTSLTargets
 	ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 	LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
-install(DIRECTORY rtsl-sdk/include/ rtsl-spirv/include/
+install(DIRECTORY rtsl-sdk/include/ transpilers/hlsl/include/ transpilers/spirv/include/
 	DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 install(EXPORT RTSLTargets
@@ -137,11 +139,12 @@ if(Catch2_FOUND)
         tests/basic.cpp
         tests/compiler.cpp
         tests/artifact.cpp
+        tests/hlsl.cpp
         tests/spirv.cpp
         tests/parser_grammar.cpp
         tests/parser_negative.cpp
     )
-	target_link_libraries(rtsl-tests PRIVATE rtsl RTSL::spirv)
+	target_link_libraries(rtsl-tests PRIVATE rtsl RTSL::hlsl RTSL::spirv)
 	target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)
 	target_include_directories(rtsl-tests PRIVATE "${_rtsl_src}" "${_rtsl_sdk_src}" "${_rtsl_sdk_include}")
 	target_compile_features(rtsl-tests PRIVATE cxx_std_23)
@@ -155,6 +158,12 @@ if(Catch2_FOUND)
 	if(RTSL_SPIRV_VAL_EXECUTABLE)
 		target_compile_definitions(rtsl-tests PRIVATE
 			RTSL_SPIRV_VAL="${RTSL_SPIRV_VAL_EXECUTABLE}"
+		)
+	endif()
+	find_program(RTSL_DXC_EXECUTABLE dxc HINTS "$ENV{VULKAN_SDK}/Bin")
+	if(RTSL_DXC_EXECUTABLE)
+		target_compile_definitions(rtsl-tests PRIVATE
+			RTSL_DXC="${RTSL_DXC_EXECUTABLE}"
 		)
 	endif()
 

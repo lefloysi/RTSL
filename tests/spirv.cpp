@@ -123,3 +123,27 @@ TEST_CASE("SPIR-V transpiler validates normalized uniform and storage blocks") {
 	REQUIRE(validates(*fragment, "fragment-storage-block"));
 #endif
 }
+
+TEST_CASE("SPIR-V transpiler validates inline uniform block member access") {
+	auto program = compile_program(
+		"uniform { UniformBuffer scene; }\n"
+		"layout scene : struct { mat4 transform; };\n"
+		"struct Point { vec3 position; vec3 color; };\n"
+		"struct Vertex { vec4 position; vec3 color; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), color(flat) {\n"
+		"    return Vertex(scene.transform * vec4(p.position, 1.0), p.color);\n"
+		"}\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
+		"    return vec4(v.color * 0.8, 1.0);\n"
+		"}\n");
+	REQUIRE(program.has_value());
+
+	auto vertex = spirv::transpile(*program, Stage::vertex);
+	auto fragment = spirv::transpile(*program, Stage::fragment);
+	REQUIRE(vertex.has_value());
+	REQUIRE(fragment.has_value());
+#ifdef RTSL_SPIRV_VAL
+	REQUIRE(validates(*vertex, "vertex-inline-uniform-block"));
+	REQUIRE(validates(*fragment, "fragment-inline-uniform-block"));
+#endif
+}

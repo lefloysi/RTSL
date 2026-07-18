@@ -11,7 +11,7 @@ transpile individual shader stages.
 - imports, object files, module interfaces, libraries, and linked programs
 - `rtslc` command-line compiler and linker
 - immutable C++23 SDK for backend authors
-- separate SPIR-V transpiler project using Khronos SPIRV-Headers
+- separate HLSL and SPIR-V transpilers
 - CMake program building and embedding
 
 ## Minimal Shader
@@ -63,7 +63,7 @@ The backend links the SDK and whichever transpilers it uses. It never links the
 RTSL compiler.
 
 ```cmake
-target_link_libraries(my_backend PRIVATE RTSL::sdk RTSL::spirv)
+target_link_libraries(my_backend PRIVATE RTSL::sdk RTSL::hlsl RTSL::spirv)
 ```
 
 ## Build RTSL
@@ -79,6 +79,7 @@ ctest --test-dir out/build -C Debug --output-on-failure
 - `rtsl`: compiler/linker library
 - `rtslc`: command-line compiler
 - `RTSL::sdk`: linked-program loading, validation, reflection, and typed RTIR
+- `RTSL::hlsl`: stage-to-HLSL transpiler used before DXC; depends only on the SDK
 - `RTSL::spirv`: separate stage-to-SPIR-V transpiler; depends only on the SDK
 - `rtsl-tests` and `rtsl-sdk-tests`: integration and dependency-boundary tests
 

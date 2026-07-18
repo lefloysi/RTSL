@@ -23,15 +23,17 @@ language release. Programs written with older artifact encodings must be rebuilt
 
 ```text
 backend ──> RTSL::sdk
+backend ──> RTSL::hlsl
 backend ──> RTSL::spirv
+RTSL::hlsl ──> RTSL::sdk
 RTSL::spirv ──> RTSL::sdk
 
 rtsl compiler ──> RTSL::sdk
 ```
 
-The SDK and `rtsl-spirv` include no parser, semantic-analysis, linker, driver, or
-compiler C ABI headers. The compiler produces programs; backend libraries only
-consume them.
+The SDK and target transpilers include no parser, semantic-analysis, linker,
+driver, or compiler C ABI headers. The compiler produces programs; backend
+libraries only consume them.
 
 ## Loading
 
@@ -106,3 +108,11 @@ Each call emits one module with one `main` entry. The transpiler synthesizes
 physical input/output variables and a void wrapper around the selected typed
 RTSL entry function. It returns structured errors for a missing stage, invalid
 entry contract, unsupported type or operation, and allocation failure.
+
+## HLSL Transpiler
+
+`RTSL::hlsl` exposes the same stage-oriented boundary and emits HLSL source
+with a `main` entry point. Resource registers and spaces come directly from the
+linked program's descriptor reflection. Direct3D backends compile that source
+to DXIL with DXC; HLSL is an internal backend intermediate, not an authored or
+stored program format.

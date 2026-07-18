@@ -604,6 +604,28 @@ TEST_CASE("compiler rejects unknown call targets") {
 	REQUIRE(compiler.diagnostics().has_error());
 }
 
+TEST_CASE("IR expression diagnostics retain their source location") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"fn broken() -> f32 {\n"
+		"    return missing;\n"
+		"}\n",
+		CompilerInvocation{ .source_name = "located_error.rtsl" }
+	);
+	(void)artifact;
+
+	const Diagnostic* expression_error = nullptr;
+	for (const auto& diagnostic : compiler.diagnostics().diagnostics()) {
+		if (diagnostic.code == static_cast<int>(DiagnosticCode::ir_expression_error)) {
+			expression_error = &diagnostic;
+			break;
+		}
+	}
+	REQUIRE(expression_error != nullptr);
+	REQUIRE(expression_error->location.line == 2);
+	REQUIRE(expression_error->location.column == 12);
+}
+
 TEST_CASE("compiler rejects struct construction that matches neither member declaration nor fields") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
@@ -955,6 +977,19 @@ TEST_CASE("type checker infers uniform buffer value type from layout") {
 		"    return albedo::tint;\n"
 		"}\n",
 		CompilerInvocation{ .source_name = "uniform_value_type.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+	REQUIRE_FALSE(artifact.bytes.empty());
+}
+
+TEST_CASE("type checker resolves fields of inline buffer layouts") {
+	CompilerInstance compiler;
+	auto artifact = compiler.compile_source(
+		"uniform { UniformBuffer scene; }\n"
+		"layout scene : struct { mat4 transform; f32 exposure; };\n"
+		"fn read_transform() -> mat4 { return scene.transform; }\n"
+		"fn read_exposure() -> f32 { return scene.exposure; }\n",
+		CompilerInvocation{ .source_name = "inline_uniform_layout.rtsl" }
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE_FALSE(artifact.bytes.empty());

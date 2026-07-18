@@ -1,4 +1,5 @@
 #include <rtsl/sdk.hpp>
+#include <rtsl/hlsl.hpp>
 #include <rtsl/spirv.hpp>
 
 int main() {
@@ -8,5 +9,6 @@ int main() {
 		return 0;
 	}
 
-	return rtsl::spirv::transpile(*program, rtsl::Stage::vertex) ? 0 : 1;
+	return rtsl::hlsl::transpile(*program, rtsl::Stage::vertex) &&
+		rtsl::spirv::transpile(*program, rtsl::Stage::vertex) ? 0 : 1;
 }

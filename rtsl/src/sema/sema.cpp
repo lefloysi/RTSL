@@ -317,6 +317,27 @@ bool is_coordinate_type(std::string_view type) {
 	return type == "f32" || type == "vec2" || type == "vec3" || type == "vec4";
 }
 
+std::string inline_layout_type_name(std::string_view qualified_name) {
+	return std::format("<layout:{}>", qualified_name);
+}
+
+std::string_view value_field_type(const SemanticModule& module, std::string_view type, std::string_view field) {
+	if (const std::string_view named_field = struct_field_type(module.structs, type, field); !named_field.empty()) {
+		return named_field;
+	}
+	for (const auto& layout : module.layouts) {
+		if (!layout.is_inline_struct || inline_layout_type_name(qualified_layout_name(layout)) != type) {
+			continue;
+		}
+		for (const auto& inline_field : layout.inline_fields) {
+			if (inline_field.name == field) {
+				return inline_field.type;
+			}
+		}
+	}
+	return {};
+}
+
 std::string uniform_value_type(std::string_view qualified_name, const SemanticModule& module) {
 	for (const auto& uniform : module.uniforms) {
 		if (qualified_uniform_name(uniform) != qualified_name) {
@@ -330,7 +351,7 @@ std::string uniform_value_type(std::string_view qualified_name, const SemanticMo
 				continue;
 			}
 			if (layout.is_inline_struct) {
-				return "struct";
+				return inline_layout_type_name(qualified_name);
 			}
 			return layout.type_spelling;
 		}
@@ -417,7 +438,7 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 		if (base.empty()) {
 			return {};
 		}
-		if (const std::string_view field = struct_field_type(module.structs, base, expr.text); !field.empty()) {
+		if (const std::string_view field = value_field_type(module, base, expr.text); !field.empty()) {
 			return std::string(field);
 		}
 		if (is_vector_type(base) && is_swizzle(expr.text)) {
@@ -585,8 +606,7 @@ void check_member_access(const Decl::Expr& expr, const LocalEnv& locals, const S
 	if (expr.kind == Decl::Expr::Kind::member && expr.op == "." && !expr.children.empty()) {
 		const std::string base = infer_expr_type(expr.children.front(), locals, module, known);
 		if (!base.empty()) {
-			const bool valid_struct_field = is_struct_type(module.structs, base) &&
-										   !struct_field_type(module.structs, base, expr.text).empty();
+			const bool valid_struct_field = !value_field_type(module, base, expr.text).empty();
 			const bool valid_vector_swizzle = is_vector_type(base) && is_swizzle(expr.text);
 			if (!valid_struct_field && !valid_vector_swizzle) {
 				diagnostics.report(DiagnosticCode::sema_unknown_member, DiagnosticSeverity::error, expr.span.begin, module.source_name,

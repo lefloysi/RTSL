@@ -45,6 +45,44 @@ function(rtsl_add_program target_name)
         set(_rtsl_module_${source_name} "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
     endforeach()
 
+    if(RTSL_EMBED)
+        set(embed_cpp "${RTSL_OUTPUT_DIR}/${target_name}_rtsl_embed.cpp")
+        set(embed_inputs)
+        set(embed_byproducts)
+        set(embed_commands)
+        foreach(source IN LISTS RTSL_SOURCES)
+            get_filename_component(source_name "${source}" NAME_WE)
+            set(object_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslo")
+            set(module_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
+            set(program_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslp")
+            list(APPEND embed_inputs "${program_path}")
+            list(APPEND embed_byproducts "${object_path}" "${module_path}" "${program_path}")
+            list(APPEND embed_commands
+                COMMAND "${_rtsl_compiler}" compile "${source}" -o "${object_path}"
+                    -I "${RTSL_OUTPUT_DIR}"
+                    ${_rtsl_include_args}
+                COMMAND "${_rtsl_compiler}" link-program "${object_path}" -o "${program_path}"
+            )
+        endforeach()
+        string(JOIN ";" embed_input_list ${embed_inputs})
+        add_custom_command(
+            OUTPUT "${embed_cpp}"
+            BYPRODUCTS ${embed_byproducts}
+            ${embed_commands}
+            COMMAND "${CMAKE_COMMAND}"
+                "-DRTSL_EMBED_INPUTS=${embed_input_list}"
+                "-DRTSL_EMBED_OUTPUT=${embed_cpp}"
+                "-DRTSL_EMBED_NAME=${RTSL_EMBED_NAME}"
+                -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
+            DEPENDS ${RTSL_SOURCES} ${_rtsl_compiler_dep} ${RTSL_DEPENDS}
+            VERBATIM
+            COMMENT "RTSL compile and embed -> ${target_name}"
+        )
+        target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
+        target_sources("${target_name}" PRIVATE "${embed_cpp}")
+        return()
+    endif()
+
     set(outputs)
     foreach(source IN LISTS RTSL_SOURCES)
         get_filename_component(source_name "${source}" NAME_WE)
@@ -94,23 +132,6 @@ function(rtsl_add_program target_name)
     add_custom_target("${target_name}-rtsl" DEPENDS ${outputs})
     add_dependencies("${target_name}" "${target_name}-rtsl")
 
-    if(RTSL_EMBED)
-        target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
-        set(embed_cpp "${RTSL_OUTPUT_DIR}/${target_name}_rtsl_embed.cpp")
-        string(JOIN ";" embed_inputs ${outputs})
-        add_custom_command(
-            OUTPUT "${embed_cpp}"
-            COMMAND "${CMAKE_COMMAND}"
-                -DRTSL_EMBED_INPUTS=${embed_inputs}
-                -DRTSL_EMBED_OUTPUT=${embed_cpp}
-                -DRTSL_EMBED_NAME=${RTSL_EMBED_NAME}
-                -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
-            DEPENDS ${outputs}
-            VERBATIM
-            COMMENT "Embedding RTSL programs for ${target_name}"
-        )
-        target_sources("${target_name}" PRIVATE "${embed_cpp}")
-    endif()
 endfunction()
 
 if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT)

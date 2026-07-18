@@ -137,9 +137,9 @@ class IRBuilder {
 		}
 		return selected;
 	}
-	void diagnose(std::string_view message) const {
+	void diagnose(SourceLocation location, std::string_view message) const {
 		if (diagnostics_) {
-			diagnostics_->report(DiagnosticCode::ir_expression_error, DiagnosticSeverity::error, {}, module_.source_name, message);
+			diagnostics_->report(DiagnosticCode::ir_expression_error, DiagnosticSeverity::error, location, module_.source_name, message);
 		}
 	}
 
@@ -206,6 +206,10 @@ class TypeRegistry {
 			signature += ":" + field.type;
 		}
 		const ID<IRInstruction> id = builder_.intern_type(signature, IROp::TypeStruct, ID<IRInstruction>{}, std::move(member_ids), {});
+		auto& info = info_[signature];
+		info.id = id;
+		info.kind = TypeInfo::Kind::Struct;
+		info.members = std::move(members);
 		return id;
 	}
 
@@ -624,7 +628,7 @@ class FunctionLowerer {
 
 	void lower_expression(const Decl::Expr& expr) {
 		if (!is_effectful_expression_statement(expr)) {
-			builder_.diagnose("expression statement has no effect");
+			builder_.diagnose(expr.span.begin, "expression statement has no effect");
 			return;
 		}
 		if (lower_expr(expr).id == ID<IRInstruction>{}) {
@@ -664,7 +668,7 @@ class FunctionLowerer {
 		}
 		const Value cond = lower_expr(expr);
 		if (cond.id == ID<IRInstruction>{}) {
-			builder_.diagnose("condition does not produce a value");
+			builder_.diagnose(expr.span.begin, "condition does not produce a value");
 			return Value{ constant_bool(true), types_.find("bool") };
 		}
 		return cond;
@@ -900,7 +904,7 @@ class FunctionLowerer {
 				if (record_constructor_field(head.text, v.id)) {
 					return;
 				}
-				builder_.diagnose(std::format("no member named '{}' in type '{}'",
+				builder_.diagnose(rhs.span.begin, std::format("no member named '{}' in type '{}'",
 											  head.text, ctor_owner_name_));
 				return;
 			}
@@ -908,7 +912,7 @@ class FunctionLowerer {
 			// pointer-shaped `this` local was synthesized elsewhere.
 			const auto this_it = locals_.find("this");
 			if (this_it == locals_.end()) {
-				builder_.diagnose(std::format("assignment to unknown name '{}'", head.text));
+				builder_.diagnose(rhs.span.begin, std::format("assignment to unknown name '{}'", head.text));
 				return;
 			}
 			std::vector<std::string> full_path{ head.text };
@@ -1030,7 +1034,7 @@ class FunctionLowerer {
 	Value lower_expr(const Decl::Expr& expr) {
 		switch (expr.kind) {
 		case Decl::Expr::Kind::name:
-			return emit_name(expr.text);
+			return emit_name(expr.text, expr.span.begin);
 		case Decl::Expr::Kind::literal_int: {
 			Value v;
 			v.id = constant_int(std::stoi(expr.text));
@@ -1060,7 +1064,7 @@ class FunctionLowerer {
 					return emit_unop(IROp::LogicalNot, child, types_.find("bool"));
 				if (expr.op == "+")
 					return child;
-				builder_.diagnose(std::format("unsupported unary operator '{}'", expr.op));
+				builder_.diagnose(expr.span.begin, std::format("unsupported unary operator '{}'", expr.op));
 				return {};
 			}
 			return {};
@@ -1086,7 +1090,7 @@ class FunctionLowerer {
 					return emit_binop_typed(IROp::LogicalOr, lhs, rhs, types_.find("bool"));
 				if (const auto cmp = comparison_op(expr.op, lhs.type_id))
 					return emit_binop_typed(*cmp, lhs, rhs, types_.find("bool"));
-				builder_.diagnose(std::format("unsupported binary operator '{}'", expr.op));
+				builder_.diagnose(expr.span.begin, std::format("unsupported binary operator '{}'", expr.op));
 			}
 			return {};
 		case Decl::Expr::Kind::call:
@@ -1097,17 +1101,17 @@ class FunctionLowerer {
 					if (args.back().id == ID<IRInstruction>{})
 						return {};
 				}
-				return emit_call(expr.children.front().text, args);
+				return emit_call(expr.children.front().text, args, expr.children.front().span.begin);
 			}
 			return {};
 		case Decl::Expr::Kind::member:
 			if (!expr.children.empty()) {
 				if (expr.op == "::") {
 					if (const auto qualified = qualified_name_from_expr(expr); !qualified.empty()) {
-						return emit_name(qualified);
+						return emit_name(qualified, expr.span.begin);
 					}
 				}
-				return emit_member_access(lower_expr(expr.children.front()), expr.text);
+				return emit_member_access(lower_expr(expr.children.front()), expr.text, expr.span.begin);
 			}
 			return {};
 		case Decl::Expr::Kind::unknown:
@@ -1227,7 +1231,7 @@ class FunctionLowerer {
 
 	// Name lookup that handles locals, parameters, struct field names (when
 	// shadowed by the implicit `this`), and global uniform variables.
-	Value emit_name(std::string_view name) {
+	Value emit_name(std::string_view name, SourceLocation location) {
 		// Local / parameter.
 		if (const auto it = locals_.find(name); it != locals_.end()) {
 			if (it->second.is_pointer) {
@@ -1312,7 +1316,7 @@ class FunctionLowerer {
 			fn_.body.push_back(std::move(load));
 			return Value{ load.result_id, value_ty };
 		}
-		builder_.diagnose(std::format("unknown name '{}'", name));
+		builder_.diagnose(location, std::format("unknown name '{}'", name));
 		return Value{ ID<IRInstruction>{}, ID<IRInstruction>{} };
 	}
 
@@ -1335,7 +1339,7 @@ class FunctionLowerer {
 		return Value{ load.result_id, member_type };
 	}
 
-	Value emit_member_access(const Value& base, std::string_view name) {
+	Value emit_member_access(const Value& base, std::string_view name, SourceLocation location) {
 		const TypeInfo* info = types_.info_by_id(base.type_id);
 		if (!info) {
 			return base;
@@ -1346,7 +1350,7 @@ class FunctionLowerer {
 			for (const char c : name) {
 				const auto idx = vector_component(std::string_view{ &c, 1 });
 				if (!idx) {
-					builder_.diagnose(std::format("invalid swizzle '{}' on type '{}'",
+					builder_.diagnose(location, std::format("invalid swizzle '{}' on type '{}'",
 												  name, types_.name_by_id(base.type_id)));
 					return base;
 				}
@@ -1387,13 +1391,13 @@ class FunctionLowerer {
 					return Value{ extract.result_id, info->members[i].second };
 				}
 			}
-			builder_.diagnose(std::format("no member named '{}' in type '{}'",
+			builder_.diagnose(location, std::format("no member named '{}' in type '{}'",
 										  name, types_.name_by_id(base.type_id)));
 		}
 		return base;
 	}
 
-	Value emit_call(std::string_view callee, std::span<const Value> args) {
+	Value emit_call(std::string_view callee, std::span<const Value> args, SourceLocation location) {
 		// Constructor of a known type.
 		if (const ID<IRInstruction> type_id = types_.find(callee); type_id) {
 			// Type construction is structural: first try a declared member-init
@@ -1404,13 +1408,13 @@ class FunctionLowerer {
 			}
 			if (const TypeInfo* info = types_.info_by_id(type_id); info && info->kind == TypeInfo::Kind::Struct) {
 				if (info->members.size() != args.size()) {
-					builder_.diagnose(std::format("cannot construct '{}' from {} argument(s)",
+					builder_.diagnose(location, std::format("cannot construct '{}' from {} argument(s)",
 												  callee, args.size()));
 					return Value{};
 				}
 				for (std::size_t i = 0; i < args.size(); ++i) {
 					if (info->members[i].second != args[i].type_id) {
-						builder_.diagnose(std::format("argument {} does not match field '{}' while constructing '{}'",
+						builder_.diagnose(location, std::format("argument {} does not match field '{}' while constructing '{}'",
 													  i, info->members[i].first, callee));
 						return Value{};
 					}
@@ -1442,7 +1446,7 @@ class FunctionLowerer {
 		// ultimately inlines the body so the backend never sees a FunctionCall
 		// for a user function.
 		if (!builder_.is_known_callable(callee)) {
-			builder_.diagnose(std::format("unknown callable '{}'", callee));
+			builder_.diagnose(location, std::format("unknown callable '{}'", callee));
 			return Value{};
 		}
 		IRInstruction call;

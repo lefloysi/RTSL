@@ -95,18 +95,33 @@ std::string join_source(std::string_view buffer, std::size_t start, std::size_t 
 	return std::string(buffer.substr(start, end - start));
 }
 
+SourceSpan covering_span(SourceSpan first, SourceSpan last) {
+	if (first.length == 0) {
+		return last;
+	}
+	if (last.length == 0 || first.begin.file_id != last.begin.file_id) {
+		return first;
+	}
+	return SourceSpan{
+		.begin = first.begin,
+		.length = last.begin.offset + last.length - first.begin.offset,
+	};
+}
+
 Decl::Expr make_binary(std::string op, Decl::Expr lhs, Decl::Expr rhs) {
 	Decl::Expr expr;
 	expr.kind = Decl::Expr::Kind::binary;
 	expr.op = std::move(op);
+	expr.span = covering_span(lhs.span, rhs.span);
 	expr.children = { std::move(lhs), std::move(rhs) };
 	return expr;
 }
 
-Decl::Expr make_unary(std::string op, Decl::Expr child) {
+Decl::Expr make_unary(std::string op, SourceSpan operator_span, Decl::Expr child) {
 	Decl::Expr expr;
 	expr.kind = Decl::Expr::Kind::unary;
 	expr.op = std::move(op);
+	expr.span = covering_span(operator_span, child.span);
 	expr.children = { std::move(child) };
 	return expr;
 }
@@ -1526,6 +1541,7 @@ Decl::Expr Parser::parse_multiplicative() {
 Decl::Expr Parser::parse_unary() {
 	if (at(TokenKind::plus) || at(TokenKind::minus) ||
 		at(TokenKind::bang) || at(TokenKind::tilde)) {
+		const SourceSpan operator_span = peek().span;
 		std::string op;
 		switch (peek().kind) {
 		case TokenKind::plus:  op = "+"; break;
@@ -1536,7 +1552,7 @@ Decl::Expr Parser::parse_unary() {
 		}
 		++cursor;
 		auto child = parse_unary();
-		return make_unary(std::move(op), std::move(child));
+		return make_unary(std::move(op), operator_span, std::move(child));
 	}
 	return parse_postfix();
 }
@@ -1551,16 +1567,19 @@ Decl::Expr Parser::parse_postfix() {
 				diagnose_here("expected identifier after member operator");
 				break;
 			}
+			const SourceSpan member_span = peek().span;
 			Decl::Expr expr;
 			expr.kind = Decl::Expr::Kind::member;
 			expr.op = op;
 			expr.text = std::string(peek().text);
+			expr.span = covering_span(base.span, member_span);
 			expr.children = { std::move(base) };
 			++cursor;
 			base = std::move(expr);
 			continue;
 		}
 		if (at(TokenKind::left_paren)) {
+			const SourceSpan callee_span = base.span;
 			++cursor;
 			Decl::Expr expr;
 			expr.kind = Decl::Expr::Kind::call;
@@ -1571,7 +1590,10 @@ Decl::Expr Parser::parse_postfix() {
 					if (!consume(TokenKind::comma)) break;
 				}
 			}
-			if (!expect(TokenKind::right_paren, "expected ')' after call arguments")) break;
+			if (!expect(TokenKind::right_paren, "expected ')' after call arguments")) {
+				break;
+			}
+			expr.span = covering_span(callee_span, tokens[cursor - 1].span);
 			base = std::move(expr);
 			continue;
 		}
