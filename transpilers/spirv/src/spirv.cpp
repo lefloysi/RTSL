@@ -9,6 +9,8 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace rtsl::spirv {
@@ -256,6 +258,11 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::ReturnValueAr
 	words.push_back(arguments.value.value);
 }
 
+void append_arguments(std::vector<std::uint32_t>& words, const ir::FunctionCallArguments& arguments) {
+	words.push_back(arguments.function.value);
+	for (const ir::Id argument : arguments.arguments) words.push_back(argument.value);
+}
+
 void append_arguments(std::vector<std::uint32_t>& words, const ir::ImageSampleExplicitLodArguments& arguments) {
 	words.insert(words.end(), {
 		arguments.sampled_image.value,
@@ -298,6 +305,9 @@ class SpirvEmitter {
 			!entry->input->value || *entry->input->value != function->parameters.front().id)) {
 			return std::unexpected(make_error(ErrorCode::invalid_entry, "entry.input", "entry input payload does not match its function parameter", function->id));
 		}
+		if (!collect_reachable_functions()) {
+			return std::unexpected(std::move(*error));
+		}
 
 		for (const auto& type : program.types()) {
 			if (type.kind == ir::TypeKind::void_) {
@@ -328,14 +338,28 @@ class SpirvEmitter {
 			}
 			image_query_lod = fresh_id();
 		}
-		source_function_type = fresh_id();
+		for (const ir::Function* reachable : reachable_functions) {
+			const auto signature = std::ranges::find_if(function_type_signatures, [&](const auto& existing) {
+				const ir::Function* candidate = existing.second;
+				if (candidate->return_type != reachable->return_type || candidate->parameters.size() != reachable->parameters.size()) return false;
+				for (std::size_t index = 0; index < candidate->parameters.size(); ++index) if (candidate->parameters[index].type != reachable->parameters[index].type) return false;
+				return true;
+			});
+			if (signature != function_type_signatures.end()) {
+				source_function_types.emplace(reachable->id, signature->first);
+			} else {
+				const ir::Id type_id = fresh_id();
+				source_function_types.emplace(reachable->id, type_id);
+				function_type_signatures.emplace_back(type_id, reachable);
+			}
+		}
 		wrapper_function_type = fresh_id();
 		wrapper_function = fresh_id();
 		wrapper_label = fresh_id();
 
 		emit_preamble();
 		emit_debug_names();
-		if (!emit_annotations() || !emit_types_constants_globals() || !emit_source_function() || !emit_wrapper()) {
+		if (!emit_annotations() || !emit_types_constants_globals() || !emit_source_functions() || !emit_wrapper()) {
 			return std::unexpected(std::move(*error));
 		}
 
@@ -385,10 +409,27 @@ class SpirvEmitter {
 		return ir::Id{ next_id++ };
 	}
 
+	bool collect_reachable_functions() {
+		std::unordered_set<ir::Id> visited;
+		const auto visit = [&](auto&& self, const ir::Function& candidate) -> bool {
+			if (!visited.insert(candidate.id).second) return true;
+			for (const auto& block : candidate.blocks) {
+				for (const auto& instruction : block.instructions) {
+					const auto* call = instruction.arguments_if<ir::FunctionCallArguments>();
+					const ir::Function* target = call ? program.find_function(call->function) : nullptr;
+					if (call && (!target || !self(self, *target))) return false;
+				}
+			}
+			reachable_functions.push_back(&candidate);
+			return true;
+		};
+		return visit(visit, *function) || fail(ErrorCode::unsupported_instruction, "instructions.call", "function call target does not exist");
+	}
+
 	bool uses_image_queries() const {
-		return std::ranges::any_of(function->blocks, [](const ir::Block& block) {
-			return std::ranges::any_of(block.instructions, [](const ir::Instruction& instruction) {
-				return instruction.op == ir::Op::ImageQuerySize;
+		return std::ranges::any_of(reachable_functions, [](const ir::Function* candidate) {
+			return std::ranges::any_of(candidate->blocks, [](const ir::Block& block) {
+				return std::ranges::any_of(block.instructions, [](const ir::Instruction& instruction) { return instruction.op == ir::Op::ImageQuerySize; });
 			});
 		});
 	}
@@ -517,6 +558,7 @@ class SpirvEmitter {
 		const auto is_selected_global = [&](ir::Id id) {
 			return std::ranges::any_of(selected_resources, [&](const Resource* resource) { return resource->variable == id; });
 		};
+		std::vector<std::vector<std::uint32_t>> emitted_decorations;
 		for (const auto& value : program.decorations()) {
 			if (program.find_global(value.target) && !is_selected_global(value.target)) {
 				continue;
@@ -527,6 +569,8 @@ class SpirvEmitter {
 			}
 			operands.push_back(word(decoration(value.kind)));
 			operands.insert(operands.end(), value.literals.begin(), value.literals.end());
+			if (std::ranges::find(emitted_decorations, operands) != emitted_decorations.end()) continue;
+			emitted_decorations.push_back(operands);
 			emit(annotations, value.member() ? spv::Op::OpMemberDecorate : spv::Op::OpDecorate, operands);
 		}
 
@@ -660,11 +704,11 @@ class SpirvEmitter {
 			emit(types_globals, spv::Op::OpTypePointer,
 				{ pointer.id.value, word(pointer.storage), pointer.value_type.value });
 		}
-		std::vector<std::uint32_t> source_function_signature{ source_function_type.value, function->return_type.value };
-		for (const auto& parameter : function->parameters) {
-			source_function_signature.push_back(parameter.type.value);
+		for (const auto& [type_id, signature] : function_type_signatures) {
+			std::vector<std::uint32_t> operands{ type_id.value, signature->return_type.value };
+			for (const auto& parameter : signature->parameters) operands.push_back(parameter.type.value);
+			emit(types_globals, spv::Op::OpTypeFunction, operands);
 		}
-		emit(types_globals, spv::Op::OpTypeFunction, source_function_signature);
 		emit(types_globals, spv::Op::OpTypeFunction, { wrapper_function_type.value, void_type.value });
 
 		for (const auto& constant : program.constants()) {
@@ -729,6 +773,26 @@ class SpirvEmitter {
 		return true;
 	}
 
+	ir::Id splat_to_result_vector(ir::Id value, const ir::Instruction& instruction) {
+		const auto operand_type_id = value_type(value);
+		const ir::Type* result_type = program.find_type(instruction.type_id);
+		if (!operand_type_id || !result_type || result_type->kind != ir::TypeKind::vector || *operand_type_id != result_type->element_type) return value;
+		const ir::Id composite = fresh_id();
+		std::vector<std::uint32_t> operands{ instruction.type_id.value, composite.value };
+		operands.insert(operands.end(), result_type->element_count, value.value);
+		emit(functions, spv::Op::OpCompositeConstruct, operands);
+		return composite;
+	}
+
+	bool emit_direct_instruction(spv::Op op, const ir::Instruction& instruction) {
+		const auto* binary = instruction.arguments_if<ir::BinaryArguments>();
+		if (!binary || instruction.op == ir::Op::VectorTimesScalar) return emit_result_instruction(op, instruction);
+		const ir::Id lhs = splat_to_result_vector(binary->lhs, instruction);
+		const ir::Id rhs = splat_to_result_vector(binary->rhs, instruction);
+		emit(functions, op, { instruction.type_id.value, instruction.result_id.value, lhs.value, rhs.value });
+		return true;
+	}
+
 	void emit_instruction_arguments(spv::Op op, const ir::Instruction& instruction) {
 		std::vector<std::uint32_t> operands;
 		append_arguments(operands, instruction.arguments);
@@ -737,7 +801,7 @@ class SpirvEmitter {
 
 	bool emit_instruction(const ir::Instruction& instruction) {
 		if (const auto operation = direct_operation(instruction.op)) {
-			return emit_result_instruction(*operation, instruction);
+			return emit_direct_instruction(*operation, instruction);
 		}
 		switch (instruction.op) {
 		case ir::Op::Nop:
@@ -795,6 +859,8 @@ class SpirvEmitter {
 			emit(functions, spv::Op::OpImageQuerySizeLod, { instruction.type_id.value, instruction.result_id.value, image.value, image_query_lod.value });
 			return true;
 		}
+		case ir::Op::FunctionCall:
+			return emit_result_instruction(spv::Op::OpFunctionCall, instruction);
 		case ir::Op::Branch:
 			emit_instruction_arguments(spv::Op::OpBranch, instruction);
 			return true;
@@ -821,10 +887,11 @@ class SpirvEmitter {
 		}
 	}
 
-	bool emit_source_function() {
+	bool emit_source_function(const ir::Function& source) {
+		function = &source;
 		emit(functions, spv::Op::OpFunction,
 			{ function->return_type.value, function->id.value,
-				word(spv::FunctionControlMask::MaskNone), source_function_type.value });
+				word(spv::FunctionControlMask::MaskNone), source_function_types.at(function->id).value });
 		for (const auto& parameter : function->parameters) {
 			emit(functions, spv::Op::OpFunctionParameter, { parameter.type.value, parameter.id.value });
 		}
@@ -832,19 +899,14 @@ class SpirvEmitter {
 			const auto& block = function->blocks[block_index];
 			emit(functions, spv::Op::OpLabel, { block.id.value });
 			if (block_index == 0) {
-				for (const auto& instruction : block.instructions) {
-					if (instruction.op == ir::Op::Variable && !emit_instruction(instruction)) {
-						return false;
+				for (const auto& source_block : function->blocks) {
+					for (const auto& instruction : source_block.instructions) {
+						if (instruction.op == ir::Op::Variable && !emit_instruction(instruction)) return false;
 					}
 				}
 			}
 			for (const auto& instruction : block.instructions) {
-				if (instruction.op == ir::Op::Variable) {
-					if (block_index != 0) {
-						return fail(ErrorCode::unsupported_instruction, "instructions.variable", "local variable appears outside the entry block", instruction.result_id, instruction.op);
-					}
-					continue;
-				}
+				if (instruction.op == ir::Op::Variable) continue;
 				if (!emit_instruction(instruction)) {
 					return false;
 				}
@@ -852,6 +914,12 @@ class SpirvEmitter {
 		}
 		emit(functions, spv::Op::OpFunctionEnd);
 		return true;
+	}
+
+	bool emit_source_functions() {
+		for (const ir::Function* reachable : reachable_functions) if (!emit_source_function(*reachable)) return false;
+		function = program.find_function(entry->function);
+		return function != nullptr;
 	}
 
 	std::optional<ir::Id> load_interface_payload(const Interface& interface,
@@ -958,12 +1026,14 @@ class SpirvEmitter {
 	ir::Id glsl_ext{};
 	ir::Id signed_int_type{};
 	ir::Id image_query_lod{};
-	ir::Id source_function_type{};
 	ir::Id wrapper_function_type{};
 	ir::Id wrapper_function{};
 	ir::Id wrapper_label{};
 
 	std::vector<const Resource*> selected_resources;
+	std::vector<const ir::Function*> reachable_functions;
+	std::unordered_map<ir::Id, ir::Id> source_function_types;
+	std::vector<std::pair<ir::Id, const ir::Function*>> function_type_signatures;
 	std::vector<PointerType> pointer_types;
 	std::vector<InterfaceVariable> inputs;
 	std::vector<InterfaceVariable> outputs;

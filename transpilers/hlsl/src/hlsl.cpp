@@ -39,6 +39,10 @@ std::string type_name(ir::Id id) {
 	return std::format("rtsl_type_{}", id.value);
 }
 
+std::string function_name(ir::Id id) {
+	return std::format("rtsl_function_{}", id.value);
+}
+
 std::string field_name(std::uint32_t index) {
 	return std::format("m{}", index);
 }
@@ -85,7 +89,7 @@ class Emitter {
 			}
 		}
 
-		if (!emit_types() || !emit_resources() || !emit_interfaces() || !emit_entry()) {
+		if (!emit_types() || !emit_resources() || !emit_interfaces() || !emit_reachable_functions() || !emit_entry()) {
 			return std::unexpected(std::move(*error));
 		}
 		return Shader{ .stage = stage, .source = std::move(source) };
@@ -135,13 +139,15 @@ class Emitter {
 		for (const auto& global : program.globals()) {
 			value_types.emplace(global.id, global.type);
 		}
-		for (const auto& parameter : function->parameters) {
-			value_types.emplace(parameter.id, parameter.type);
-		}
-		for (const auto& block : function->blocks) {
-			for (const auto& instruction : block.instructions) {
-				if (instruction.result_id) {
-					value_types.emplace(instruction.result_id, instruction.type_id);
+		for (const auto& candidate : program.functions()) {
+			for (const auto& parameter : candidate.parameters) {
+				value_types.emplace(parameter.id, parameter.type);
+			}
+			for (const auto& block : candidate.blocks) {
+				for (const auto& instruction : block.instructions) {
+					if (instruction.result_id) {
+						value_types.emplace(instruction.result_id, instruction.type_id);
+					}
 				}
 			}
 		}
@@ -397,21 +403,26 @@ class Emitter {
 		return std::nullopt;
 	}
 
-	bool declare_values() {
+	bool declare_values(bool declare_parameters) {
 		std::unordered_set<ir::Id> declared;
-		for (const auto& parameter : function->parameters) {
-			const auto value = hlsl_type(parameter.type);
-			if (!value) {
-				return false;
+		if (declare_parameters) {
+			for (const auto& parameter : function->parameters) {
+				const auto value = hlsl_type(parameter.type);
+				if (!value) {
+					return false;
+				}
+				line(std::format("{} {};", *value, value_name(parameter.id)));
+				declared.insert(parameter.id);
 			}
-			line(std::format("{} {};", *value, value_name(parameter.id)));
-			declared.insert(parameter.id);
+		} else {
+			for (const auto& parameter : function->parameters) declared.insert(parameter.id);
 		}
 		for (const auto& block : function->blocks) {
 			for (const auto& instruction : block.instructions) {
 				if (!instruction.result_id || declared.contains(instruction.result_id) || instruction.op == ir::Op::AccessChain) {
 					continue;
 				}
+				if (const ir::Type* result = type(instruction.type_id); result && result->kind == ir::TypeKind::void_) continue;
 				if (instruction.op == ir::Op::Load) {
 					const auto* arguments = instruction.arguments_if<ir::LoadArguments>();
 					if (arguments && resource_by_variable.contains(arguments->pointer)) {
@@ -847,6 +858,28 @@ class Emitter {
 			const auto lod = arguments ? expression(arguments->lod) : std::nullopt;
 			return sampled && coordinate && lod ? assign(instruction.result_id, std::format("{}_texture.SampleLevel({}_sampler, {}, {})", *sampled, *sampled, *coordinate, *lod)) : false;
 		}
+		case ir::Op::FunctionCall: {
+			const auto* arguments = instruction.arguments_if<ir::FunctionCallArguments>();
+			const ir::Function* target = arguments ? program.find_function(arguments->function) : nullptr;
+			if (!arguments || !target || target->parameters.size() != arguments->arguments.size()) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.call", "function call has invalid arguments", instruction.result_id, instruction.op);
+			}
+			std::string call = function_name(target->id) + "(";
+			for (std::size_t index = 0; index < arguments->arguments.size(); ++index) {
+				const auto argument = expression(arguments->arguments[index]);
+				if (!argument) return false;
+				if (index) call += ", ";
+				call += *argument;
+			}
+			call += ")";
+			const ir::Type* return_type = type(target->return_type);
+			if (!return_type) return false;
+			if (return_type->kind == ir::TypeKind::void_) {
+				line(call + ";");
+				return true;
+			}
+			return assign(instruction.result_id, std::move(call));
+		}
 		case ir::Op::Branch: {
 			const auto* arguments = instruction.arguments_if<ir::BranchArguments>();
 			if (!arguments || !state_machine) {
@@ -867,11 +900,16 @@ class Emitter {
 			return true;
 		}
 		case ir::Op::Return:
-			line("return output;");
+			line(emitting_entry ? "return output;" : "return;");
 			return true;
 		case ir::Op::ReturnValue: {
 			const auto* arguments = instruction.arguments_if<ir::ReturnValueArguments>();
-			return arguments && emit_output(arguments->value);
+			if (!arguments) return false;
+			if (emitting_entry) return emit_output(arguments->value);
+			const auto value = expression(arguments->value);
+			if (!value) return false;
+			line(std::format("return {};", *value));
+			return true;
 		}
 		default:
 			break;
@@ -920,12 +958,73 @@ class Emitter {
 		return value && assign(instruction.result_id, std::move(*value));
 	}
 
+	bool emit_reachable_functions() {
+		std::vector<const ir::Function*> ordered;
+		std::unordered_set<ir::Id> visited;
+		const auto visit = [&](auto&& self, const ir::Function& candidate) -> bool {
+			if (!visited.insert(candidate.id).second) return true;
+			for (const auto& block : candidate.blocks) {
+				for (const auto& instruction : block.instructions) {
+					const auto* call = instruction.arguments_if<ir::FunctionCallArguments>();
+					const ir::Function* target = call ? program.find_function(call->function) : nullptr;
+					if (call && (!target || !self(self, *target))) return false;
+				}
+			}
+			if (candidate.id != entry->function) ordered.push_back(&candidate);
+			return true;
+		};
+		if (!visit(visit, *function)) return fail(ErrorCode::unsupported_instruction, "instructions.call", "function call target does not exist");
+
+		for (const ir::Function* candidate : ordered) {
+			function = candidate;
+			emitting_entry = false;
+			expressions.clear();
+			pointers.clear();
+			const auto return_type = hlsl_type(function->return_type);
+			if (!return_type) return false;
+			std::string parameters;
+			for (std::size_t index = 0; index < function->parameters.size(); ++index) {
+				const auto parameter_type = hlsl_type(function->parameters[index].type);
+				if (!parameter_type) return false;
+				if (index) parameters += ", ";
+				parameters += std::format("{} {}", *parameter_type, value_name(function->parameters[index].id));
+			}
+			line(std::format("{} {}({}) {{", *return_type, function_name(function->id), parameters));
+			++indent;
+			if (!declare_values(false)) return false;
+			const bool state_machine = function->blocks.size() > 1;
+			if (state_machine) {
+				line(std::format("uint rtsl_block = {}u;", function->blocks.front().id.value));
+				line("while (true) {"); ++indent;
+				line("switch (rtsl_block) {"); ++indent;
+			}
+			for (const auto& block : function->blocks) {
+				if (state_machine) { line(std::format("case {}u: {{", block.id.value)); ++indent; }
+				for (const auto& instruction : block.instructions) if (!emit_instruction(instruction, state_machine)) return false;
+				if (state_machine) { line("break;"); --indent; line("}"); }
+			}
+			if (state_machine) {
+				const ir::Type* result = type(function->return_type);
+				line(result && result->kind == ir::TypeKind::void_ ? "default: return;" : std::format("default: return ({})0;", *return_type));
+				--indent; line("}"); --indent; line("}");
+			}
+			--indent;
+			line("}");
+			line();
+		}
+		function = program.find_function(entry->function);
+		return function != nullptr;
+	}
+
 	bool emit_entry() {
+		emitting_entry = true;
+		expressions.clear();
+		pointers.clear();
 		const std::string parameters = entry->input ? "RtslInput input" : "";
 		line(std::format("RtslOutput main({}) {{", parameters));
 		++indent;
 		line("RtslOutput output = (RtslOutput)0;");
-		if (!declare_values() || !initialize_input()) {
+		if (!declare_values(true) || !initialize_input()) {
 			return false;
 		}
 		const bool state_machine = function->blocks.size() > 1;
@@ -977,6 +1076,7 @@ class Emitter {
 	std::unordered_map<ir::Id, ir::Id> value_types;
 	std::unordered_map<ir::Id, std::string> expressions;
 	std::unordered_map<ir::Id, std::string> pointers;
+	bool emitting_entry = false;
 };
 
 } // namespace

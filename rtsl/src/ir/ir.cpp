@@ -25,7 +25,9 @@ namespace {
 struct CallableTarget {
 	std::string name;
 	std::vector<std::string> value_parameter_types;
+	std::string return_type;
 	std::string mangled_name;
+	bool imported = false;
 };
 
 bool is_scalar_value_type(std::string_view type) {
@@ -117,9 +119,15 @@ class IRBuilder {
 	[[nodiscard]] const CallableTarget* resolve_call_target(std::string_view name, std::span<const std::string> argument_types) const {
 		const CallableTarget* selected = nullptr;
 		for (const auto& target : callable_targets_) {
-			if (target.name != name || target.value_parameter_types.size() != argument_types.size()) {
+			if (target.name != name) {
 				continue;
 			}
+			if (target.imported) {
+				if (selected) return nullptr;
+				selected = &target;
+				continue;
+			}
+			if (target.value_parameter_types.size() != argument_types.size()) continue;
 			bool compatible = true;
 			for (std::size_t i = 0; i < argument_types.size(); ++i) {
 				if (!call_argument_compatible(target.value_parameter_types[i], argument_types[i])) {
@@ -131,6 +139,7 @@ class IRBuilder {
 				continue;
 			}
 			if (selected) {
+				if (selected->mangled_name == target.mangled_name) continue;
 				return nullptr;
 			}
 			selected = &target;
@@ -517,11 +526,27 @@ class FunctionLowerer {
 		  uniform_var_type_ids_(uniform_var_type_ids), uniform_value_type_ids_(uniform_value_type_ids) {}
 
 	void bind_parameter(std::string_view name, std::string_view type, ID<IRInstruction> param_id) {
+		const ID<IRInstruction> type_id = types_.find(type);
+		if (in_constructor()) {
+			locals_.insert_or_assign(std::string(name), Local{ .id = param_id, .type_id = type_id, .type_name = std::string(type) });
+			return;
+		}
+		IRInstruction variable;
+		variable.op = IROp::Variable;
+		variable.result_id = builder_.fresh_id();
+		variable.type_id = types_.pointer_to(type_id, StorageClass::Function);
+		variable.literals = { static_cast<u32>(StorageClass::Function) };
+		const ID<IRInstruction> variable_id = variable.result_id;
+		fn_.body.push_back(std::move(variable));
+		IRInstruction store;
+		store.op = IROp::Store;
+		store.operands = { variable_id, param_id };
+		fn_.body.push_back(std::move(store));
 		locals_.insert_or_assign(std::string(name), Local{
-			.id = param_id,
-			.type_id = types_.find(type),
+			.id = variable_id,
+			.type_id = type_id,
 			.type_name = std::string(type),
-			.is_pointer = false,
+			.is_pointer = true,
 		});
 	}
 
@@ -592,6 +617,7 @@ class FunctionLowerer {
 	}
 
 	void lower_statement(const Decl::BodyStatement& statement) {
+		if (current_block_terminated()) return;
 		switch (statement.kind) {
 		case Decl::BodyStatementKind::return_stmt:
 			lower_return(statement.expr);
@@ -695,6 +721,30 @@ class FunctionLowerer {
 		fn_.body.push_back(std::move(inst));
 	}
 
+	[[nodiscard]] bool current_block_terminated() const {
+		for (auto it = fn_.body.rbegin(); it != fn_.body.rend(); ++it) {
+			switch (it->op) {
+			case IROp::Return:
+			case IROp::ReturnValue:
+			case IROp::Branch:
+			case IROp::BranchConditional:
+				return true;
+			case IROp::Label:
+				return false;
+			default:
+				break;
+			}
+		}
+		return false;
+	}
+
+	void lower_block(std::span<const Decl::BodyStatement> statements) {
+		for (const auto& child : statements) {
+			if (current_block_terminated()) return;
+			lower_statement(child);
+		}
+	}
+
 	ID<IRInstruction> emit_label() {
 		IRInstruction label;
 		label.op = IROp::Label;
@@ -733,16 +783,14 @@ class FunctionLowerer {
 		then_inst.op = IROp::Label;
 		then_inst.result_id = then_label;
 		fn_.body.push_back(std::move(then_inst));
-		for (const auto& child : statement.children)
-			lower_statement(child);
-		emit_branch(merge_label);
+		lower_block(statement.children);
+		if (!current_block_terminated()) emit_branch(merge_label);
 		IRInstruction else_inst;
 		else_inst.op = IROp::Label;
 		else_inst.result_id = else_label;
 		fn_.body.push_back(std::move(else_inst));
-		for (const auto& child : statement.else_children)
-			lower_statement(child);
-		emit_branch(merge_label);
+		lower_block(statement.else_children);
+		if (!current_block_terminated()) emit_branch(merge_label);
 		IRInstruction merge_inst;
 		merge_inst.op = IROp::Label;
 		merge_inst.result_id = merge_label;
@@ -771,9 +819,8 @@ class FunctionLowerer {
 		body_inst.op = IROp::Label;
 		body_inst.result_id = body_label;
 		fn_.body.push_back(std::move(body_inst));
-		for (const auto& child : statement.children)
-			lower_statement(child);
-		emit_branch(head_label);
+		lower_block(statement.children);
+		if (!current_block_terminated()) emit_branch(head_label);
 
 		IRInstruction merge_inst;
 		merge_inst.op = IROp::Label;
@@ -791,9 +838,8 @@ class FunctionLowerer {
 		body_inst.op = IROp::Label;
 		body_inst.result_id = body_label;
 		fn_.body.push_back(std::move(body_inst));
-		for (const auto& child : statement.children)
-			lower_statement(child);
-		emit_branch(cond_label);
+		lower_block(statement.children);
+		if (!current_block_terminated()) emit_branch(cond_label);
 
 		IRInstruction cond_inst;
 		cond_inst.op = IROp::Label;
@@ -836,9 +882,8 @@ class FunctionLowerer {
 		body_inst.op = IROp::Label;
 		body_inst.result_id = body_label;
 		fn_.body.push_back(std::move(body_inst));
-		for (const auto& child : statement.children)
-			lower_statement(child);
-		emit_branch(continue_label);
+		lower_block(statement.children);
+		if (!current_block_terminated()) emit_branch(continue_label);
 
 		IRInstruction continue_inst;
 		continue_inst.op = IROp::Label;
@@ -984,9 +1029,61 @@ class FunctionLowerer {
 	}
 
 	void store_member(const Local& local, std::span<const std::string> path, const Value& v) {
+		const TypeInfo* local_info = types_.info_by_id(local.type_id);
+		if (path.size() == 1 && path.front().size() > 1 && local_info && local_info->kind == TypeInfo::Kind::Vector) {
+			const TypeInfo* value_info = types_.info_by_id(v.type_id);
+			if (!value_info || value_info->kind != TypeInfo::Kind::Vector || value_info->components != path.front().size()) {
+				builder_.diagnose({}, "swizzle assignment has an incompatible value");
+				return;
+			}
+			ID<IRInstruction> composite = local.id;
+			for (u32 index = 0; index < path.front().size(); ++index) {
+				const auto destination = vector_component(path.front().substr(index, 1));
+				if (!destination) return;
+				IRInstruction extract;
+				extract.op = IROp::CompositeExtract;
+				extract.result_id = builder_.fresh_id();
+				extract.type_id = value_info->element_type_id;
+				extract.operands = { v.id };
+				extract.literals = { index };
+				const ID<IRInstruction> component = extract.result_id;
+				fn_.body.push_back(std::move(extract));
+
+				if (local.is_pointer) {
+					IRInstruction chain;
+					chain.op = IROp::AccessChain;
+					chain.result_id = builder_.fresh_id();
+					chain.type_id = types_.pointer_to(local_info->element_type_id, StorageClass::Function);
+					chain.operands = { local.id, constant_uint(*destination) };
+					const ID<IRInstruction> chain_id = chain.result_id;
+					fn_.body.push_back(std::move(chain));
+					IRInstruction store;
+					store.op = IROp::Store;
+					store.operands = { chain_id, component };
+					fn_.body.push_back(std::move(store));
+				} else {
+					IRInstruction insert;
+					insert.op = IROp::CompositeInsert;
+					insert.result_id = builder_.fresh_id();
+					insert.type_id = local.type_id;
+					insert.operands = { composite, component };
+					insert.literals = { *destination };
+					composite = insert.result_id;
+					fn_.body.push_back(std::move(insert));
+				}
+			}
+			if (!local.is_pointer) {
+				auto& slot = locals_[local_name_for(local.id)];
+				slot.id = composite;
+				slot.type_id = local.type_id;
+			}
+			return;
+		}
+
 		// Resolve the member type and index chain.
 		ID<IRInstruction> cur_type = local.type_id;
 		std::vector<ID<IRInstruction>> indices;
+		std::vector<u32> literal_indices;
 		for (const auto& name : path) {
 			const TypeInfo* info = types_.info_by_id(cur_type);
 			if (!info)
@@ -997,6 +1094,7 @@ class FunctionLowerer {
 				if (!idx)
 					break;
 				indices.push_back(constant_uint(*idx));
+				literal_indices.push_back(*idx);
 				cur_type = info->element_type_id;
 				continue;
 			}
@@ -1014,6 +1112,7 @@ class FunctionLowerer {
 			if (!found)
 				break;
 			indices.push_back(constant_uint(found_index));
+			literal_indices.push_back(found_index);
 		}
 
 		if (!local.is_pointer) {
@@ -1023,13 +1122,12 @@ class FunctionLowerer {
 			insert.result_id = builder_.fresh_id();
 			insert.type_id = local.type_id;
 			insert.operands = { local.id, v.id };
-			for (auto idx : indices) {
-				insert.literals.push_back(raw_id(idx)); // constant ids are encoded as literal indices here.
-			}
+			insert.literals = literal_indices;
 			fn_.body.push_back(std::move(insert));
 			// Rebind the local SSA to the new value.
 			auto& slot = locals_[local_name_for(local.id)];
-			(void)slot;
+			slot.id = fn_.body.back().result_id;
+			slot.type_id = local.type_id;
 			return;
 		}
 		// Pointer path: OpAccessChain + OpStore.
@@ -1596,12 +1694,10 @@ class FunctionLowerer {
 					return convert(args[0], type_id, location);
 				}
 			}
-			// Type construction is structural: first try a declared member-init
-			// function, then fall back to aggregate construction only when the
-			// argument list exactly matches the type's fields.
-			if (const Value inlined = try_inline_constructor(type_id, args); inlined.id != ID<IRInstruction>{}) {
-				return inlined;
-			}
+			// A declared member-init constructor remains a real function call.
+			// Plain aggregate construction is used only when no constructor with
+			// this argument list exists.
+			if (const CallableTarget* constructor = resolve_call_target(callee, args)) return emit_function_call(callee, args, constructor);
 			if (const TypeInfo* info = types_.info_by_id(type_id); info && info->kind == TypeInfo::Kind::Struct) {
 				if (info->members.size() != args.size()) {
 					builder_.diagnose(location, std::format("cannot construct '{}' from {} argument(s)",
@@ -1629,120 +1725,54 @@ class FunctionLowerer {
 		if (const Intrinsic* intrinsic = find_intrinsic(callee, args.size())) {
 			return emit_intrinsic(*intrinsic, args);
 		}
-		// User function: emit a generic FunctionCall referencing the callee by
-		// name. The single-module inliner (or the linker, for cross-module
-		// calls) rewrites operand[0] to the resolved function's result_id and
-		// ultimately inlines the body so the backend never sees a FunctionCall
-		// for a user function.
+		// User function calls remain calls. The linker resolves their symbolic
+		// target to a function ID without rewriting the function body.
 		if (!builder_.is_known_callable(callee)) {
 			builder_.diagnose(location, std::format("unknown callable '{}'", callee));
 			return Value{};
+		}
+		return emit_function_call(callee, args, resolve_call_target(callee, args));
+	}
+
+	[[nodiscard]] const CallableTarget* resolve_call_target(std::string_view callee, std::span<const Value> args) const {
+		std::vector<std::string> argument_types;
+		argument_types.reserve(args.size());
+		for (const auto& argument : args) argument_types.emplace_back(types_.name_by_id(argument.type_id));
+		return builder_.resolve_call_target(callee, argument_types);
+	}
+
+	Value emit_function_call(std::string_view callee, std::span<const Value> args, const CallableTarget* target) {
+		std::vector<std::string> argument_type_storage;
+		std::vector<std::string_view> argument_types;
+		argument_type_storage.reserve(args.size());
+		argument_types.reserve(args.size());
+		for (const auto& argument : args) {
+			argument_type_storage.emplace_back(types_.name_by_id(argument.type_id));
+			argument_types.push_back(argument_type_storage.back());
 		}
 		IRInstruction call;
 		call.op = IROp::FunctionCall;
 		call.result_id = builder_.fresh_id();
 		// operand[0] is the resolved function id (0 = unresolved until the
-		// inliner runs); operand[1..N] are the argument values.
+		// linker runs); operand[1..N] are the argument values.
 		call.operands.reserve(args.size() + 1);
 		call.operands.push_back(ID<IRInstruction>{});
 		for (const auto& a : args) {
 			call.operands.push_back(a.id);
 		}
 		// literal[0] indexes into IRModule::call_targets. Cleared by the
-		// inliner once every call in the module is resolved.
-		std::vector<std::string_view> argument_types;
-		std::vector<std::string> argument_type_storage;
-		argument_types.reserve(args.size());
-		argument_type_storage.reserve(args.size());
-		for (const auto& arg : args) {
-			argument_type_storage.emplace_back(types_.name_by_id(arg.type_id));
-			argument_types.push_back(argument_type_storage.back());
-		}
-		const CallableTarget* target = builder_.resolve_call_target(callee, argument_type_storage);
+		// linker once every call in the module is resolved.
+		const ID<IRInstruction> return_type_id = target ? types_.find(target->return_type) : ID<IRInstruction>{};
+		call.type_id = return_type_id;
 		auto& targets = builder_.module().call_targets;
 		const u32 name_index = static_cast<u32>(targets.size());
 		targets.push_back(IRCallTarget{
 			.display_name = std::string(callee),
-			.mangled_name = target ? target->mangled_name : mangle_rtsl(callee, {}, argument_types),
+			.mangled_name = target && !target->mangled_name.empty() ? target->mangled_name : mangle_rtsl(callee, {}, argument_types),
 		});
 		call.literals = { name_index };
 		fn_.body.push_back(std::move(call));
-		return Value{ call.result_id, ID<IRInstruction>{} };
-	}
-
-	// If a previously-lowered IRFunction matches `Type::Type(args...)` for
-	// this type, inline its body into the current function. The constructor
-	// body's parameter ids are remapped to the call args' ids, and each of
-	// its result ids is replaced with a fresh id local to this function. The
-	// constructor's terminating ReturnValue is consumed: its operand becomes
-	// the call's result. Returns Value{} on no match.
-	[[nodiscard]] Value try_inline_constructor(ID<IRInstruction> type_id, std::span<const Value> args) {
-		const auto& functions = builder_.module().functions;
-		const IRFunction* ctor = nullptr;
-		for (const auto& candidate : functions) {
-			if (!candidate.stage.empty())
-				continue;
-			if (!candidate.is_constructor())
-				continue;
-			if (candidate.return_type_id != type_id)
-				continue;
-			if (candidate.parameter_ids.size() != args.size())
-				continue;
-			bool params_match = true;
-			for (std::size_t i = 0; i < args.size(); ++i) {
-				const ID<IRInstruction> param_id = candidate.parameter_ids[i];
-				auto param_it = std::find_if(candidate.body.begin(), candidate.body.end(),
-					[&](const IRInstruction& inst) { return inst.result_id == param_id; });
-				if (param_it == candidate.body.end() || param_it->type_id != args[i].type_id) {
-					params_match = false;
-					break;
-				}
-			}
-			if (!params_match)
-				continue;
-			ctor = &candidate;
-			break;
-		}
-		if (!ctor)
-			return Value{};
-
-		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> remap;
-		for (std::size_t i = 0; i < ctor->parameter_ids.size() && i < args.size(); ++i) {
-			remap[ctor->parameter_ids[i]] = args[i].id;
-		}
-
-		Value result;
-		for (const auto& inst : ctor->body) {
-			if (inst.op == IROp::Label)
-				continue;
-			if (inst.op == IROp::FunctionParameter)
-				continue;
-			if (inst.op == IROp::Return)
-				continue;
-			if (inst.op == IROp::ReturnValue) {
-				if (!inst.operands.empty()) {
-					const ID<IRInstruction> operand = inst.operands.front();
-					auto it = remap.find(operand);
-					result.id = it != remap.end() ? it->second : operand;
-					result.type_id = ctor->return_type_id;
-				}
-				continue;
-			}
-			IRInstruction copy = inst;
-			if (copy.result_id != ID<IRInstruction>{}) {
-				const ID<IRInstruction> fresh = builder_.fresh_id();
-				remap[copy.result_id] = fresh;
-				copy.result_id = fresh;
-			}
-			for (auto& operand : copy.operands) {
-				if (auto it = remap.find(operand); it != remap.end())
-					operand = it->second;
-			}
-			fn_.body.push_back(std::move(copy));
-		}
-		if (!result.id)
-			return Value{};
-		return result;
+		return Value{ call.result_id, return_type_id };
 	}
 
 	Value emit_binop(IROp op, const Value& lhs, const Value& rhs) {
@@ -1858,154 +1888,6 @@ class FunctionLowerer {
 	ID<IRInstruction> ctor_owner_type_id_ = ID<IRInstruction>{};
 	std::vector<ID<IRInstruction>> ctor_field_values_;
 };
-
-// Resolve every IROp::FunctionCall against the functions defined in this
-// module by inlining the callee's body in place. The IR pipeline doesn't
-// preserve a FunctionCall instruction for user functions: backends only see
-// straight-line code plus reserved primitive ops. Constructors are already
-// inlined at lower-call time; this pass handles arbitrary user-to-user calls
-// and runs to a fixed point so chains of inlined calls expand fully.
-//
-// Calls whose target lives in another translation unit (no match in this
-// module's functions) are left alone: the linker handles cross-module
-// resolution in a later pass over rtslo/rtsll inputs.
-bool inline_one_pass(IRFunction& fn, IRModule& ir, IRBuilder& builder) {
-	bool progress = false;
-	std::vector<IRInstruction> new_body;
-	new_body.reserve(fn.body.size());
-	// Maps the FunctionCall's result_id to the inlined callee's returned
-	// value id, so subsequent instructions in fn that referenced the call
-	// result get rewired to the actual return value.
-	std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> call_result_remap;
-	const auto apply_remap = [&](IRInstruction& inst) {
-		for (auto& op : inst.operands) {
-			if (auto it = call_result_remap.find(op); it != call_result_remap.end())
-				op = it->second;
-		}
-	};
-
-	for (const auto& inst : fn.body) {
-		if (inst.op != IROp::FunctionCall || inst.operands.empty() || inst.literals.empty()) {
-			IRInstruction copy = inst;
-			apply_remap(copy);
-			new_body.push_back(std::move(copy));
-			continue;
-		}
-		const u32 name_index = inst.literals[0];
-		if (name_index >= ir.call_targets.size()) {
-			IRInstruction copy = inst;
-			apply_remap(copy);
-			new_body.push_back(std::move(copy));
-			continue;
-		}
-		const IRCallTarget& callee = ir.call_targets[name_index];
-		const std::size_t arg_count = inst.operands.size() - 1; // operand[0] is the (unresolved) target id slot
-
-		const IRFunction* target = nullptr;
-		for (const auto& candidate : ir.functions) {
-			if (&candidate == &fn)
-				continue;
-			if (candidate.link_name != callee.mangled_name)
-				continue;
-			if (candidate.parameter_ids.size() != arg_count)
-				continue;
-			// A forward declaration with no body cannot be inlined. Skip it
-			// so the search continues to the real definition, which may live
-			// later in this module or in another module the linker provides.
-			if (candidate.body.empty())
-				continue;
-			target = &candidate;
-			break;
-		}
-		if (!target) {
-			// Leave for the linker. Apply the running remap so any prior
-			// inlined-call result substitutions still propagate.
-			IRInstruction copy = inst;
-			apply_remap(copy);
-			new_body.push_back(std::move(copy));
-			continue;
-		}
-
-		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> local_remap;
-		for (std::size_t i = 0; i < target->parameter_ids.size(); ++i) {
-			ID<IRInstruction> arg_id = inst.operands[i + 1];
-			if (auto it = call_result_remap.find(arg_id); it != call_result_remap.end())
-				arg_id = it->second;
-			local_remap[target->parameter_ids[i]] = arg_id;
-		}
-
-		ID<IRInstruction> returned_id = ID<IRInstruction>{};
-		for (const auto& body_inst : target->body) {
-			if (body_inst.op == IROp::Label)
-				continue;
-			if (body_inst.op == IROp::FunctionParameter)
-				continue;
-			if (body_inst.op == IROp::Return)
-				continue;
-			if (body_inst.op == IROp::ReturnValue) {
-				if (!body_inst.operands.empty()) {
-					ID<IRInstruction> ret = body_inst.operands[0];
-					if (auto it = local_remap.find(ret); it != local_remap.end())
-						ret = it->second;
-					returned_id = ret;
-				}
-				continue;
-			}
-			IRInstruction copy = body_inst;
-			if (copy.result_id != ID<IRInstruction>{}) {
-				const ID<IRInstruction> fresh = builder.fresh_id();
-				local_remap[copy.result_id] = fresh;
-				copy.result_id = fresh;
-			}
-			for (auto& operand : copy.operands) {
-				if (auto it = local_remap.find(operand); it != local_remap.end())
-					operand = it->second;
-			}
-			new_body.push_back(std::move(copy));
-		}
-		if (inst.result_id != ID<IRInstruction>{} && returned_id != ID<IRInstruction>{}) {
-			call_result_remap[inst.result_id] = returned_id;
-		}
-		progress = true;
-	}
-
-	fn.body = std::move(new_body);
-	return progress;
-}
-
-void inline_resolved_calls(IRModule& ir, IRBuilder& builder) {
-	// Bounded fixed-point: each pass either makes progress or it doesn't, and
-	// legal RTSL forbids recursion. The cap stops a malformed module from
-	// looping forever.
-	for (int iteration = 0; iteration < 64; ++iteration) {
-		bool any_progress = false;
-		for (auto& fn : ir.functions) {
-			if (inline_one_pass(fn, ir, builder))
-				any_progress = true;
-		}
-		if (!any_progress)
-			break;
-	}
-	// Once nothing is left to inline against this module, drop the side
-	// any surviving FunctionCalls are cross-module and will get their names
-	// from the artifact's strings payload after linking.
-	if (ir.call_targets.empty())
-		return;
-	bool any_unresolved = false;
-	for (const auto& fn : ir.functions) {
-		for (const auto& inst : fn.body) {
-			if (inst.op == IROp::FunctionCall) {
-				any_unresolved = true;
-				break;
-			}
-		}
-		if (any_unresolved)
-			break;
-	}
-	if (!any_unresolved) {
-		ir.call_targets.clear();
-	}
-}
 
 // ----------------------------------------------------------------------------
 // Resource buffer layout: field offsets, matrix strides, and total size for
@@ -2153,9 +2035,18 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	std::vector<CallableTarget> callable_targets;
 	for (const auto& symbol : module.symbols) {
 		if (symbol.kind == DeclKind::function) {
-			callable_names.insert(symbol.name);
+			std::string callable_name = symbol.name;
+			std::string return_type = symbol.return_type;
+			if (const auto scope = symbol.name.find("::"); scope != std::string::npos) {
+				const std::string owner = symbol.name.substr(0, scope);
+				if (symbol.name.substr(scope + 2) == owner) {
+					callable_name = owner;
+					return_type = owner;
+				}
+			}
+			callable_names.insert(callable_name);
 			CallableTarget target;
-			target.name = symbol.name;
+			target.name = std::move(callable_name);
 			target.value_parameter_types.reserve(symbol.parameters.size());
 			std::vector<std::string> parameter_identity_storage;
 			std::vector<std::string_view> parameter_identities;
@@ -2166,6 +2057,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 				parameter_identity_storage.push_back(parameter_identity(parameter));
 				parameter_identities.push_back(parameter_identity_storage.back());
 			}
+			target.return_type = std::move(return_type);
 			target.mangled_name = mangle_rtsl(symbol.name, symbol.stage, parameter_identities);
 			callable_targets.push_back(std::move(target));
 		}
@@ -2173,6 +2065,11 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	for (const auto& export_symbol : module.imported_exports) {
 		if (export_symbol.kind == "function") {
 			callable_names.insert(export_symbol.name);
+			callable_targets.push_back(CallableTarget{
+				.name = export_symbol.name,
+				.return_type = export_symbol.type,
+				.imported = true,
+			});
 		}
 	}
 
@@ -2720,8 +2617,6 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		}
 		ir.entries.push_back(std::move(entry));
 	}
-
-	inline_resolved_calls(ir, builder);
 
 	return ir;
 }

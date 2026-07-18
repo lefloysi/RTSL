@@ -191,7 +191,6 @@ std::vector<IRFunction> serialized_functions(const IRModule& module, bool linked
 	std::vector<IRFunction> functions;
 	functions.reserve(module.functions.size());
 	for (auto function : module.functions) {
-		if (function.is_constructor()) continue;
 		if (linked_program) function.link_name.clear();
 		functions.push_back(std::move(function));
 	}

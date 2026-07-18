@@ -174,3 +174,25 @@ TEST_CASE("SPIR-V transpiler validates terrain shader language surface") {
 	REQUIRE(validates(*fragment, "fragment-terrain-surface"));
 #endif
 }
+
+TEST_CASE("SPIR-V transpiler preserves and validates user function calls") {
+	auto program = compile_program(
+		"uniform { readonly StorageBuffer colors; }\n"
+		"layout colors : vec4[];\n"
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"fn color(u32 index) -> vec4 { return colors[index]; }\n"
+		"fn choose(vec4 value, bool replace) -> vec4 { if (replace) { value.rgb = vec3(0.5); } return value; }\n"
+		"fn shade(u32 index) -> vec4 { return choose(color(index) * 0.5, index == u32(0)); }\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n");
+	REQUIRE(program.has_value());
+	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
+	auto fragment = spirv::transpile(*program, Stage::fragment);
+	const std::string diagnostic = fragment.has_value() ? "transpiled" : fragment.error().message;
+	INFO(diagnostic);
+	REQUIRE(fragment.has_value());
+#ifdef RTSL_SPIRV_VAL
+	REQUIRE(validates(*fragment, "fragment-function-calls"));
+#endif
+}

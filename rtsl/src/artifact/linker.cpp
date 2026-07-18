@@ -117,115 +117,40 @@ void merge_module(IRModule& dst, IRModule src) {
 	}
 }
 
-// One inline pass over the merged module: each user-function FunctionCall
-// whose target now lives in this module gets its callee body spliced in. Run
-// to a fixed point so cross-module call chains expand fully.
-bool inline_one_module_pass(IRModule& ir) {
-	bool progress = false;
+bool resolve_function_calls(IRModule& ir) {
+	bool resolved_all = true;
 	for (auto& fn : ir.functions) {
-		std::vector<IRInstruction> new_body;
-		new_body.reserve(fn.body.size());
-		std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> call_result_remap;
-		const auto apply_remap = [&](IRInstruction& inst) {
-			for (auto& op : inst.operands) {
-				if (auto it = call_result_remap.find(op); it != call_result_remap.end())
-					op = it->second;
-			}
-		};
-
-		for (const auto& inst : fn.body) {
-			if (inst.op != IROp::FunctionCall || inst.operands.empty() || inst.literals.empty()) {
-				IRInstruction copy = inst;
-				apply_remap(copy);
-				new_body.push_back(std::move(copy));
+		for (auto& inst : fn.body) {
+			if (inst.op != IROp::FunctionCall || (!inst.operands.empty() && inst.operands.front() != ID<IRInstruction>{} && inst.literals.empty())) {
 				continue;
 			}
-			const u32 name_index = inst.literals[0];
-			if (name_index >= ir.call_targets.size()) {
-				IRInstruction copy = inst;
-				apply_remap(copy);
-				new_body.push_back(std::move(copy));
-				continue;
-			}
-			const IRCallTarget& callee = ir.call_targets[name_index];
-			const std::size_t arg_count = inst.operands.size() - 1;
-
-			const IRFunction* target = nullptr;
-			for (const auto& candidate : ir.functions) {
-				if (&candidate == &fn)
-					continue;
-				if (candidate.link_name != callee.mangled_name)
-					continue;
-				if (candidate.parameter_ids.size() != arg_count)
-					continue;
-				// Forward declarations are interface-only. Inline only real
-				// definitions from linked inputs.
-				if (candidate.body.empty())
-					continue;
-				target = &candidate;
-				break;
-			}
-			if (!target) {
-				IRInstruction copy = inst;
-				apply_remap(copy);
-				new_body.push_back(std::move(copy));
+			if (inst.operands.empty() || inst.literals.empty() || inst.literals.front() >= ir.call_targets.size()) {
+				resolved_all = false;
 				continue;
 			}
 
-			std::unordered_map<ID<IRInstruction>, ID<IRInstruction>> local_remap;
-			for (std::size_t i = 0; i < target->parameter_ids.size(); ++i) {
-				ID<IRInstruction> arg_id = inst.operands[i + 1];
-				if (auto it = call_result_remap.find(arg_id); it != call_result_remap.end())
-					arg_id = it->second;
-				local_remap[target->parameter_ids[i]] = arg_id;
+			const IRCallTarget& callee = ir.call_targets[inst.literals.front()];
+			const std::size_t argument_count = inst.operands.size() - 1;
+			const auto target = std::ranges::find_if(ir.functions, [&](const IRFunction& candidate) {
+				return candidate.link_name == callee.mangled_name && candidate.parameter_ids.size() == argument_count && !candidate.body.empty();
+			});
+			if (target == ir.functions.end()) {
+				resolved_all = false;
+				continue;
 			}
 
-			ID<IRInstruction> returned_id = ID<IRInstruction>{};
-			for (const auto& body_inst : target->body) {
-				if (body_inst.op == IROp::Label)
-					continue;
-				if (body_inst.op == IROp::FunctionParameter)
-					continue;
-				if (body_inst.op == IROp::Return)
-					continue;
-				if (body_inst.op == IROp::ReturnValue) {
-					if (!body_inst.operands.empty()) {
-						ID<IRInstruction> ret = body_inst.operands[0];
-						if (auto it = local_remap.find(ret); it != local_remap.end())
-							ret = it->second;
-						returned_id = ret;
-					}
-					continue;
-				}
-				IRInstruction copy = body_inst;
-				if (copy.result_id != ID<IRInstruction>{}) {
-					const ID<IRInstruction> fresh = ir.next_id;
-					ir.next_id = ID<IRInstruction>{ raw_id(ir.next_id) + 1 };
-					local_remap[copy.result_id] = fresh;
-					copy.result_id = fresh;
-				}
-				for (auto& operand : copy.operands) {
-					if (auto it = local_remap.find(operand); it != local_remap.end())
-						operand = it->second;
-				}
-				new_body.push_back(std::move(copy));
-			}
-			if (inst.result_id != ID<IRInstruction>{} && returned_id != ID<IRInstruction>{}) {
-				call_result_remap[inst.result_id] = returned_id;
-			}
-			progress = true;
+			inst.operands.front() = target->result_id;
+			inst.literals.clear();
 		}
-
-		fn.body = std::move(new_body);
 	}
-	return progress;
+	return resolved_all;
 }
 
 bool report_unresolved_program_calls(const IRModule& ir, DiagnosticEngine& diagnostics) {
 	bool found = false;
 	for (const auto& fn : ir.functions) {
 		for (const auto& inst : fn.body) {
-			if (inst.op != IROp::FunctionCall) {
+			if (inst.op != IROp::FunctionCall || (!inst.operands.empty() && inst.operands.front() != ID<IRInstruction>{} && inst.literals.empty())) {
 				continue;
 			}
 			std::string name = "<unknown>";
@@ -356,6 +281,7 @@ Artifact Linker::link_program() {
 		const auto error_count = diagnostics_.diagnostics().size();
 		report_duplicate_exported_functions(program, diagnostics_);
 		report_stale_imported_exports(program, diagnostics_);
+		resolve_function_calls(program.module);
 		report_unresolved_program_calls(program.module, diagnostics_);
 		validate_program_stages(program);
 		if (diagnostics_.diagnostics().size() != error_count) {
@@ -370,12 +296,11 @@ Artifact Linker::link_program() {
 	for (std::size_t i = 1; i < inputs_.size(); ++i) {
 		merge_module(program.module, std::move(inputs_[i].module));
 	}
-	for (int iteration = 0; iteration < 64 && inline_one_module_pass(program.module); ++iteration) {}
-
 	program.bytes.clear();
 	const auto error_count = diagnostics_.diagnostics().size();
 	report_duplicate_exported_functions(program, diagnostics_);
 	report_stale_imported_exports(program, diagnostics_);
+	resolve_function_calls(program.module);
 	report_unresolved_program_calls(program.module, diagnostics_);
 	validate_program_stages(program);
 	if (diagnostics_.diagnostics().size() != error_count) {
@@ -397,7 +322,7 @@ Artifact Linker::link_library() {
 	for (std::size_t i = 1; i < inputs_.size(); ++i) {
 		merge_module(library.module, std::move(inputs_[i].module));
 	}
-	for (int iteration = 0; iteration < 64 && inline_one_module_pass(library.module); ++iteration) {}
+	resolve_function_calls(library.module);
 
 	const bool invalid_exports = report_duplicate_exported_functions(library, diagnostics_);
 	const bool stale_imports = report_stale_imported_exports(library, diagnostics_);

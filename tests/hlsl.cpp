@@ -141,3 +141,19 @@ TEST_CASE("HLSL transpiler compiles terrain shader language surface") {
 	REQUIRE(program.has_value());
 	require_compiles(*program, Stage::fragment, "fragment-terrain-surface");
 }
+
+TEST_CASE("HLSL transpiler preserves and compiles user function calls") {
+	auto program = compile_hlsl_program(
+		"uniform { readonly StorageBuffer colors; }\n"
+		"layout colors : vec4[];\n"
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"fn color(u32 index) -> vec4 { return colors[index]; }\n"
+		"fn choose(vec4 value, bool replace) -> vec4 { if (replace) { value.rgb = vec3(0.5); } return value; }\n"
+		"fn shade(u32 index) -> vec4 { return choose(color(index) * 0.5, index == u32(0)); }\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n");
+	REQUIRE(program.has_value());
+	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
+	require_compiles(*program, Stage::fragment, "fragment-function-calls");
+}

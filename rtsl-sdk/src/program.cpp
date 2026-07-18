@@ -8,6 +8,7 @@
 #include <limits>
 #include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace rtsl {
@@ -235,9 +236,6 @@ std::optional<ir::Op> normalized_op(IROp op) {
 std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruction& source) {
 	const auto op = normalized_op(source.op);
 	if (!op) {
-		if (source.op == IROp::FunctionCall) {
-			return std::unexpected(invalid_program("instructions", "linked program contains an unresolved function call"));
-		}
 		if (source.op == IROp::Label || source.op == IROp::FunctionParameter) {
 			return std::unexpected(invalid_program("instructions", "function body contains an operation owned by another IR section"));
 		}
@@ -377,6 +375,13 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 		valid = exact(1, 0);
 		if (valid) instruction.arguments = ir::ReturnValueArguments{ .value = source.operands[0] };
 		break;
+	case IROp::FunctionCall:
+		valid = source.operands.size() >= 1 && source.literals.empty() && source.operands.front();
+		if (valid) instruction.arguments = ir::FunctionCallArguments{
+			.function = source.operands.front(),
+			.arguments = { source.operands.begin() + 1, source.operands.end() },
+		};
+		break;
 	case IROp::BranchConditional:
 		valid = exact(3, 0);
 		if (valid) instruction.arguments = ir::BranchConditionalArguments{
@@ -405,7 +410,7 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 		source.op == IROp::VectorShuffle ||
 		(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
 		(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
-		(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate);
+		(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::FunctionCall;
 	if (produces_value != static_cast<bool>(source.result_id) ||
 		produces_value != static_cast<bool>(source.type_id)) {
 		valid = false;
@@ -456,6 +461,8 @@ bool ir::Instruction::references(ir::Id id) const noexcept {
 			return value.merge_block == id || value.continue_block == id;
 		} else if constexpr (std::is_same_v<Arguments, ir::ReturnValueArguments>) {
 			return value.value == id;
+		} else if constexpr (std::is_same_v<Arguments, ir::FunctionCallArguments>) {
+			return value.function == id || std::ranges::find(value.arguments, id) != value.arguments.end();
 		} else if constexpr (std::is_same_v<Arguments, ir::ImageSampleExplicitLodArguments>) {
 			return value.sampled_image == id || value.coordinate == id || value.lod == id;
 		} else if constexpr (std::is_same_v<Arguments, ir::ImageWriteArguments>) {
@@ -730,24 +737,20 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 		data->entries = std::move(module.entries);
 		for (auto& resource : data->resources) {
 			for (const auto& entry_point : data->entries) {
-				const ir::Function* function = nullptr;
-				for (const auto& candidate : data->functions) {
-					if (candidate.id == entry_point.function) {
-						function = &candidate;
-						break;
-					}
-				}
-				if (!function) continue;
-				bool used = false;
-				for (const auto& block : function->blocks) {
-					for (const auto& instruction : block.instructions) {
-						if (instruction.references(resource.variable)) {
-							used = true;
-							break;
+				std::unordered_set<ir::Id> visited;
+				const auto uses_resource = [&](auto&& self, ir::Id function_id) -> bool {
+					if (!visited.insert(function_id).second) return false;
+					const auto found = std::ranges::find(data->functions, function_id, &ir::Function::id);
+					if (found == data->functions.end()) return false;
+					for (const auto& block : found->blocks) {
+						for (const auto& instruction : block.instructions) {
+							if (instruction.references(resource.variable)) return true;
+							if (const auto* call = instruction.arguments_if<ir::FunctionCallArguments>(); call && self(self, call->function)) return true;
 						}
 					}
-					if (used) break;
-				}
+					return false;
+				};
+				const bool used = uses_resource(uses_resource, entry_point.function);
 				if (used) resource.stages |= entry_point.stage == Stage::vertex ? StageMask::vertex : StageMask::fragment;
 			}
 		}

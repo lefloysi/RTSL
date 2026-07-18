@@ -160,7 +160,11 @@ TEST_CASE("linker emits program") {
 	REQUIRE(loaded.module.call_targets.empty());
 	for (const auto& fn : loaded.module.functions) {
 		for (const auto& inst : fn.body) {
-			REQUIRE(inst.op != IROp::FunctionCall);
+			if (inst.op == IROp::FunctionCall) {
+				REQUIRE_FALSE(inst.operands.empty());
+				REQUIRE(inst.operands.front() != ID<IRInstruction>{});
+				REQUIRE(inst.literals.empty());
+			}
 		}
 	}
 }
@@ -188,7 +192,11 @@ TEST_CASE("linker resolves calls to reference-qualified functions") {
 	REQUIRE(loaded.module.call_targets.empty());
 	for (const auto& fn : loaded.module.functions) {
 		for (const auto& inst : fn.body) {
-			REQUIRE(inst.op != IROp::FunctionCall);
+			if (inst.op == IROp::FunctionCall) {
+				REQUIRE_FALSE(inst.operands.empty());
+				REQUIRE(inst.operands.front() != ID<IRInstruction>{});
+				REQUIRE(inst.literals.empty());
+			}
 		}
 	}
 }
@@ -319,7 +327,11 @@ TEST_CASE("program link resolves imported helper calls from separate objects") {
 	REQUIRE(loaded.module.call_targets.empty());
 	for (const auto& fn : loaded.module.functions) {
 		for (const auto& inst : fn.body) {
-			REQUIRE(inst.op != IROp::FunctionCall);
+			if (inst.op == IROp::FunctionCall) {
+				REQUIRE_FALSE(inst.operands.empty());
+				REQUIRE(inst.operands.front() != ID<IRInstruction>{});
+				REQUIRE(inst.literals.empty());
+			}
 		}
 	}
 }
@@ -438,6 +450,25 @@ TEST_CASE("compiler lowers namespaced graphics program") {
 	auto program = linker.link_program();
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE(program.kind == ArtifactKind::program);
+	REQUIRE_FALSE(program.bytes.empty());
+}
+
+TEST_CASE("user function results retain their value type") {
+	CompilerInstance compiler;
+	auto object = compiler.compile_source(
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"fn scaled(f32 value) -> f32 { return value * 0.5; }\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { f32 value = scaled(0.5) * scaled(0.25); return vec4(value); }\n",
+		CompilerInvocation{ .source_name = "function_result_type.rtsl" }
+	);
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
+
+	Linker linker{ compiler.diagnostics() };
+	REQUIRE(linker.add_artifact(object));
+	auto program = linker.link_program();
+	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE_FALSE(program.bytes.empty());
 }
 
@@ -668,7 +699,7 @@ TEST_CASE("compiler accepts out-of-line member definitions declared in the owner
 	REQUIRE_FALSE(artifact.bytes.empty());
 }
 
-TEST_CASE("compiler accepts inline member-init constructors") {
+TEST_CASE("compiler preserves member-init constructors as function calls") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"struct Vertex {\n"
@@ -682,6 +713,11 @@ TEST_CASE("compiler accepts inline member-init constructors") {
 	);
 	REQUIRE_FALSE(compiler.diagnostics().has_error());
 	REQUIRE_FALSE(artifact.bytes.empty());
+	bool found_call = false;
+	for (const auto& function : artifact.module.functions) {
+		for (const auto& instruction : function.body) found_call |= instruction.op == IROp::FunctionCall;
+	}
+	REQUIRE(found_call);
 }
 
 TEST_CASE("compiler rejects struct-returning vertex stage without boundary tags") {

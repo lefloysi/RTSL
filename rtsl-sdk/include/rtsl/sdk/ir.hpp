@@ -131,6 +131,11 @@ struct ReturnValueArguments {
 	Id value{};
 };
 
+struct FunctionCallArguments {
+	Id function{};
+	std::vector<Id> arguments;
+};
+
 struct ImageSampleExplicitLodArguments {
 	Id sampled_image{};
 	Id coordinate{};
@@ -161,6 +166,7 @@ using InstructionArguments = std::variant<
 	SelectionMergeArguments,
 	LoopMergeArguments,
 	ReturnValueArguments,
+	FunctionCallArguments,
 	ImageSampleExplicitLodArguments,
 	ImageWriteArguments>;
 
