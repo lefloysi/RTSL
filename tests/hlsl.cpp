@@ -34,6 +34,18 @@ std::expected<Program, LoadError> compile_hlsl_program(std::string_view source) 
 }
 
 #ifdef RTSL_DXC
+std::string shell_quote(const std::filesystem::path& path) {
+	return "\"" + path.string() + "\"";
+}
+
+std::string shell_command_prefix() {
+#ifdef _WIN32
+	return "call ";
+#else
+	return "";
+#endif
+}
+
 bool compiles(const hlsl::Shader& shader, std::string_view name) {
 	const std::filesystem::path source_path = std::filesystem::temp_directory_path() /
 		(std::string{ "rtsl-" } + std::string{ name } + ".hlsl");
@@ -44,8 +56,8 @@ bool compiles(const hlsl::Shader& shader, std::string_view name) {
 		output << shader.source;
 	}
 	const char* profile = shader.stage == Stage::vertex ? "vs_6_0" : "ps_6_0";
-	const std::string command = RTSL_DXC " -E main -T " + std::string{ profile } +
-		" -HV 2021 -Ges -Fo \"" + output_path.string() + "\" \"" + source_path.string() + "\"";
+	const std::string command = shell_command_prefix() + shell_quote(RTSL_DXC) + " -E main -T " + std::string{ profile } +
+		" -HV 2021 -Ges -Fo " + shell_quote(output_path) + " " + shell_quote(source_path);
 	return std::system(command.c_str()) == 0;
 }
 #endif

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <span>
+#include <string>
 #include <string_view>
 
 using namespace rtsl;
@@ -27,6 +28,18 @@ std::expected<Program, LoadError> compile_program(std::string_view source) {
 }
 
 #ifdef RTSL_SPIRV_VAL
+std::string shell_quote(const std::filesystem::path& path) {
+	return "\"" + path.string() + "\"";
+}
+
+std::string shell_command_prefix() {
+#ifdef _WIN32
+	return "call ";
+#else
+	return "";
+#endif
+}
+
 bool validates(const spirv::Shader& shader, std::string_view name) {
 	const std::filesystem::path path = std::filesystem::temp_directory_path() /
 		(std::string{ "rtsl-" } + std::string{ name } + ".spv");
@@ -35,7 +48,7 @@ bool validates(const spirv::Shader& shader, std::string_view name) {
 		output.write(reinterpret_cast<const char*>(shader.words.data()),
 			static_cast<std::streamsize>(shader.byte_size()));
 	}
-	const std::string command = RTSL_SPIRV_VAL " --target-env vulkan1.3 \"" + path.string() + "\"";
+	const std::string command = shell_command_prefix() + shell_quote(RTSL_SPIRV_VAL) + " --target-env vulkan1.3 " + shell_quote(path);
 	return std::system(command.c_str()) == 0;
 }
 #endif
