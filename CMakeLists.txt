@@ -5,6 +5,9 @@ project(rtsl VERSION 0.1.0 LANGUAGES C CXX)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
+option(RTSL_BUILD_HLSL "Build the RTSL HLSL transpiler." ON)
+option(RTSL_BUILD_SPIRV "Build the RTSL SPIR-V transpiler." ON)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Rtsl)
 
@@ -64,20 +67,36 @@ target_include_directories(rtsl-sdk
         "${_rtsl_sdk_src}"
 )
 
-add_subdirectory(transpilers/hlsl)
-add_subdirectory(transpilers/spirv)
+if(RTSL_BUILD_HLSL)
+	add_subdirectory(transpilers/hlsl)
+endif()
+if(RTSL_BUILD_SPIRV)
+	add_subdirectory(transpilers/spirv)
+endif()
 
 set(_rtsl_package_dir "${CMAKE_INSTALL_LIBDIR}/cmake/RTSL")
 
-install(TARGETS rtsl-sdk rtsl-hlsl rtsl-spirv
+set(_rtsl_install_targets rtsl-sdk)
+if(TARGET rtsl-hlsl)
+	list(APPEND _rtsl_install_targets rtsl-hlsl)
+endif()
+if(TARGET rtsl-spirv)
+	list(APPEND _rtsl_install_targets rtsl-spirv)
+endif()
+
+install(TARGETS ${_rtsl_install_targets}
 	EXPORT RTSLTargets
 	ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 	LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
-install(DIRECTORY rtsl-sdk/include/ transpilers/hlsl/include/ transpilers/spirv/include/
-	DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-)
+install(DIRECTORY rtsl-sdk/include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+if(RTSL_BUILD_HLSL)
+	install(DIRECTORY transpilers/hlsl/include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+endif()
+if(RTSL_BUILD_SPIRV)
+	install(DIRECTORY transpilers/spirv/include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+endif()
 install(EXPORT RTSLTargets
 	FILE RTSLTargets.cmake
 	NAMESPACE RTSL::
@@ -136,16 +155,26 @@ if(Catch2_FOUND)
 	set_target_properties(rtsl-sdk-tests PROPERTIES CXX_EXTENSIONS OFF)
 	add_test(NAME rtsl-sdk-tests COMMAND rtsl-sdk-tests)
 
-    add_executable(rtsl-tests
+    set(_rtsl_test_sources
         tests/basic.cpp
         tests/compiler.cpp
         tests/artifact.cpp
         tests/hlsl.cpp
-        tests/spirv.cpp
         tests/parser_grammar.cpp
         tests/parser_negative.cpp
     )
-	target_link_libraries(rtsl-tests PRIVATE rtsl RTSL::hlsl RTSL::spirv)
+	if(RTSL_BUILD_SPIRV)
+		list(APPEND _rtsl_test_sources tests/spirv.cpp)
+	endif()
+
+    add_executable(rtsl-tests ${_rtsl_test_sources})
+	target_link_libraries(rtsl-tests PRIVATE rtsl)
+	if(TARGET RTSL::hlsl)
+		target_link_libraries(rtsl-tests PRIVATE RTSL::hlsl)
+	endif()
+	if(TARGET RTSL::spirv)
+		target_link_libraries(rtsl-tests PRIVATE RTSL::spirv)
+	endif()
 	target_link_libraries(rtsl-tests PRIVATE Catch2::Catch2WithMain)
 	target_include_directories(rtsl-tests PRIVATE "${_rtsl_src}" "${_rtsl_sdk_src}" "${_rtsl_sdk_include}")
 	target_compile_features(rtsl-tests PRIVATE cxx_std_23)

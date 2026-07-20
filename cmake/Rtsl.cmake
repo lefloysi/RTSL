@@ -126,6 +126,8 @@ function(rtsl_embed_program target_name)
     if(NOT RTSL_OUTPUT)
         set(RTSL_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtsl/${target_name}_rtsl_embed.cpp")
     endif()
+    get_filename_component(_rtsl_embed_output_dir "${RTSL_OUTPUT}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_rtsl_embed_output_dir}")
 
     set(_rtsl_inputs)
     set(_rtsl_symbols)

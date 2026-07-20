@@ -1,8 +1,11 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(SPIRV-Headers CONFIG QUIET)
-if(NOT TARGET SPIRV-Headers::SPIRV-Headers)
+set(RTSL_BUILD_SPIRV @RTSL_BUILD_SPIRV@)
+if(RTSL_BUILD_SPIRV)
+	find_dependency(SPIRV-Headers CONFIG QUIET)
+endif()
+if(RTSL_BUILD_SPIRV AND NOT TARGET SPIRV-Headers::SPIRV-Headers)
 	find_path(RTSL_SPIRV_HEADERS_INCLUDE_DIR
 		NAMES
 			spirv/unified1/spirv.hpp11
