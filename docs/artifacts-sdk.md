@@ -77,7 +77,9 @@ not backend naming policy.
 
 ## Embedded Programs
 
-`rtsl_add_program(... EMBED)` defines an SDK-owned `ProgramBytes` symbol:
+`rtsl_add_program` defines a linked `.rtslp` program target.
+`rtsl_embed_program` embeds that program into a C++ target and defines an
+SDK-owned `ProgramBytes` symbol:
 
 ```cpp
 extern "C" const rtsl::ProgramBytes game_world_shader;

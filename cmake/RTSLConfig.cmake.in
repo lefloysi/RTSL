@@ -1,8 +1,30 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(SPIRV-Headers CONFIG)
+find_dependency(SPIRV-Headers CONFIG QUIET)
+if(NOT TARGET SPIRV-Headers::SPIRV-Headers)
+	find_path(RTSL_SPIRV_HEADERS_INCLUDE_DIR
+		NAMES
+			spirv/unified1/spirv.hpp11
+			spirv/unified1/GLSL.std.450.h
+			spirv-headers/spirv.hpp11
+			spirv-headers/GLSL.std.450.h
+		HINTS "$ENV{VULKAN_SDK}/Include"
+	)
+	if(NOT RTSL_SPIRV_HEADERS_INCLUDE_DIR)
+		message(FATAL_ERROR
+			"Could not find SPIR-V headers required by RTSL::spirv. Install the Vulkan SDK, "
+			"set VULKAN_SDK, or make the spirv-headers CMake package available."
+		)
+	endif()
+
+	add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)
+	target_include_directories(SPIRV-Headers::SPIRV-Headers INTERFACE
+		"${RTSL_SPIRV_HEADERS_INCLUDE_DIR}"
+	)
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/RTSLTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/Rtsl.cmake")
 
 check_required_components(RTSL)

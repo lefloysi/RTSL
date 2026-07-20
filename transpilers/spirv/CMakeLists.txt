@@ -1,4 +1,9 @@
-find_package(SPIRV-Headers CONFIG REQUIRED)
+include(RutileDependencies OPTIONAL)
+if(COMMAND rutile_find_spirv_headers)
+	rutile_find_spirv_headers()
+else()
+	find_package(SPIRV-Headers CONFIG REQUIRED)
+endif()
 
 add_library(rtsl-spirv STATIC
 	src/spirv.cpp

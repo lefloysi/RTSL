@@ -1,7 +1,14 @@
 #include "rtsl/spirv.hpp"
 
+#if __has_include(<spirv/unified1/GLSL.std.450.h>)
 #include <spirv/unified1/GLSL.std.450.h>
 #include <spirv/unified1/spirv.hpp11>
+#elif __has_include(<spirv-headers/GLSL.std.450.h>)
+#include <spirv-headers/GLSL.std.450.h>
+#include <spirv-headers/spirv.hpp11>
+#else
+#error "SPIR-V headers were not found. Install spirv-headers with vcpkg or set VULKAN_SDK to a Vulkan SDK install."
+#endif
 
 #include <algorithm>
 #include <array>

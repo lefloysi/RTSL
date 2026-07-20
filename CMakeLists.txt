@@ -97,6 +97,7 @@ write_basic_package_version_file(
 install(FILES
 	"${CMAKE_CURRENT_BINARY_DIR}/RTSLConfig.cmake"
 	"${CMAKE_CURRENT_BINARY_DIR}/RTSLConfigVersion.cmake"
+	"${CMAKE_CURRENT_SOURCE_DIR}/cmake/Rtsl.cmake"
 	DESTINATION "${_rtsl_package_dir}"
 )
 
@@ -167,12 +168,6 @@ if(Catch2_FOUND)
 		)
 	endif()
 
-    if(MSVC)
-        set_target_properties(rtsl-tests PROPERTIES
-            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-        )
-    endif()
-
     add_test(NAME rtsl-tests COMMAND rtsl-tests)
 else()
     message(WARNING "Catch2 not found; skipping rtsl-tests target")
@@ -202,8 +197,3 @@ if(TARGET rtslc)
     set_tests_properties(rtslc-smoke-dump PROPERTIES FIXTURES_REQUIRED rtslc_smoke_program)
 endif()
 
-if(MSVC AND PROJECT_IS_TOP_LEVEL)
-    set_target_properties(rtsl rtslc PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-    )
-endif()
