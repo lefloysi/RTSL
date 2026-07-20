@@ -27,10 +27,12 @@ function(rtsl_add_program target_name)
     endforeach()
 
     set(_rtsl_compiler "${RTSL_RTSLC}")
-    set(_rtsl_compiler_dep)
     if(TARGET "${RTSL_RTSLC}")
         set(_rtsl_compiler "$<TARGET_FILE:${RTSL_RTSLC}>")
-        list(APPEND _rtsl_compiler_dep "${RTSL_RTSLC}")
+        # The compiler target must exist before a shader command can run, but
+        # relinking the compiler does not make unchanged shader sources dirty.
+        # Keep this as target ordering instead of a file-level DEPENDS edge.
+        add_dependencies("${target_name}" "${RTSL_RTSLC}")
     endif()
 
     file(MAKE_DIRECTORY "${RTSL_OUTPUT_DIR}")
@@ -56,7 +58,11 @@ function(rtsl_add_program target_name)
             set(module_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
             set(program_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslp")
             list(APPEND embed_inputs "${program_path}")
-            list(APPEND embed_byproducts "${object_path}" "${module_path}" "${program_path}")
+            list(APPEND embed_byproducts "${object_path}" "${program_path}")
+            file(STRINGS "${source}" _rtsl_export_lines REGEX "^[ \t]*export[ \t]")
+            if(_rtsl_export_lines)
+                list(APPEND embed_byproducts "${module_path}")
+            endif()
             list(APPEND embed_commands
                 COMMAND "${_rtsl_compiler}" compile "${source}" -o "${object_path}"
                     -I "${RTSL_OUTPUT_DIR}"
@@ -74,7 +80,7 @@ function(rtsl_add_program target_name)
                 "-DRTSL_EMBED_OUTPUT=${embed_cpp}"
                 "-DRTSL_EMBED_NAME=${RTSL_EMBED_NAME}"
                 -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
-            DEPENDS ${RTSL_SOURCES} ${_rtsl_compiler_dep} ${RTSL_DEPENDS}
+            DEPENDS ${RTSL_SOURCES} ${RTSL_DEPENDS}
             VERBATIM
             COMMENT "RTSL compile and embed -> ${target_name}"
         )
@@ -114,14 +120,20 @@ function(rtsl_add_program target_name)
         # (rather than OUTPUT) tells CMake "may or may not appear; don't fail
         # if missing" while still letting downstream commands depend on it for
         # ordering.
+        set(module_byproduct)
+        file(STRINGS "${source}" _rtsl_export_lines REGEX "^[ \t]*export[ \t]")
+        if(_rtsl_export_lines)
+            list(APPEND module_byproduct "${module_path}")
+        endif()
+
         add_custom_command(
             OUTPUT "${object_path}" "${program_path}"
-            BYPRODUCTS "${module_path}"
+            BYPRODUCTS ${module_byproduct}
             COMMAND "${_rtsl_compiler}" compile "${source}" -o "${object_path}"
                 -I "${RTSL_OUTPUT_DIR}"
                 ${_rtsl_include_args}
             COMMAND "${_rtsl_compiler}" link-program "${object_path}" -o "${program_path}"
-            DEPENDS "${source}" ${_rtsl_compiler_dep} ${RTSL_DEPENDS} ${import_deps}
+            DEPENDS "${source}" ${RTSL_DEPENDS} ${import_deps}
             VERBATIM
             COMMENT "RTSL ${source_name} -> ${target_name}"
         )
