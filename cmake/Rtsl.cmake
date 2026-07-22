@@ -147,19 +147,26 @@ function(rtsl_embed_program target_name)
 
     string(JOIN ";" _rtsl_input_list ${_rtsl_inputs})
     string(JOIN ";" _rtsl_symbol_list ${_rtsl_symbols})
+    string(REPLACE ";" "\\;" _rtsl_input_arg "${_rtsl_input_list}")
+    string(REPLACE ";" "\\;" _rtsl_symbol_arg "${_rtsl_symbol_list}")
     add_custom_command(
         OUTPUT "${RTSL_OUTPUT}"
         COMMAND "${CMAKE_COMMAND}"
-            "-DRTSL_EMBED_INPUTS=${_rtsl_input_list}"
-            "-DRTSL_EMBED_SYMBOLS=${_rtsl_symbol_list}"
+            "-DRTSL_EMBED_INPUTS=${_rtsl_input_arg}"
+            "-DRTSL_EMBED_SYMBOLS=${_rtsl_symbol_arg}"
             "-DRTSL_EMBED_OUTPUT=${RTSL_OUTPUT}"
             -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
         DEPENDS ${_rtsl_inputs}
         VERBATIM
         COMMENT "RTSL embed -> ${target_name}"
     )
+    set_source_files_properties("${RTSL_OUTPUT}" PROPERTIES
+        GENERATED TRUE
+        CXX_SCAN_FOR_MODULES OFF
+    )
 
     target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
+    set_target_properties("${target_name}" PROPERTIES CXX_SCAN_FOR_MODULES OFF)
     target_sources("${target_name}" PRIVATE "${RTSL_OUTPUT}")
 endfunction()
 
