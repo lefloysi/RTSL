@@ -171,6 +171,9 @@ function(rtsl_embed_program target_name)
 endfunction()
 
 if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT)
+    string(REPLACE "\\;" ";" RTSL_EMBED_INPUTS "${RTSL_EMBED_INPUTS}")
+    string(REPLACE "\\;" ";" RTSL_EMBED_SYMBOLS "${RTSL_EMBED_SYMBOLS}")
+
     file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <rtsl/sdk/program.hpp>\n\n#include <cstdint>\n\n")
 
     set(_rtsl_index 0)
