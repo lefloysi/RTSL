@@ -1,4 +1,4 @@
-set(RTSL_CMAKE_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+set(RTSL_CMAKE_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}" CACHE INTERNAL "RTSL CMake helper directory")
 
 function(rtsl_set_compiler compiler)
     set(RTSL_COMPILER "${compiler}" CACHE STRING "RTSL compiler executable or CMake target")
