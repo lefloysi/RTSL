@@ -1,7 +1,7 @@
 #pragma once
 
 #include "frontend/ast.hpp"
-#include "rtsl/sdk/program.hpp"
+#include "rtsl/program.hpp"
 
 #include <string>
 #include <string_view>

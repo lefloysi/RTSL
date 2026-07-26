@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rtsl/sdk/program.hpp"
+#include "rtsl/program.hpp"
 
 #include <cstddef>
 #include <cstdint>

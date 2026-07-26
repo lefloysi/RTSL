@@ -155,7 +155,7 @@ function(rtsl_embed_program target_name)
             "-DRTSL_EMBED_INPUTS=${_rtsl_input_arg}"
             "-DRTSL_EMBED_SYMBOLS=${_rtsl_symbol_arg}"
             "-DRTSL_EMBED_OUTPUT=${RTSL_OUTPUT}"
-            -P "${CMAKE_CURRENT_FUNCTION_LIST_FILE}"
+            -P "${CMAKE_CURRENT_LIST_DIR}/RtslEmbed.cmake"
         DEPENDS ${_rtsl_inputs}
         VERBATIM
         COMMENT "RTSL embed -> ${target_name}"
@@ -169,50 +169,3 @@ function(rtsl_embed_program target_name)
     set_target_properties("${target_name}" PROPERTIES CXX_SCAN_FOR_MODULES OFF)
     target_sources("${target_name}" PRIVATE "${RTSL_OUTPUT}")
 endfunction()
-
-if(DEFINED RTSL_EMBED_INPUTS AND DEFINED RTSL_EMBED_OUTPUT)
-    string(REPLACE "\\;" ";" RTSL_EMBED_INPUTS "${RTSL_EMBED_INPUTS}")
-    string(REPLACE "\\;" ";" RTSL_EMBED_SYMBOLS "${RTSL_EMBED_SYMBOLS}")
-
-    file(WRITE "${RTSL_EMBED_OUTPUT}" "#include <rtsl/sdk/program.hpp>\n\n#include <cstdint>\n\n")
-
-    set(_rtsl_index 0)
-    foreach(input_path IN LISTS RTSL_EMBED_INPUTS)
-        list(GET RTSL_EMBED_SYMBOLS "${_rtsl_index}" symbol_name)
-        if(NOT symbol_name)
-            get_filename_component(input_name "${input_path}" NAME_WE)
-            set(symbol_name "${input_name}_rtslp")
-        endif()
-        math(EXPR _rtsl_index "${_rtsl_index} + 1")
-
-        file(READ "${input_path}" _hex HEX)
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "namespace {\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "alignas(16) const std::uint8_t ${symbol_name}_data[] = {\n")
-
-        string(LENGTH "${_hex}" _hex_length)
-        math(EXPR _byte_count "${_hex_length} / 2")
-        if(_byte_count GREATER 0)
-            math(EXPR _last_index "${_byte_count} - 1")
-            foreach(index RANGE 0 "${_last_index}")
-                math(EXPR _offset "${index} * 2")
-                math(EXPR _next_index "${index} + 1")
-                math(EXPR _column "${_next_index} % 12")
-                string(SUBSTRING "${_hex}" "${_offset}" 2 _byte)
-                if(_next_index EQUAL _byte_count)
-                    file(APPEND "${RTSL_EMBED_OUTPUT}" "    0x${_byte}\n")
-                elseif(_column EQUAL 0)
-                    file(APPEND "${RTSL_EMBED_OUTPUT}" "    0x${_byte},\n")
-                else()
-                    file(APPEND "${RTSL_EMBED_OUTPUT}" "    0x${_byte}, ")
-                endif()
-            endforeach()
-        endif()
-
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "};\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "}\n\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "extern \"C\" const rtsl::ProgramBytes ${symbol_name} = {\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "    ${symbol_name}_data,\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "    sizeof(${symbol_name}_data)\n")
-        file(APPEND "${RTSL_EMBED_OUTPUT}" "};\n\n")
-    endforeach()
-endif()

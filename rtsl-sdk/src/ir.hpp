@@ -2,7 +2,7 @@
 
 #include "basic_types.hpp"
 #include "reflection.hpp"
-#include "rtsl/sdk/program.hpp"
+#include "rtsl/program.hpp"
 
 #include <cstddef>
 #include <string>

@@ -1,10 +1,11 @@
-#include "rtsl/sdk/program.hpp"
+#include "rtsl/program.hpp"
 
 #include "artifact_codec.hpp"
 
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <format>
 #include <limits>
 #include <string_view>
 #include <type_traits>
@@ -12,8 +13,6 @@
 #include <utility>
 
 namespace rtsl {
-
-namespace {
 
 struct DecorationRange {
 	std::size_t begin = 0;
@@ -228,7 +227,7 @@ bool equivalent_type(std::span<const ir::Type> types, std::span<const ir::Consta
 std::optional<ir::Op> normalized_op(IROp op) {
 	switch (op) {
 #define RTSL_IR_OP(name, display_name) case IROp::name: return ir::Op::name;
-#include "rtsl/sdk/ops.def"
+#include "rtsl/ops.def"
 	default: return std::nullopt;
 	}
 }
@@ -411,18 +410,14 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 		(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
 		(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
 		(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::FunctionCall;
-	if (produces_value != static_cast<bool>(source.result_id) ||
-		produces_value != static_cast<bool>(source.type_id)) {
+	if (produces_value != static_cast<bool>(source.result_id) || produces_value != static_cast<bool>(source.type_id)) { 
 		valid = false;
 	}
 	if (!valid) {
-		return std::unexpected(invalid_program("instructions",
-			std::string(ir_op_name(source.op)) + " has an invalid shape"));
+		return std::unexpected(invalid_program("instructions", std::format("{} has an invalid shape", ir_op_name(source.op))));
 	}
 	return instruction;
 }
-
-} // namespace
 
 bool ir::Instruction::references(ir::Id id) const noexcept {
 	return std::visit([&](const auto& value) {
@@ -606,8 +601,9 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				global.literals.front() == static_cast<std::uint32_t>(ir::StorageClass::function) || global.operands.size() > 1) {
 				return std::unexpected(invalid_program("globals", "global variable has an invalid shape"));
 			}
-			if (auto result = define(global.result_id, "globals"); !result)
+			if (auto result = define(global.result_id, "globals"); !result) {
 				return std::unexpected(std::move(result.error()));
+			}
 			data->globals.push_back(ir::Global{
 				.id = global.result_id,
 				.type = global.type_id,
