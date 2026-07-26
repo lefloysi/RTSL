@@ -3,4 +3,4 @@
 #endif
 
 #define RTSL_SDK_OP(name, display_name) RTSL_IR_OP(name, display_name)
-#include "rtsl/sdk/ops.def"
+#include "rtsl/ops.def"

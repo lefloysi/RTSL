@@ -1,3 +1,5 @@
+set(RTSL_CMAKE_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+
 function(rtsl_set_compiler compiler)
     set(RTSL_COMPILER "${compiler}" CACHE STRING "RTSL compiler executable or CMake target")
 endfunction()
@@ -155,7 +157,7 @@ function(rtsl_embed_program target_name)
             "-DRTSL_EMBED_INPUTS=${_rtsl_input_arg}"
             "-DRTSL_EMBED_SYMBOLS=${_rtsl_symbol_arg}"
             "-DRTSL_EMBED_OUTPUT=${RTSL_OUTPUT}"
-            -P "${CMAKE_CURRENT_LIST_DIR}/RtslEmbed.cmake"
+            -P "${RTSL_CMAKE_MODULE_DIR}/RtslEmbed.cmake"
         DEPENDS ${_rtsl_inputs}
         VERBATIM
         COMMENT "RTSL embed -> ${target_name}"
@@ -165,7 +167,13 @@ function(rtsl_embed_program target_name)
         CXX_SCAN_FOR_MODULES OFF
     )
 
-    target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
+    if(TARGET rtsl-sdk)
+        target_link_libraries("${target_name}" PRIVATE rtsl-sdk)
+    elseif(TARGET RTSL::sdk)
+        target_link_libraries("${target_name}" PRIVATE RTSL::sdk)
+    else()
+        message(FATAL_ERROR "RTSL SDK target is unavailable for '${target_name}'")
+    endif()
     set_target_properties("${target_name}" PROPERTIES CXX_SCAN_FOR_MODULES OFF)
     target_sources("${target_name}" PRIVATE "${RTSL_OUTPUT}")
 endfunction()

@@ -1,0 +1,87 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\lefloysi\\Documents\\GameDev\\OutpostsOfOdyssey\\leaf-framework\\Rutile\\RTSL\\tools\\Rtsl.VisualStudio\\Rtsl.VisualStudio\\Rtsl.VisualStudio.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\lefloysi\\Documents\\GameDev\\OutpostsOfOdyssey\\leaf-framework\\Rutile\\RTSL\\tools\\Rtsl.VisualStudio\\Rtsl.VisualStudio\\Rtsl.VisualStudio.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\lefloysi\\Documents\\GameDev\\OutpostsOfOdyssey\\leaf-framework\\Rutile\\RTSL\\tools\\Rtsl.VisualStudio\\Rtsl.VisualStudio\\Rtsl.VisualStudio.csproj",
+        "projectName": "Rtsl.VisualStudio",
+        "projectPath": "C:\\Users\\lefloysi\\Documents\\GameDev\\OutpostsOfOdyssey\\leaf-framework\\Rutile\\RTSL\\tools\\Rtsl.VisualStudio\\Rtsl.VisualStudio\\Rtsl.VisualStudio.csproj",
+        "packagesPath": "C:\\Users\\lefloysi\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\lefloysi\\Documents\\GameDev\\OutpostsOfOdyssey\\leaf-framework\\Rutile\\RTSL\\tools\\Rtsl.VisualStudio\\Rtsl.VisualStudio\\obj\\",
+        "projectStyle": "PackageReference",
+        "skipContentFileWrite": true,
+        "UsingMicrosoftNETSdk": false,
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\lefloysi\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net472"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net472": {
+            "projectReferences": {}
+          }
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net472": {
+          "dependencies": {
+            "Microsoft.VSSDK.BuildTools": {
+              "target": "Package",
+              "version": "[17.*, )"
+            },
+            "Microsoft.VisualStudio.CoreUtility": {
+              "target": "Package",
+              "version": "[17.14.275, 17.14.275]"
+            },
+            "Microsoft.VisualStudio.LanguageServer.Client": {
+              "target": "Package",
+              "version": "[17.*, )"
+            },
+            "Microsoft.VisualStudio.SDK": {
+              "include": "Compile, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+              "target": "Package",
+              "version": "[17.14.40265, 17.14.40265]"
+            },
+            "Microsoft.VisualStudio.Text.Data": {
+              "target": "Package",
+              "version": "[17.14.249, 17.14.249]"
+            }
+          }
+        }
+      },
+      "runtimes": {
+        "win": {
+          "#import": []
+        },
+        "win-arm64": {
+          "#import": []
+        },
+        "win-x64": {
+          "#import": []
+        },
+        "win-x86": {
+          "#import": []
+        }
+      }
+    }
+  }
+}

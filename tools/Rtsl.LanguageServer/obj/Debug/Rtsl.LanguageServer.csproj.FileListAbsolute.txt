@@ -1,0 +1,6 @@
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\bin\Debug\Rtsl.LanguageServer.exe
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\bin\Debug\Rtsl.LanguageServer.pdb
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\obj\Debug\Rtsl.LanguageServer.csproj.AssemblyReference.cache
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\obj\Debug\Rtsl.LanguageServer.csproj.CoreCompileInputs.cache
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\obj\Debug\Rtsl.LanguageServer.exe
+C:\Users\lefloysi\Documents\GameDev\OutpostsOfOdyssey\leaf-framework\Rutile\RTSL\tools\Rtsl.LanguageServer\obj\Debug\Rtsl.LanguageServer.pdb
