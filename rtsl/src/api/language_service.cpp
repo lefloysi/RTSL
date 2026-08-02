@@ -56,6 +56,8 @@ LanguageAnalysis LanguageService::analyze(std::string_view source, CompilerInvoc
 			.detail = uniform.type,
 		});
 	}
+	const auto diagnostics = compiler_.diagnostics().diagnostics();
+	analysis.diagnostics.assign(diagnostics.begin(), diagnostics.end());
 
 	return analysis;
 }

@@ -1,424 +1,454 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Web.Script.Serialization;
 
 namespace Rtsl.LanguageServer
 {
     internal static class Program
     {
-        private static readonly Dictionary<string, string> Documents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, Document> Documents = new Dictionary<string, Document>(StringComparer.OrdinalIgnoreCase);
+        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
         private static void Main()
         {
-            var stdin = Console.OpenStandardInput();
-            var stdout = Console.OpenStandardOutput();
-
+            Stream input = Console.OpenStandardInput();
+            Stream output = Console.OpenStandardOutput();
             while (true)
             {
-                string message = ReadMessage(stdin);
-                if (message == null)
-                    break;
+                string payload = ReadMessage(input);
+                if (payload == null)
+                    return;
 
-                if (message.IndexOf("\"method\":\"initialize\"", StringComparison.Ordinal) >= 0)
+                Dictionary<string, object> request;
+                try
                 {
-                    WriteJson(stdout, ExtractId(message), "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"keyword\",\"string\",\"number\",\"comment\",\"operator\",\"variable\",\"type\"],\"tokenModifiers\":[]},\"full\":true}}}");
+                    request = Json.DeserializeObject(payload) as Dictionary<string, object>;
                 }
-                else if (message.IndexOf("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal) >= 0)
+                catch
                 {
-                    var uri = ExtractString(message, "\"uri\":\"");
-                    var text = ExtractDidOpenText(message);
-                    if (uri != null)
+                    continue;
+                }
+                if (request == null)
+                    continue;
+
+                string method = StringValue(request, "method");
+                object id = request.ContainsKey("id") ? request["id"] : null;
+                Dictionary<string, object> parameters = request.ContainsKey("params") ? request["params"] as Dictionary<string, object> : null;
+                if (method == "initialize")
+                {
+                    Reply(output, id, new Dictionary<string, object>
                     {
-                        Documents[uri] = UnescapeJsonString(text ?? string.Empty);
-                        PublishDiagnostics(stdout, uri, Documents[uri]);
-                    }
+                        ["capabilities"] = new Dictionary<string, object>
+                        {
+                            ["textDocumentSync"] = 1,
+                            ["completionProvider"] = new Dictionary<string, object> { ["triggerCharacters"] = new[] { ".", ":", "(" } },
+                            ["hoverProvider"] = true,
+                            ["definitionProvider"] = true,
+                            ["documentSymbolProvider"] = true,
+                            ["signatureHelpProvider"] = new Dictionary<string, object> { ["triggerCharacters"] = new[] { "(" , "," } },
+                            ["semanticTokensProvider"] = new Dictionary<string, object>
+                            {
+                                ["legend"] = new Dictionary<string, object>
+                                {
+                                    ["tokenTypes"] = new[] { "keyword", "string", "number", "comment", "operator", "variable", "type", "function", "property" },
+                                    ["tokenModifiers"] = new string[0]
+                                },
+                                ["full"] = true
+                            }
+                        }
+                    });
+                    continue;
                 }
-                else if (message.IndexOf("\"method\":\"textDocument/didChange\"", StringComparison.Ordinal) >= 0)
+                if (method == "initialized")
+                    continue;
+                if (method == "textDocument/didOpen" || method == "textDocument/didChange")
                 {
-                    var uri = ExtractString(message, "\"uri\":\"");
-                    var text = ExtractDidChangeText(message);
-                    if (uri != null)
-                    {
-                        Documents[uri] = UnescapeJsonString(text ?? string.Empty);
-                        PublishDiagnostics(stdout, uri, Documents[uri]);
-                    }
+                    UpdateDocument(parameters, method == "textDocument/didOpen");
+                    string uri = UriValue(parameters);
+                    if (uri != null && Documents.ContainsKey(uri))
+                        Notify(output, "textDocument/publishDiagnostics", new Dictionary<string, object> { ["uri"] = uri, ["diagnostics"] = Documents[uri].Diagnostics() });
+                    continue;
                 }
-                else if (message.IndexOf("\"method\":\"textDocument/semanticTokens/full\"", StringComparison.Ordinal) >= 0)
+                if (method == "textDocument/semanticTokens/full")
                 {
-                    var uri = ExtractString(message, "\"uri\":\"");
-                    var text = uri != null && Documents.TryGetValue(uri, out var docText) ? docText : string.Empty;
-                    WriteJson(stdout, ExtractId(message), "{\"data\":" + BuildSemanticTokens(text) + "}");
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, new Dictionary<string, object> { ["data"] = document == null ? new int[0] : document.SemanticTokens() });
+                    continue;
                 }
-                else if (message.IndexOf("\"method\":\"shutdown\"", StringComparison.Ordinal) >= 0)
+                if (method == "textDocument/completion")
                 {
-                    WriteJson(stdout, ExtractId(message), "null");
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, document == null ? new Dictionary<string, object> { ["isIncomplete"] = false, ["items"] = new object[0] } : document.Completion(Position(parameters)));
+                    continue;
                 }
-                else if (message.IndexOf("\"method\":\"exit\"", StringComparison.Ordinal) >= 0)
+                if (method == "textDocument/hover")
                 {
-                    break;
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, document == null ? null : document.Hover(Position(parameters)));
+                    continue;
                 }
+                if (method == "textDocument/definition")
+                {
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, document == null ? new object[0] : document.Definition(Position(parameters)));
+                    continue;
+                }
+                if (method == "textDocument/documentSymbol")
+                {
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, document == null ? new object[0] : document.DocumentSymbols());
+                    continue;
+                }
+                if (method == "textDocument/signatureHelp")
+                {
+                    Document document = GetDocument(parameters);
+                    Reply(output, id, document == null ? null : document.SignatureHelp(Position(parameters)));
+                    continue;
+                }
+                if (method == "shutdown")
+                {
+                    Reply(output, id, null);
+                    continue;
+                }
+                if (method == "exit")
+                    return;
+                if (id != null)
+                    Reply(output, id, null);
             }
+        }
+
+        private static void UpdateDocument(Dictionary<string, object> parameters, bool open)
+        {
+            string uri = UriValue(parameters);
+            if (uri == null)
+                return;
+            string text = null;
+            Dictionary<string, object> textDocument = parameters["textDocument"] as Dictionary<string, object>;
+            if (open)
+                text = StringValue(textDocument, "text");
+            else
+            {
+                object[] changes = parameters["contentChanges"] as object[];
+                if (changes != null && changes.Length != 0)
+                    text = StringValue(changes[changes.Length - 1] as Dictionary<string, object>, "text");
+            }
+            if (text != null)
+                Documents[uri] = new Document(uri, text);
+        }
+
+        private static Document GetDocument(Dictionary<string, object> parameters)
+        {
+            string uri = UriValue(parameters);
+            Document document;
+            return uri != null && Documents.TryGetValue(uri, out document) ? document : null;
+        }
+
+        private static string UriValue(Dictionary<string, object> parameters)
+        {
+            return parameters == null ? null : StringValue(parameters["textDocument"] as Dictionary<string, object>, "uri");
+        }
+
+        private static Position Position(Dictionary<string, object> parameters)
+        {
+            Dictionary<string, object> value = parameters == null ? null : parameters["position"] as Dictionary<string, object>;
+            return new Position(NumberValue(value, "line"), NumberValue(value, "character"));
+        }
+
+        private static string StringValue(Dictionary<string, object> value, string key)
+        {
+            object result;
+            return value != null && value.TryGetValue(key, out result) ? result as string : null;
+        }
+
+        private static int NumberValue(Dictionary<string, object> value, string key)
+        {
+            object result;
+            if (value == null || !value.TryGetValue(key, out result))
+                return 0;
+            return Convert.ToInt32(result);
         }
 
         private static string ReadMessage(Stream input)
         {
-            var header = new List<byte>();
-            while (true)
+            StringBuilder header = new StringBuilder();
+            int previous = 0;
+            int current;
+            while ((current = input.ReadByte()) >= 0)
             {
-                int b = input.ReadByte();
-                if (b < 0)
-                    return null;
-                header.Add((byte)b);
-                int count = header.Count;
-                if (count >= 4 && header[count - 4] == '\r' && header[count - 3] == '\n' && header[count - 2] == '\r' && header[count - 1] == '\n')
+                header.Append((char)current);
+                if (previous == '\r' && current == '\n' && header.Length >= 4 && header[header.Length - 4] == '\r' && header[header.Length - 3] == '\n')
                     break;
+                previous = current;
             }
-
-            int contentLength = 0;
-            string headerText = Encoding.ASCII.GetString(header.ToArray());
-            foreach (var line in headerText.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries))
+            if (current < 0)
+                return null;
+            int length = 0;
+            foreach (string line in header.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries))
             {
                 if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                {
-                    contentLength = int.Parse(line.Substring("Content-Length:".Length).Trim());
-                    break;
-                }
+                    length = int.Parse(line.Substring(15).Trim());
             }
-
-            if (contentLength <= 0)
-                return null;
-
-            var payload = new byte[contentLength];
-            int read = 0;
-            while (read < contentLength)
+            byte[] bytes = new byte[length];
+            int offset = 0;
+            while (offset < bytes.Length)
             {
-                int n = input.Read(payload, read, contentLength - read);
-                if (n <= 0)
+                int read = input.Read(bytes, offset, bytes.Length - offset);
+                if (read <= 0)
                     return null;
-                read += n;
+                offset += read;
             }
-
-            return Encoding.UTF8.GetString(payload);
+            return Encoding.UTF8.GetString(bytes);
         }
 
-        private static void WriteJson(Stream output, string id, string resultJson)
+        private static void Reply(Stream output, object id, object result)
         {
-            WriteJson(output, "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + resultJson + "}");
+            Send(output, new Dictionary<string, object> { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result });
         }
 
-        private static void WriteJson(Stream output, string json)
+        private static void Notify(Stream output, string method, object parameters)
         {
-            var payload = Encoding.UTF8.GetBytes(json);
-            var header = Encoding.ASCII.GetBytes("Content-Length: " + payload.Length + "\r\n\r\n");
+            Send(output, new Dictionary<string, object> { ["jsonrpc"] = "2.0", ["method"] = method, ["params"] = parameters });
+        }
+
+        private static void Send(Stream output, object value)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(Json.Serialize(value));
+            byte[] header = Encoding.ASCII.GetBytes("Content-Length: " + bytes.Length + "\r\n\r\n");
             output.Write(header, 0, header.Length);
-            output.Write(payload, 0, payload.Length);
+            output.Write(bytes, 0, bytes.Length);
             output.Flush();
         }
+    }
 
-        private static string ExtractString(string text, string marker)
+    internal struct Position
+    {
+        public int Line;
+        public int Character;
+        public Position(int line, int character) { Line = line; Character = character; }
+    }
+
+    internal sealed class Symbol
+    {
+        public string Name;
+        public string Kind;
+        public string Type;
+        public string Detail;
+        public int Start;
+        public int Length;
+        public int Line;
+        public int Column;
+        public int EndLine;
+        public int EndColumn;
+        public List<Parameter> Parameters = new List<Parameter>();
+    }
+
+    internal sealed class Parameter
+    {
+        public string Name;
+        public string Type;
+    }
+
+    internal sealed class Document
+    {
+        private static readonly string[] Keywords = { "import", "export", "namespace", "struct", "using", "uniform", "layout", "fn", "const", "void", "if", "else", "while", "do", "for", "return", "true", "false", "readonly", "writeonly" };
+        private static readonly string[] BuiltinTypes = { "void", "bool", "i32", "u32", "f32", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "uvec2", "uvec3", "uvec4", "mat2", "mat3", "mat4", "Sampler2D", "SamplerCube", "UniformBuffer", "StorageBuffer" };
+        private static readonly string[] BuiltinFunctions = { "abs", "floor", "fract", "sqrt", "min", "max", "mod", "mix", "smoothstep", "float_bits_to_uint", "texture_size", "sample" };
+        private readonly string uri;
+        private readonly string text;
+        private readonly List<Symbol> symbols = new List<Symbol>();
+        private readonly List<Token> tokens = new List<Token>();
+        private readonly Dictionary<string, string> fields = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        private sealed class Token { public string Text; public int Start; public int Line; public int Column; public int Length { get { return Text.Length; } } }
+
+        public Document(string documentUri, string documentText)
         {
-            int start = text.IndexOf(marker, StringComparison.Ordinal);
-            if (start < 0)
-                return null;
-            start += marker.Length;
-            int end = text.IndexOf('"', start);
-            if (end < 0)
-                return null;
-            return text.Substring(start, end - start);
+            uri = documentUri;
+            text = documentText ?? string.Empty;
+            Lex();
+            Index();
         }
 
-        private static string ExtractDidOpenText(string message)
+        private void Lex()
         {
-            int marker = message.IndexOf("\"text\":\"", StringComparison.Ordinal);
-            if (marker < 0)
-                return string.Empty;
-            marker += "\"text\":\"".Length;
-            int end = message.LastIndexOf("\"", StringComparison.Ordinal);
-            if (end <= marker)
-                return string.Empty;
-            return message.Substring(marker, end - marker);
-        }
-
-        private static string ExtractDidChangeText(string message)
-        {
-            return ExtractDidOpenText(message);
-        }
-
-        private static string ExtractId(string message)
-        {
-            int index = message.IndexOf("\"id\":", StringComparison.Ordinal);
-            if (index < 0)
-                return "0";
-            index += "\"id\":".Length;
-            int end = index;
-            while (end < message.Length && char.IsDigit(message[end]))
-                end++;
-            return end > index ? message.Substring(index, end - index) : "0";
-        }
-
-        private static void PublishDiagnostics(Stream output, string uri, string text)
-        {
-            var diagnostics = new List<string>();
-            int line = 0;
-            int column = 0;
-            int stringStartLine = -1;
-            int stringStartColumn = -1;
-            for (int i = 0; i < text.Length; ++i)
+            int i = 0, line = 0, column = 0;
+            while (i < text.Length)
             {
                 char c = text[i];
-                if (c == '\n')
-                {
-                    if (stringStartLine >= 0)
-                    {
-                        diagnostics.Add(BuildDiagnostic(stringStartLine, stringStartColumn, line, column, "unterminated string literal"));
-                        stringStartLine = -1;
-                        stringStartColumn = -1;
-                    }
-                    line++;
-                    column = 0;
-                    continue;
-                }
-                if (c == '"')
-                {
-                    if (stringStartLine >= 0)
-                    {
-                        stringStartLine = -1;
-                        stringStartColumn = -1;
-                    }
-                    else
-                    {
-                        stringStartLine = line;
-                        stringStartColumn = column;
-                    }
-                }
-                else if (stringStartLine >= 0 && c == '\\' && i + 1 < text.Length)
-                {
-                    i++;
-                    column += 2;
-                    continue;
-                }
-                else if (stringStartLine < 0 && char.IsControl(c) && c != '\r' && c != '\t')
-                {
-                    diagnostics.Add(BuildDiagnostic(line, column, line, column + 1, "invalid control character"));
-                }
-                column++;
-            }
-            if (stringStartLine >= 0)
-                diagnostics.Add(BuildDiagnostic(stringStartLine, stringStartColumn, line, column, "unterminated string literal"));
-
-            WriteJson(output, "{\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + EscapeJson(uri) + "\",\"diagnostics\":[" + string.Join(",", diagnostics) + "]}}");
-        }
-
-        private static string BuildDiagnostic(int startLine, int startColumn, int endLine, int endColumn, string message)
-        {
-            return "{\"range\":{\"start\":{\"line\":" + startLine + ",\"character\":" + startColumn + "},\"end\":{\"line\":" + endLine + ",\"character\":" + endColumn + "}},\"severity\":1,\"source\":\"RTSL\",\"message\":\"" + EscapeJson(message) + "\"}";
-        }
-
-        private static string BuildSemanticTokens(string text)
-        {
-            var tokens = new List<int>();
-            int prevLine = 0;
-            int prevChar = 0;
-            int line = 0;
-            int col = 0;
-
-            for (int i = 0; i < text.Length;)
-            {
-                char c = text[i];
-                if (c == '\n')
-                {
-                    line++;
-                    col = 0;
-                    i++;
-                    continue;
-                }
-                if (char.IsWhiteSpace(c))
-                {
-                    col++;
-                    i++;
-                    continue;
-                }
-
-                if (IsIdentStart(c))
-                {
-                    int startLine = line;
-                    int startCol = col;
-                    int start = i;
-                    while (i < text.Length && IsIdentContinue(text[i]))
-                    {
-                        i++;
-                        col++;
-                    }
-                    var word = text.Substring(start, i - start);
-                    var type = IsKeyword(word) ? 0 : 5;
-                    AddSemanticToken(tokens, ref prevLine, ref prevChar, startLine, startCol, word.Length, type);
-                    continue;
-                }
-
-                if (char.IsDigit(c))
-                {
-                    int startLine = line;
-                    int startCol = col;
-                    int start = i;
-                    while (i < text.Length && char.IsDigit(text[i]))
-                    {
-                        i++;
-                        col++;
-                    }
-                    AddSemanticToken(tokens, ref prevLine, ref prevChar, startLine, startCol, i - start, 2);
-                    continue;
-                }
-
+                if (c == '\n') { i++; line++; column = 0; continue; }
+                if (char.IsWhiteSpace(c)) { i++; column++; continue; }
                 if (c == '/' && i + 1 < text.Length && text[i + 1] == '/')
                 {
-                    int startLine = line;
-                    int startCol = col;
-                    int start = i;
-                    while (i < text.Length && text[i] != '\n')
-                    {
-                        i++;
-                        col++;
-                    }
-                    AddSemanticToken(tokens, ref prevLine, ref prevChar, startLine, startCol, i - start, 3);
-                    continue;
+                    int start = i; while (i < text.Length && text[i] != '\n') { i++; column++; }
+                    tokens.Add(new Token { Text = text.Substring(start, i - start), Start = start, Line = line, Column = column - (i - start) }); continue;
                 }
-
-                if (c == '"')
+                int tokenStart = i, tokenColumn = column;
+                if (char.IsLetter(c) || c == '_')
                 {
-                    int startLine = line;
-                    int startCol = col;
-                    int start = i;
-                    i++;
-                    col++;
-                    while (i < text.Length && text[i] != '"')
-                    {
-                        if (text[i] == '\\' && i + 1 < text.Length)
-                        {
-                            i += 2;
-                            col += 2;
-                            continue;
-                        }
-                        if (text[i] == '\n')
-                            break;
-                        i++;
-                        col++;
-                    }
-                    if (i < text.Length && text[i] == '"')
-                    {
-                        i++;
-                        col++;
-                    }
-                    AddSemanticToken(tokens, ref prevLine, ref prevChar, startLine, startCol, i - start, 1);
-                    continue;
+                    i++; column++; while (i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '_')) { i++; column++; }
                 }
-
-                AddSemanticToken(tokens, ref prevLine, ref prevChar, line, col, 1, 4);
-                i++;
-                col++;
+                else if (char.IsDigit(c))
+                {
+                    i++; column++; while (i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '.')) { i++; column++; }
+                }
+                else if (c == '"')
+                {
+                    i++; column++; while (i < text.Length && text[i] != '"' && text[i] != '\n') { if (text[i] == '\\' && i + 1 < text.Length) { i += 2; column += 2; } else { i++; column++; } } if (i < text.Length && text[i] == '"') { i++; column++; }
+                }
+                else
+                {
+                    i++; column++; if (i < text.Length && ((c == ':' && text[i] == ':') || (c == '-' && text[i] == '>') || (c == '=' && text[i] == '=') || (c == '!' && text[i] == '='))) { i++; column++; }
+                }
+                tokens.Add(new Token { Text = text.Substring(tokenStart, i - tokenStart), Start = tokenStart, Line = line, Column = tokenColumn });
             }
-
-            return "[" + string.Join(",", tokens) + "]";
         }
 
-        private static void AddSemanticToken(List<int> tokens, ref int prevLine, ref int prevChar, int line, int character, int length, int type)
+        private void Index()
         {
-            tokens.Add(line - prevLine);
-            tokens.Add(line == prevLine ? character - prevChar : character);
-            tokens.Add(length);
-            tokens.Add(type);
-            tokens.Add(0);
-            prevLine = line;
-            prevChar = character;
-        }
-
-        private static bool IsIdentStart(char c) => char.IsLetter(c) || c == '_';
-        private static bool IsIdentContinue(char c) => char.IsLetterOrDigit(c) || c == '_';
-
-        private static bool IsKeyword(string word)
-        {
-            switch (word)
+            for (int i = 0; i + 1 < tokens.Count; i++)
             {
-                case "import":
-                case "export":
-                case "namespace":
-                case "struct":
-                case "using":
-                case "uniform":
-                case "fn":
-                case "const":
-                case "auto":
-                case "void":
-                case "if":
-                case "else":
-                case "while":
-                case "do":
-                case "for":
-                case "return":
-                case "clip":
-                case "smooth":
-                case "flat":
-                case "readonly":
-                case "writeonly":
-                case "true":
-                case "false":
-                case "layout":
-                case "std140":
-                case "std430":
-                case "scalar":
-                    return true;
-                default:
-                    return false;
+                Token token = tokens[i];
+                if (token.Text == "struct" && i + 1 < tokens.Count && IsIdentifier(tokens[i + 1].Text))
+                {
+                    Symbol symbol = Add(tokens[i + 1], "struct", tokens[i + 1].Text, "struct " + tokens[i + 1].Text);
+                    int brace = FindNext(i + 2, "{");
+                    if (brace >= 0) IndexFields(brace, symbol.Name);
+                }
+                if (token.Text == "fn" && i + 1 < tokens.Count)
+                {
+                    int nameIndex = i + 1;
+                    if (!IsIdentifier(tokens[nameIndex].Text)) continue;
+                    int open = FindNext(nameIndex + 1, "(");
+                    Symbol function = Add(tokens[nameIndex], "function", ReturnType(open), Signature(nameIndex, open));
+                    if (open >= 0) ParseParameters(function, open);
+                }
+                if ((token.Text == "uniform" || token.Text == "layout") && i + 2 < tokens.Count)
+                {
+                    if (token.Text == "uniform" && IsIdentifier(tokens[i + 1].Text) && tokens[i + 2].Text == "{")
+                    {
+                        Add(tokens[i + 1], "namespace", "uniform", "uniform " + tokens[i + 1].Text);
+                    }
+                    else if (token.Text == "uniform" && IsType(tokens[i + 1].Text) && IsIdentifier(tokens[i + 2].Text))
+                    {
+                        Add(tokens[i + 2], "variable", tokens[i + 1].Text, tokens[i + 1].Text + " " + tokens[i + 2].Text);
+                    }
+                    else if (token.Text == "layout")
+                    {
+                        int colon = FindNext(i + 1, ":");
+                        if (colon >= 0 && colon + 1 < tokens.Count && IsIdentifier(tokens[colon + 1].Text))
+                            Add(tokens[colon + 1], "field", "layout", "layout " + tokens[colon + 1].Text);
+                    }
+                }
             }
-        }
-
-        private static string EscapeJson(string text)
-        {
-            return text.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        }
-
-        private static string UnescapeJsonString(string text)
-        {
-            var result = new StringBuilder(text.Length);
-            for (int i = 0; i < text.Length; ++i)
+            for (int i = 0; i + 2 < tokens.Count; i++)
             {
-                char c = text[i];
-                if (c != '\\' || i + 1 >= text.Length)
-                {
-                    result.Append(c);
-                    continue;
-                }
-
-                char escaped = text[++i];
-                switch (escaped)
-                {
-                    case '"': result.Append('"'); break;
-                    case '\\': result.Append('\\'); break;
-                    case '/': result.Append('/'); break;
-                    case 'b': result.Append('\b'); break;
-                    case 'f': result.Append('\f'); break;
-                    case 'n': result.Append('\n'); break;
-                    case 'r': result.Append('\r'); break;
-                    case 't': result.Append('\t'); break;
-                    case 'u':
-                        if (i + 4 < text.Length)
-                        {
-                            string hex = text.Substring(i + 1, 4);
-                            if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out int value))
-                            {
-                                result.Append((char)value);
-                                i += 4;
-                                break;
-                            }
-                        }
-                        result.Append("\\u");
-                        break;
-                    default:
-                        result.Append(escaped);
-                        break;
-                }
+                if (IsType(tokens[i].Text) && IsIdentifier(tokens[i + 1].Text) && (tokens[i + 2].Text == ";" || tokens[i + 2].Text == "="))
+                    Add(tokens[i + 1], "variable", tokens[i].Text, tokens[i].Text + " " + tokens[i + 1].Text);
             }
-            return result.ToString();
         }
+
+        private void IndexFields(int brace, string owner)
+        {
+            for (int i = brace + 1; i + 2 < tokens.Count && tokens[i].Text != "}"; i++)
+            {
+                if (IsType(tokens[i].Text) && IsIdentifier(tokens[i + 1].Text) && tokens[i + 2].Text == ";")
+                    fields[owner + "." + tokens[i + 1].Text] = tokens[i].Text;
+            }
+        }
+
+        private Symbol Add(Token token, string kind, string type, string detail)
+        {
+            Symbol symbol = new Symbol { Name = token.Text, Kind = kind, Type = type, Detail = detail, Start = token.Start, Length = token.Length, Line = token.Line, Column = token.Column };
+            symbol.EndLine = token.Line; symbol.EndColumn = token.Column + token.Length; symbols.Add(symbol); return symbol;
+        }
+
+        private int FindNext(int start, string value) { for (int i = start; i < tokens.Count; i++) if (tokens[i].Text == value) return i; return -1; }
+        private string ReturnType(int open) { int arrow = open < 0 ? -1 : FindNext(open, "->"); return arrow >= 0 && arrow + 1 < tokens.Count ? tokens[arrow + 1].Text : "void"; }
+        private string Signature(int name, int open) { if (open < 0) return "fn " + tokens[name].Text; int close = FindNext(open, ")"); return "fn " + tokens[name].Text + text.Substring(tokens[open].Start, close < 0 ? text.Length - tokens[open].Start : tokens[close].Start + 1 - tokens[open].Start); }
+        private void ParseParameters(Symbol symbol, int open) { for (int i = open + 1; i + 1 < tokens.Count && tokens[i].Text != ")"; i++) if (IsType(tokens[i].Text) && IsIdentifier(tokens[i + 1].Text)) { symbol.Parameters.Add(new Parameter { Type = tokens[i].Text, Name = tokens[i + 1].Text }); i++; } }
+        private static bool IsIdentifier(string value) { return value.Length != 0 && (char.IsLetter(value[0]) || value[0] == '_') && value != "true" && value != "false"; }
+        private bool IsType(string value) { return BuiltinTypes.Contains(value) || symbols.Any(s => s.Kind == "struct" && s.Name == value); }
+
+        public object[] Diagnostics()
+        {
+            List<object> result = new List<object>();
+            int braces = 0, parentheses = 0;
+            foreach (Token token in tokens)
+            {
+                if (token.Text == "{") braces++; if (token.Text == "}") braces--; if (token.Text == "(") parentheses++; if (token.Text == ")") parentheses--;
+                if (braces < 0 || parentheses < 0) { result.Add(Diagnostic(token.Line, token.Column, token.Length, "unexpected closing delimiter")); braces = Math.Max(0, braces); parentheses = Math.Max(0, parentheses); }
+            }
+            if (braces > 0) result.Add(Diagnostic(tokens.Count == 0 ? 0 : tokens[tokens.Count - 1].Line, 0, 1, "unclosed block"));
+            if (parentheses > 0) result.Add(Diagnostic(tokens.Count == 0 ? 0 : tokens[tokens.Count - 1].Line, 0, 1, "unclosed parameter list"));
+            return result.ToArray();
+        }
+
+        private object Diagnostic(int line, int column, int length, string message) { return new Dictionary<string, object> { ["range"] = Range(line, column, line, column + length), ["severity"] = 1, ["source"] = "RTSL", ["message"] = message }; }
+        private static Dictionary<string, object> Range(int sl, int sc, int el, int ec) { return new Dictionary<string, object> { ["start"] = new Dictionary<string, object> { ["line"] = sl, ["character"] = sc }, ["end"] = new Dictionary<string, object> { ["line"] = el, ["character"] = ec } }; }
+        private Dictionary<string, object> Location(Symbol symbol) { return new Dictionary<string, object> { ["uri"] = uri, ["range"] = Range(symbol.Line, symbol.Column, symbol.EndLine, symbol.EndColumn) }; }
+
+        public int[] SemanticTokens()
+        {
+            List<int> data = new List<int>(); int previousLine = 0, previousColumn = 0;
+            foreach (Token token in tokens)
+            {
+                int type = Array.IndexOf(Keywords, token.Text) >= 0 ? 0 : IsType(token.Text) ? 6 : symbols.Any(s => s.Name == token.Text && s.Kind == "function") ? 7 : char.IsDigit(token.Text[0]) ? 2 : token.Text.StartsWith("\"") ? 1 : 4;
+                data.Add(token.Line - previousLine); data.Add(token.Line == previousLine ? token.Column - previousColumn : token.Column); data.Add(token.Length); data.Add(type); data.Add(0); previousLine = token.Line; previousColumn = token.Column;
+            }
+            return data.ToArray();
+        }
+
+        private string WordAt(Position position)
+        {
+            Token token = tokens.FirstOrDefault(t => t.Line == position.Line && position.Character >= t.Column && position.Character <= t.Column + t.Length);
+            return token == null ? null : token.Text;
+        }
+
+        public object Completion(Position position)
+        {
+            List<object> items = new List<object>(); string prefix = WordAt(position) ?? string.Empty;
+            string line = GetLine(position.Line);
+            int before = Math.Min(position.Character, line.Length);
+            int dot = line.LastIndexOf('.', Math.Max(0, before - 1));
+            if (dot >= 0 && dot < before)
+            {
+                string owner = PreviousIdentifier(line, dot - 1);
+                string memberPrefix = line.Substring(dot + 1, before - dot - 1);
+                foreach (KeyValuePair<string, string> field in fields.Where(f => f.Key.StartsWith(owner + ".", StringComparison.Ordinal)))
+                {
+                    string name = field.Key.Substring(owner.Length + 1);
+                    if (name.StartsWith(memberPrefix, StringComparison.Ordinal))
+                        items.Add(Item(name, 10, field.Value + " " + name));
+                }
+                return new Dictionary<string, object> { ["isIncomplete"] = false, ["items"] = items.ToArray() };
+            }
+            foreach (string keyword in Keywords) if (keyword.StartsWith(prefix, StringComparison.Ordinal)) items.Add(Item(keyword, 14, keyword));
+            foreach (string type in BuiltinTypes) if (type.StartsWith(prefix, StringComparison.Ordinal)) items.Add(Item(type, 7, type));
+            foreach (string function in BuiltinFunctions) if (function.StartsWith(prefix, StringComparison.Ordinal)) items.Add(Item(function, 3, function + "(...)", function + "($0)"));
+            foreach (Symbol symbol in symbols.Where(s => s.Name.StartsWith(prefix, StringComparison.Ordinal))) items.Add(Item(symbol.Name, symbol.Kind == "function" ? 3 : symbol.Kind == "struct" ? 7 : 6, symbol.Detail));
+            return new Dictionary<string, object> { ["isIncomplete"] = false, ["items"] = items.ToArray() };
+        }
+
+        private static Dictionary<string, object> Item(string label, int kind, string detail) { return Item(label, kind, detail, label); }
+        private static Dictionary<string, object> Item(string label, int kind, string detail, string insertText) { return new Dictionary<string, object> { ["label"] = label, ["kind"] = kind, ["detail"] = detail, ["insertText"] = insertText }; }
+        private string GetLine(int line)
+        {
+            string[] lines = text.Split(new[] { "\n" }, StringSplitOptions.None);
+            return line >= 0 && line < lines.Length ? lines[line].TrimEnd('\r') : string.Empty;
+        }
+        private static string PreviousIdentifier(string line, int end)
+        {
+            while (end >= 0 && char.IsWhiteSpace(line[end])) end--;
+            int start = end;
+            while (start >= 0 && (char.IsLetterOrDigit(line[start]) || line[start] == '_')) start--;
+            return start < end ? line.Substring(start + 1, end - start) : string.Empty;
+        }
+        public object Hover(Position position) { Symbol symbol = symbols.FirstOrDefault(s => s.Name == WordAt(position)); return symbol == null ? null : new Dictionary<string, object> { ["contents"] = new Dictionary<string, object> { ["kind"] = "markdown", ["value"] = "```rtsl\n" + symbol.Detail + "\n```" }, ["range"] = Range(symbol.Line, symbol.Column, symbol.EndLine, symbol.EndColumn) }; }
+        public object[] Definition(Position position) { Symbol symbol = symbols.FirstOrDefault(s => s.Name == WordAt(position)); return symbol == null ? new object[0] : new[] { Location(symbol) }; }
+        public object[] DocumentSymbols() { return symbols.Select(s => new Dictionary<string, object> { ["name"] = s.Name, ["kind"] = s.Kind == "function" ? 12 : s.Kind == "struct" ? 23 : 13, ["detail"] = s.Detail, ["range"] = Range(s.Line, s.Column, s.EndLine, s.EndColumn), ["selectionRange"] = Range(s.Line, s.Column, s.EndLine, s.EndColumn) }).Cast<object>().ToArray(); }
+        public object SignatureHelp(Position position) { string name = WordAt(position); Symbol symbol = symbols.FirstOrDefault(s => s.Name == name && s.Kind == "function"); if (symbol == null) return null; return new Dictionary<string, object> { ["signatures"] = new[] { new Dictionary<string, object> { ["label"] = symbol.Detail + " -> " + symbol.Type, ["parameters"] = symbol.Parameters.Select(p => (object)new Dictionary<string, object> { ["label"] = p.Type + " " + p.Name }).ToArray() } }, ["activeSignature"] = 0, ["activeParameter"] = 0 }; }
     }
 }

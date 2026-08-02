@@ -64,8 +64,30 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System" />
     <Reference Include="PresentationCore" />
     <Reference Include="System.Net.Http" />
+    <!-- The legacy VSIX project format does not project PackageReference compile
+         assets into Microsoft.Common.targets reliably. Keep these explicit so
+         command-line and IDE builds use the same language-client assemblies. -->
+    <Reference Include="Microsoft.VisualStudio.LanguageServer.Client">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.LanguageServer.Client.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.CoreUtility">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.CoreUtility.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Text.Data">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.Text.Data.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Text.Logic">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.Text.Logic.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Utilities">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.Utilities.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.Threading">
+      <HintPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\Microsoft.VisualStudio.Threading.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="[17.14.40265]" ExcludeAssets="runtime" />

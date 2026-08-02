@@ -47,6 +47,7 @@ struct LanguageAnalysis {
 	SemanticModule sema;
 	std::vector<Token> tokens;
 	std::vector<LanguageSymbol> symbols;
+	std::vector<Diagnostic> diagnostics;
 };
 
 class LanguageService {
