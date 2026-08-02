@@ -1,7 +1,7 @@
+#include "rtsl/spirv.hpp"
 #include "artifact/linker.hpp"
 #include "driver/compiler.hpp"
 #include "rtsl/program.hpp"
-#include "rtsl/spirv.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,11 +19,14 @@ namespace {
 std::expected<Program, LoadError> compile_program(std::string_view source) {
 	CompilerInstance compiler;
 	Artifact object = compiler.compile_source(source, CompilerInvocation{ .source_name = "spirv_test.rtsl" });
-	if (compiler.diagnostics().has_error()) return std::unexpected(LoadError{ .message = "source compilation failed" });
+	if (compiler.diagnostics().has_error())
+		return std::unexpected(LoadError{ .message = "source compilation failed" });
 	Linker linker{ compiler.diagnostics() };
-	if (!linker.add_artifact(object)) return std::unexpected(LoadError{ .message = "linker rejected object" });
+	if (!linker.add_artifact(object))
+		return std::unexpected(LoadError{ .message = "linker rejected object" });
 	Artifact artifact = linker.link_program();
-	if (compiler.diagnostics().has_error()) return std::unexpected(LoadError{ .message = compiler.diagnostics().diagnostics().front().message });
+	if (compiler.diagnostics().has_error())
+		return std::unexpected(LoadError{ .message = compiler.diagnostics().diagnostics().front().message });
 	return load_program(std::as_bytes(std::span{ artifact.bytes }));
 }
 
@@ -42,11 +45,10 @@ std::string shell_command_prefix() {
 
 bool validates(const spirv::Shader& shader, std::string_view name) {
 	const std::filesystem::path path = std::filesystem::temp_directory_path() /
-		(std::string{ "rtsl-" } + std::string{ name } + ".spv");
+									   (std::string{ "rtsl-" } + std::string{ name } + ".spv");
 	{
 		std::ofstream output{ path, std::ios::binary };
-		output.write(reinterpret_cast<const char*>(shader.words.data()),
-			static_cast<std::streamsize>(shader.byte_size()));
+		output.write(reinterpret_cast<const char*>(shader.words.data()), static_cast<std::streamsize>(shader.byte_size()));
 	}
 	const std::string command = shell_command_prefix() + shell_quote(RTSL_SPIRV_VAL) + " --target-env vulkan1.3 " + shell_quote(path);
 	return std::system(command.c_str()) == 0;
@@ -64,7 +66,8 @@ TEST_CASE("SPIR-V transpiler extracts and validates both graphics stages") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return vec4(v.uv, 0.0, 1.0);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 
 	auto vertex = spirv::transpile(*program, Stage::vertex);
@@ -91,7 +94,8 @@ TEST_CASE("SPIR-V transpiler emits stage-local sampled texture resources") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return sample(material::texture, v.uv);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	REQUIRE(program->resources().size() == 1);
 	REQUIRE_FALSE(contains(program->resources()[0].stages, Stage::vertex));
@@ -117,7 +121,8 @@ TEST_CASE("SPIR-V transpiler validates normalized uniform and storage blocks") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return material::tint;\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	REQUIRE(program->resources().size() == 2);
 	REQUIRE(program->resources()[0].kind == ResourceKind::uniform_buffer);
@@ -148,7 +153,8 @@ TEST_CASE("SPIR-V transpiler validates inline uniform block member access") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return vec4(v.color * 0.8, 1.0);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 
 	auto vertex = spirv::transpile(*program, Stage::vertex);
@@ -179,7 +185,8 @@ TEST_CASE("SPIR-V transpiler validates terrain shader language surface") {
 		"    f32 value = sqrt(max(0.0, min(1.0, mod(f32(packed.x), dimensions.x))));\n"
 		"    f32 wave = smoothstep(0.0, 1.0, fract(abs(v.uv.y))) + floor(v.uv.x);\n"
 		"    return mix(sample(atlas, v.uv), vec4(value), wave);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	auto fragment = spirv::transpile(*program, Stage::fragment);
 	REQUIRE(fragment.has_value());
@@ -198,7 +205,8 @@ TEST_CASE("SPIR-V transpiler preserves and validates user function calls") {
 		"fn choose(vec4 value, bool replace) -> vec4 { if (replace) { value.rgb = vec3(0.5); } return value; }\n"
 		"fn shade(u32 index) -> vec4 { return choose(color(index) * 0.5, index == u32(0)); }\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n");
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n"
+	);
 	REQUIRE(program.has_value());
 	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
 	auto fragment = spirv::transpile(*program, Stage::fragment);

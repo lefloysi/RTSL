@@ -3,9 +3,9 @@
 #include "frontend/ast.hpp"
 #include "rtsl/program.hpp"
 
+#include <span>
 #include <string>
 #include <string_view>
-#include <span>
 #include <vector>
 
 namespace rtsl {

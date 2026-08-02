@@ -42,11 +42,13 @@ enum class Op : std::uint16_t {
 inline constexpr std::size_t op_count = 0
 #define RTSL_IR_OP(name, display_name) +1
 #include "rtsl/ops.def"
-;
+	;
 
 [[nodiscard]] inline constexpr std::string_view op_name(Op op) {
 	switch (op) {
-#define RTSL_IR_OP(name, display_name) case Op::name: return display_name;
+#define RTSL_IR_OP(name, display_name) \
+	case Op::name:                     \
+		return display_name;
 #include "rtsl/ops.def"
 	}
 	return "Unknown";
@@ -212,7 +214,8 @@ struct Decoration {
 	std::vector<std::uint32_t> literals;
 
 	[[nodiscard]] std::optional<std::uint32_t> member() const {
-		if (member_index == no_member) return std::nullopt;
+		if (member_index == no_member)
+			return std::nullopt;
 		return member_index;
 	}
 };

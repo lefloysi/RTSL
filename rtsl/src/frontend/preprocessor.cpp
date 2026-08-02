@@ -16,15 +16,18 @@ enum class DirectiveKind {
 
 DirectiveKind directive_kind(std::string_view name) {
 #define RTSL_PP_DIRECTIVE(kind, spelling) \
-	if (name == spelling) return DirectiveKind::kind;
+	if (name == spelling)                 \
+		return DirectiveKind::kind;
 #include "frontend/directives.def"
 	return DirectiveKind::Unknown;
 }
 
 std::string_view trim(std::string_view text) {
 	const auto is_space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
-	for (; !text.empty() && is_space(text.front()); text.remove_prefix(1)) {}
-	for (; !text.empty() && is_space(text.back()); text.remove_suffix(1)) {}
+	for (; !text.empty() && is_space(text.front()); text.remove_prefix(1)) {
+	}
+	for (; !text.empty() && is_space(text.back()); text.remove_suffix(1)) {
+	}
 	return text;
 }
 
@@ -34,7 +37,8 @@ std::string_view take_identifier(std::string_view& text) {
 	std::size_t length = 0;
 	for (; length < text.size(); ++length) {
 		const char c = text[length];
-		if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') break;
+		if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
+			break;
 	}
 	const auto identifier = text.substr(0, length);
 	text.remove_prefix(length);
@@ -52,17 +56,19 @@ class ConditionStack {
 	}
 
 	void flip() {
-		if (frames_.empty()) return;
+		if (frames_.empty())
+			return;
 		frames_.back().active = frames_.back().parent_active && !frames_.back().active;
 	}
 
 	void pop() {
-		if (!frames_.empty()) frames_.pop_back();
+		if (!frames_.empty())
+			frames_.pop_back();
 	}
 
   private:
 	struct Frame {
-		bool active;        // this region is emitted
+		bool active;		// this region is emitted
 		bool parent_active; // the enclosing region is emitted (for #else)
 	};
 	std::vector<Frame> frames_;
@@ -87,7 +93,8 @@ std::string preprocess_source(std::string_view source, std::span<const std::stri
 		begin = end + 1;
 	}
 	const bool ends_with_newline = source.ends_with('\n');
-	if (ends_with_newline) lines.pop_back(); // drop the empty tail after the final '\n'
+	if (ends_with_newline)
+		lines.pop_back(); // drop the empty tail after the final '\n'
 
 	std::string out;
 	out.reserve(source.size());
@@ -98,7 +105,8 @@ std::string preprocess_source(std::string_view source, std::span<const std::stri
 		if (!trimmed.starts_with('#')) {
 			if (conditions.active()) {
 				out.append(line);
-				if (i + 1 < lines.size() || ends_with_newline) out.push_back('\n');
+				if (i + 1 < lines.size() || ends_with_newline)
+					out.push_back('\n');
 			}
 			continue;
 		}

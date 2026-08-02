@@ -4,12 +4,18 @@ namespace rtsl {
 
 static LanguageSymbolKind symbol_kind_from_decl(DeclKind kind) {
 	switch (kind) {
-	case DeclKind::import: return LanguageSymbolKind::import;
-	case DeclKind::function: return LanguageSymbolKind::function;
-	case DeclKind::struct_decl: return LanguageSymbolKind::struct_decl;
-	case DeclKind::uniform: return LanguageSymbolKind::uniform;
-	case DeclKind::namespace_decl: return LanguageSymbolKind::namespace_decl;
-	default: return LanguageSymbolKind::unknown;
+	case DeclKind::import:
+		return LanguageSymbolKind::import;
+	case DeclKind::function:
+		return LanguageSymbolKind::function;
+	case DeclKind::struct_decl:
+		return LanguageSymbolKind::struct_decl;
+	case DeclKind::uniform:
+		return LanguageSymbolKind::uniform;
+	case DeclKind::namespace_decl:
+		return LanguageSymbolKind::namespace_decl;
+	default:
+		return LanguageSymbolKind::unknown;
 	}
 }
 

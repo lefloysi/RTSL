@@ -91,7 +91,8 @@ namespace rtsl {
 namespace {
 
 std::string join_source(std::string_view buffer, std::size_t start, std::size_t end) {
-	if (end <= start || end > buffer.size()) return {};
+	if (end <= start || end > buffer.size())
+		return {};
 	return std::string(buffer.substr(start, end - start));
 }
 
@@ -147,13 +148,15 @@ bool Parser::at(TokenKind kind) const { return peek().kind == kind; }
 bool Parser::at(TokenKind kind, std::size_t lookahead) const { return peek(lookahead).kind == kind; }
 
 bool Parser::consume(TokenKind kind) {
-	if (!at(kind)) return false;
+	if (!at(kind))
+		return false;
 	++cursor;
 	return true;
 }
 
 bool Parser::expect(TokenKind kind, std::string_view what) {
-	if (consume(kind)) return true;
+	if (consume(kind))
+		return true;
 	diagnose_here(what);
 	return false;
 }
@@ -166,7 +169,8 @@ bool Parser::at_word(std::string_view word, std::size_t lookahead) const {
 }
 
 bool Parser::consume_word(std::string_view word) {
-	if (!at_word(word)) return false;
+	if (!at_word(word))
+		return false;
 	++cursor;
 	return true;
 }
@@ -197,12 +201,16 @@ void Parser::skip_to_declaration_boundary(bool consume_right_brace) {
 	int depth = 0;
 	while (!at_end()) {
 		const auto kind = peek().kind;
-		if (depth == 0 && (kind == TokenKind::semicolon || kind == TokenKind::right_brace)) break;
-		if (kind == TokenKind::left_brace) ++depth;
-		else if (kind == TokenKind::right_brace && depth > 0) --depth;
+		if (depth == 0 && (kind == TokenKind::semicolon || kind == TokenKind::right_brace))
+			break;
+		if (kind == TokenKind::left_brace)
+			++depth;
+		else if (kind == TokenKind::right_brace && depth > 0)
+			--depth;
 		++cursor;
 	}
-	if (at(TokenKind::semicolon) || (consume_right_brace && at(TokenKind::right_brace))) ++cursor;
+	if (at(TokenKind::semicolon) || (consume_right_brace && at(TokenKind::right_brace)))
+		++cursor;
 }
 
 void Parser::skip_to_statement_boundary() {
@@ -213,13 +221,20 @@ void Parser::skip_to_statement_boundary() {
 			++cursor;
 			return;
 		}
-		if (kind == TokenKind::right_brace && paren == 0 && brack == 0 && brace == 0) return;
-		if (kind == TokenKind::left_paren) ++paren;
-		else if (kind == TokenKind::right_paren && paren > 0) --paren;
-		else if (kind == TokenKind::left_bracket) ++brack;
-		else if (kind == TokenKind::right_bracket && brack > 0) --brack;
-		else if (kind == TokenKind::left_brace) ++brace;
-		else if (kind == TokenKind::right_brace && brace > 0) --brace;
+		if (kind == TokenKind::right_brace && paren == 0 && brack == 0 && brace == 0)
+			return;
+		if (kind == TokenKind::left_paren)
+			++paren;
+		else if (kind == TokenKind::right_paren && paren > 0)
+			--paren;
+		else if (kind == TokenKind::left_bracket)
+			++brack;
+		else if (kind == TokenKind::right_bracket && brack > 0)
+			--brack;
+		else if (kind == TokenKind::left_brace)
+			++brace;
+		else if (kind == TokenKind::right_brace && brace > 0)
+			--brace;
 		++cursor;
 	}
 }
@@ -230,7 +245,8 @@ void Parser::skip_to_statement_boundary() {
 
 Parser::ParsedType Parser::parse_type() {
 	ParsedType type;
-	if (consume(TokenKind::kw_Const)) type.is_const = true;
+	if (consume(TokenKind::kw_Const))
+		type.is_const = true;
 
 	if (consume(TokenKind::kw_Struct)) {
 		// struct type atom: `struct` scoped_name? (`{` struct_body `}`)?
@@ -278,8 +294,16 @@ Parser::ParsedType Parser::parse_type() {
 			type.spelling += "<";
 			int depth = 1;
 			while (!at_end() && depth > 0) {
-				if (consume(TokenKind::less))    { type.spelling += "<"; ++depth; continue; }
-				if (consume(TokenKind::greater)) { type.spelling += ">"; --depth; continue; }
+				if (consume(TokenKind::less)) {
+					type.spelling += "<";
+					++depth;
+					continue;
+				}
+				if (consume(TokenKind::greater)) {
+					type.spelling += ">";
+					--depth;
+					continue;
+				}
 				type.spelling += std::string(peek().text);
 				++cursor;
 			}
@@ -310,10 +334,7 @@ bool Parser::reject_non_parameter_type_qualifiers(const ParsedType& type, std::s
 	return true;
 }
 
-void Parser::parse_struct_body(std::vector<StructField>& fields,
-							   std::vector<StructMemberFunction>& member_functions,
-							   std::vector<ParameterDecl>& constructor_parameters,
-							   std::string_view owner_name) {
+void Parser::parse_struct_body(std::vector<StructField>& fields, std::vector<StructMemberFunction>& member_functions, std::vector<ParameterDecl>& constructor_parameters, std::string_view owner_name) {
 	while (!at_end() && !at(TokenKind::right_brace)) {
 		// Member function declaration: `fn name(args) [-> Return];`
 		if (at(TokenKind::kw_Function)) {
@@ -426,8 +447,10 @@ TranslationUnit Parser::parse_translation_unit() {
 	while (!at_end()) {
 		const auto before = cursor;
 		auto decl = parse_declaration();
-		if (decl.kind != DeclKind::unknown) unit.declarations.push_back(std::move(decl));
-		if (cursor == before) ++cursor; // forward-progress guard
+		if (decl.kind != DeclKind::unknown)
+			unit.declarations.push_back(std::move(decl));
+		if (cursor == before)
+			++cursor; // forward-progress guard
 	}
 	this->unit = nullptr;
 	return unit;
@@ -467,26 +490,37 @@ Decl Parser::parse_declaration() {
 	}
 
 	switch (peek().kind) {
-	case TokenKind::kw_Import:    return parse_import(exported);
-	case TokenKind::kw_Namespace: return parse_namespace(exported);
-	case TokenKind::kw_Function:  return parse_function(exported, std::move(attributes));
-	case TokenKind::kw_Uniform:   return parse_uniform(exported);
-	case TokenKind::kw_Layout:    parse_layout(); return {};
-	case TokenKind::kw_Using:     parse_using(exported); return {};
+	case TokenKind::kw_Import:
+		return parse_import(exported);
+	case TokenKind::kw_Namespace:
+		return parse_namespace(exported);
+	case TokenKind::kw_Function:
+		return parse_function(exported, std::move(attributes));
+	case TokenKind::kw_Uniform:
+		return parse_uniform(exported);
+	case TokenKind::kw_Layout:
+		parse_layout();
+		return {};
+	case TokenKind::kw_Using:
+		parse_using(exported);
+		return {};
 	case TokenKind::kw_Struct: {
 		const auto save = cursor;
 		const auto struct_count = unit ? unit->structs.size() : 0;
 		ParsedType type = parse_type();
 		if (!type.empty() && at(TokenKind::identifier)) {
 			cursor = save;
-			if (unit) unit->structs.resize(struct_count);
+			if (unit)
+				unit->structs.resize(struct_count);
 			return parse_invalid_global_declaration(exported);
 		}
 		cursor = save;
-		if (unit) unit->structs.resize(struct_count);
+		if (unit)
+			unit->structs.resize(struct_count);
 		return parse_type_declaration(exported);
 	}
-	default: break;
+	default:
+		break;
 	}
 
 	if (at(TokenKind::identifier) || at(TokenKind::kw_Const) || at(TokenKind::kw_Void)) {
@@ -499,8 +533,10 @@ Decl Parser::parse_declaration() {
 		cursor = save;
 	}
 
-	if (exported) diagnose_here("expected declaration after 'export'");
-	else diagnose_here("expected a top-level declaration: fn, struct, using, uniform, layout, import, or namespace");
+	if (exported)
+		diagnose_here("expected declaration after 'export'");
+	else
+		diagnose_here("expected a top-level declaration: fn, struct, using, uniform, layout, import, or namespace");
 	skip_to_declaration_boundary(true);
 	return {};
 }
@@ -598,10 +634,7 @@ void qualify_statement_expressions(Decl::BodyStatement& statement, const std::un
 	}
 }
 
-void qualify_namespace_declarations(TranslationUnit& unit, std::string_view scope,
-									std::size_t decl_begin, std::size_t struct_begin,
-									std::size_t uniform_begin, std::size_t layout_begin,
-									std::size_t alias_begin, std::size_t stage_interface_begin) {
+void qualify_namespace_declarations(TranslationUnit& unit, std::string_view scope, std::size_t decl_begin, std::size_t struct_begin, std::size_t uniform_begin, std::size_t layout_begin, std::size_t alias_begin, std::size_t stage_interface_begin) {
 	std::unordered_map<std::string, std::string> local_types;
 	for (std::size_t i = struct_begin; i < unit.structs.size(); ++i) {
 		if (!is_qualified(unit.structs[i].name)) {
@@ -679,7 +712,8 @@ Decl Parser::parse_namespace(bool exported) {
 	(void)consume(TokenKind::kw_Namespace);
 
 	const auto name = parse_scoped_name();
-	if (name.empty()) diagnose_here("expected namespace name");
+	if (name.empty())
+		diagnose_here("expected namespace name");
 
 	if (!expect(TokenKind::left_brace, "expected '{' to open namespace")) {
 		skip_to_declaration_boundary(true);
@@ -738,14 +772,15 @@ Decl Parser::parse_function(bool exported, std::vector<Attribute> attributes) {
 
 	// Constructor recognition: `Foo::Foo(...)` — owner segment equals member.
 	if (const auto scope = decl.name.find("::"); scope != std::string::npos) {
-		const auto owner  = std::string_view(decl.name).substr(0, scope);
+		const auto owner = std::string_view(decl.name).substr(0, scope);
 		const auto member = std::string_view(decl.name).substr(scope + 2);
 		if (owner == member && decl.return_type != "void") {
 			diagnose_here("constructors must not specify a return type");
 		}
 	}
 
-	if (consume(TokenKind::semicolon)) return decl; // forward declaration
+	if (consume(TokenKind::semicolon))
+		return decl; // forward declaration
 	if (at(TokenKind::left_brace)) {
 		auto block = parse_block_statement();
 		decl.body_statements = std::move(block.children);
@@ -776,9 +811,7 @@ Decl Parser::parse_type_declaration(bool exported) {
 		return {};
 	}
 
-	if (!expect(TokenKind::semicolon, type.has_body
-			? "expected ';' after struct definition"
-			: "expected ';' after struct declaration")) {
+	if (!expect(TokenKind::semicolon, type.has_body ? "expected ';' after struct definition" : "expected ';' after struct declaration")) {
 		skip_to_declaration_boundary();
 	}
 
@@ -806,11 +839,10 @@ Decl Parser::parse_invalid_global_declaration(bool exported) {
 		++cursor;
 	}
 
-	diagnose(start, exported
-		? "exported global variables are not supported"
-		: "global variables are not supported");
+	diagnose(start, exported ? "exported global variables are not supported" : "global variables are not supported");
 
-	if (unit) unit->structs.resize(struct_count);
+	if (unit)
+		unit->structs.resize(struct_count);
 
 	if (!expect(TokenKind::semicolon, "expected ';' after invalid global declaration")) {
 		skip_to_declaration_boundary();
@@ -965,7 +997,8 @@ void Parser::parse_layout() {
 		skip_to_declaration_boundary();
 	}
 
-	if (unit) unit->layouts.push_back(std::move(layout));
+	if (unit)
+		unit->layouts.push_back(std::move(layout));
 }
 
 void Parser::parse_using(bool exported) {
@@ -1037,7 +1070,8 @@ void Parser::parse_using(bool exported) {
 	}
 	const std::string resolved_base = resolve_alias(base.spelling);
 
-	if (unit) unit->type_aliases.push_back(TypeAlias{ .name = alias_name, .base = resolved_base });
+	if (unit)
+		unit->type_aliases.push_back(TypeAlias{ .name = alias_name, .base = resolved_base });
 
 	if (at(TokenKind::colon)) {
 		// A stage boundary is part of a stage entry's return type, not a type
@@ -1093,7 +1127,8 @@ void Parser::parse_return_boundary(std::string base_type) {
 	bool first = true;
 	while (!at_end() && !at(TokenKind::left_brace) && !at(TokenKind::semicolon)) {
 		if (!first) {
-			if (!expect(TokenKind::comma, "expected ',' between boundary entries")) break;
+			if (!expect(TokenKind::comma, "expected ',' between boundary entries"))
+				break;
 		}
 		first = false;
 
@@ -1105,12 +1140,14 @@ void Parser::parse_return_boundary(std::string base_type) {
 		field.name = std::string(peek().text);
 		++cursor;
 
-		if (!expect(TokenKind::left_paren, "expected '(' after field name in return boundary")) break;
+		if (!expect(TokenKind::left_paren, "expected '(' after field name in return boundary"))
+			break;
 
 		bool first_tag = true;
 		while (!at_end() && !at(TokenKind::right_paren)) {
 			if (!first_tag) {
-				if (!expect(TokenKind::comma, "expected ',' between tags")) break;
+				if (!expect(TokenKind::comma, "expected ',' between tags"))
+					break;
 			}
 			first_tag = false;
 			if (!at(TokenKind::identifier)) {
@@ -1120,14 +1157,16 @@ void Parser::parse_return_boundary(std::string base_type) {
 			field.tags.emplace_back(peek().text);
 			++cursor;
 		}
-		if (!expect(TokenKind::right_paren, "expected ')' after tag list")) break;
+		if (!expect(TokenKind::right_paren, "expected ')' after tag list"))
+			break;
 		interface.fields.push_back(std::move(field));
 	}
 
 	if (unit && !interface.type_name.empty()) {
 		// One boundary spec per base type; later duplicates ignored.
 		for (const auto& existing : unit->stage_interfaces) {
-			if (existing.role == StageRole::varying && existing.type_name == interface.type_name) return;
+			if (existing.role == StageRole::varying && existing.type_name == interface.type_name)
+				return;
 		}
 		unit->stage_interfaces.push_back(std::move(interface));
 	}
@@ -1190,7 +1229,8 @@ void Parser::parse_parameter_list(std::vector<ParameterDecl>& out) {
 // ---------------------------------------------------------------------------
 
 std::string Parser::parse_scoped_name() {
-	if (!at(TokenKind::identifier)) return {};
+	if (!at(TokenKind::identifier))
+		return {};
 	std::string name{ peek().text };
 	++cursor;
 	while (consume(TokenKind::colon_colon)) {
@@ -1202,20 +1242,27 @@ std::string Parser::parse_scoped_name() {
 		name += destructor ? "::~" : "::";
 		name.append(peek().text);
 		++cursor;
-		if (destructor) return name;
+		if (destructor)
+			return name;
 	}
 	return name;
 }
 
 std::string Parser::resolve_alias(std::string_view name) const {
-	if (!unit) return std::string(name);
+	if (!unit)
+		return std::string(name);
 	std::string current{ name };
 	for (int hops = 0; hops < 16; ++hops) {
 		bool advanced = false;
 		for (const auto& alias : unit->type_aliases) {
-			if (alias.name == current) { current = alias.base; advanced = true; break; }
+			if (alias.name == current) {
+				current = alias.base;
+				advanced = true;
+				break;
+			}
 		}
-		if (!advanced) break;
+		if (!advanced)
+			break;
 	}
 	return current;
 }
@@ -1226,17 +1273,25 @@ std::string Parser::resolve_alias(std::string_view name) const {
 
 Decl::BodyStatement Parser::parse_statement() {
 	switch (peek().kind) {
-	case TokenKind::left_brace: return parse_block_statement();
-	case TokenKind::kw_If:      return parse_if_statement();
-	case TokenKind::kw_While:   return parse_while_statement();
-	case TokenKind::kw_Do:      return parse_do_statement();
-	case TokenKind::kw_For:     return parse_for_statement();
-	case TokenKind::kw_Return:  return parse_return_statement();
-	default: break;
+	case TokenKind::left_brace:
+		return parse_block_statement();
+	case TokenKind::kw_If:
+		return parse_if_statement();
+	case TokenKind::kw_While:
+		return parse_while_statement();
+	case TokenKind::kw_Do:
+		return parse_do_statement();
+	case TokenKind::kw_For:
+		return parse_for_statement();
+	case TokenKind::kw_Return:
+		return parse_return_statement();
+	default:
+		break;
 	}
 
 	Decl::BodyStatement local{};
-	if (try_parse_local_declaration(local)) return local;
+	if (try_parse_local_declaration(local))
+		return local;
 	return parse_expression_or_assignment_statement();
 }
 
@@ -1244,12 +1299,15 @@ Decl::BodyStatement Parser::parse_block_statement() {
 	Decl::BodyStatement stmt{};
 	stmt.kind = Decl::BodyStatementKind::block;
 	stmt.span = peek().span;
-	if (!expect(TokenKind::left_brace, "expected '{'")) return stmt;
+	if (!expect(TokenKind::left_brace, "expected '{'"))
+		return stmt;
 	while (!at_end() && !at(TokenKind::right_brace)) {
 		const auto before = cursor;
 		auto child = parse_statement();
-		if (child.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(child));
-		if (cursor == before) ++cursor; // forward-progress guard
+		if (child.kind != Decl::BodyStatementKind::unknown)
+			stmt.children.push_back(std::move(child));
+		if (cursor == before)
+			++cursor; // forward-progress guard
 	}
 	(void)consume(TokenKind::right_brace);
 	return stmt;
@@ -1260,11 +1318,15 @@ Decl::BodyStatement Parser::parse_if_statement() {
 	stmt.kind = Decl::BodyStatementKind::if_stmt;
 	stmt.span = peek().span;
 	(void)consume(TokenKind::kw_If);
-	if (!expect(TokenKind::left_paren, "expected '(' after 'if'")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::left_paren, "expected '(' after 'if'")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 	const auto cond_begin = cursor;
 	stmt.expr = parse_expression();
 	stmt.condition = source_between(cond_begin, cursor);
-	if (!expect(TokenKind::right_paren, "expected ')' after if condition")) skip_to_statement_boundary();
+	if (!expect(TokenKind::right_paren, "expected ')' after if condition"))
+		skip_to_statement_boundary();
 
 	auto then_stmt = parse_statement();
 	if (then_stmt.kind == Decl::BodyStatementKind::block) {
@@ -1289,14 +1351,20 @@ Decl::BodyStatement Parser::parse_while_statement() {
 	stmt.kind = Decl::BodyStatementKind::while_stmt;
 	stmt.span = peek().span;
 	(void)consume(TokenKind::kw_While);
-	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 	const auto cond_begin = cursor;
 	stmt.expr = parse_expression();
 	stmt.condition = source_between(cond_begin, cursor);
-	if (!expect(TokenKind::right_paren, "expected ')' after while condition")) skip_to_statement_boundary();
+	if (!expect(TokenKind::right_paren, "expected ')' after while condition"))
+		skip_to_statement_boundary();
 	auto body = parse_statement();
-	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
-	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
+	if (body.kind == Decl::BodyStatementKind::block)
+		stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown)
+		stmt.children.push_back(std::move(body));
 	return stmt;
 }
 
@@ -1306,15 +1374,25 @@ Decl::BodyStatement Parser::parse_do_statement() {
 	stmt.span = peek().span;
 	(void)consume(TokenKind::kw_Do);
 	auto body = parse_statement();
-	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
-	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
-	if (!expect(TokenKind::kw_While, "expected 'while' after do-block")) { skip_to_statement_boundary(); return stmt; }
-	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) { skip_to_statement_boundary(); return stmt; }
+	if (body.kind == Decl::BodyStatementKind::block)
+		stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown)
+		stmt.children.push_back(std::move(body));
+	if (!expect(TokenKind::kw_While, "expected 'while' after do-block")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
+	if (!expect(TokenKind::left_paren, "expected '(' after 'while'")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 	const auto cond_begin = cursor;
 	stmt.expr = parse_expression();
 	stmt.condition = source_between(cond_begin, cursor);
-	if (!expect(TokenKind::right_paren, "expected ')' after do-while condition")) skip_to_statement_boundary();
-	if (!expect(TokenKind::semicolon, "expected ';' after do-while")) skip_to_statement_boundary();
+	if (!expect(TokenKind::right_paren, "expected ')' after do-while condition"))
+		skip_to_statement_boundary();
+	if (!expect(TokenKind::semicolon, "expected ';' after do-while"))
+		skip_to_statement_boundary();
 	return stmt;
 }
 
@@ -1323,20 +1401,28 @@ Decl::BodyStatement Parser::parse_for_statement() {
 	stmt.kind = Decl::BodyStatementKind::for_stmt;
 	stmt.span = peek().span;
 	(void)consume(TokenKind::kw_For);
-	if (!expect(TokenKind::left_paren, "expected '(' after 'for'")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::left_paren, "expected '(' after 'for'")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 
 	// init clause
 	if (!at(TokenKind::semicolon)) {
 		Decl::BodyStatement init{};
 		if (try_parse_local_declaration(init)) {
 			stmt.loop_init = init.type_name + " " + init.name;
-			if (!init.initializer.empty()) stmt.loop_init += " = " + init.initializer;
+			if (!init.initializer.empty())
+				stmt.loop_init += " = " + init.initializer;
 		} else {
 			const auto init_begin = cursor;
 			(void)parse_expression();
-			if (consume(TokenKind::equal)) (void)parse_expression();
+			if (consume(TokenKind::equal))
+				(void)parse_expression();
 			stmt.loop_init = source_between(init_begin, cursor);
-			if (!expect(TokenKind::semicolon, "expected ';' after for-init")) { skip_to_statement_boundary(); return stmt; }
+			if (!expect(TokenKind::semicolon, "expected ';' after for-init")) {
+				skip_to_statement_boundary();
+				return stmt;
+			}
 		}
 	} else {
 		(void)consume(TokenKind::semicolon);
@@ -1348,20 +1434,29 @@ Decl::BodyStatement Parser::parse_for_statement() {
 		stmt.expr = parse_expression();
 		stmt.condition = source_between(cond_begin, cursor);
 	}
-	if (!expect(TokenKind::semicolon, "expected ';' after for-condition")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::semicolon, "expected ';' after for-condition")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 
 	// continue clause
 	if (!at(TokenKind::right_paren)) {
 		const auto cont_begin = cursor;
 		(void)parse_expression();
-		if (consume(TokenKind::equal)) (void)parse_expression();
+		if (consume(TokenKind::equal))
+			(void)parse_expression();
 		stmt.loop_continue = source_between(cont_begin, cursor);
 	}
-	if (!expect(TokenKind::right_paren, "expected ')' after for-clauses")) { skip_to_statement_boundary(); return stmt; }
+	if (!expect(TokenKind::right_paren, "expected ')' after for-clauses")) {
+		skip_to_statement_boundary();
+		return stmt;
+	}
 
 	auto body = parse_statement();
-	if (body.kind == Decl::BodyStatementKind::block) stmt.children = std::move(body.children);
-	else if (body.kind != Decl::BodyStatementKind::unknown) stmt.children.push_back(std::move(body));
+	if (body.kind == Decl::BodyStatementKind::block)
+		stmt.children = std::move(body.children);
+	else if (body.kind != Decl::BodyStatementKind::unknown)
+		stmt.children.push_back(std::move(body));
 	return stmt;
 }
 
@@ -1375,7 +1470,8 @@ Decl::BodyStatement Parser::parse_return_statement() {
 		stmt.expr = parse_expression();
 		stmt.rhs = source_between(begin, cursor);
 	}
-	if (!expect(TokenKind::semicolon, "expected ';' after return")) skip_to_statement_boundary();
+	if (!expect(TokenKind::semicolon, "expected ';' after return"))
+		skip_to_statement_boundary();
 	return stmt;
 }
 
@@ -1452,7 +1548,8 @@ Decl::BodyStatement Parser::parse_expression_or_assignment_statement() {
 		stmt.expr = std::move(lhs);
 	}
 
-	if (!expect(TokenKind::semicolon, "expected ';' after statement")) skip_to_statement_boundary();
+	if (!expect(TokenKind::semicolon, "expected ';' after statement"))
+		skip_to_statement_boundary();
 	return stmt;
 }
 
@@ -1474,27 +1571,47 @@ Decl::Expr Parser::parse_assignment() {
 
 Decl::Expr Parser::parse_logical_or() {
 	auto lhs = parse_logical_and();
-	while (at(TokenKind::pipe_pipe)) { ++cursor; auto rhs = parse_logical_and(); lhs = make_binary("||", std::move(lhs), std::move(rhs)); }
+	while (at(TokenKind::pipe_pipe)) {
+		++cursor;
+		auto rhs = parse_logical_and();
+		lhs = make_binary("||", std::move(lhs), std::move(rhs));
+	}
 	return lhs;
 }
 Decl::Expr Parser::parse_logical_and() {
 	auto lhs = parse_bitwise_or();
-	while (at(TokenKind::amp_amp))   { ++cursor; auto rhs = parse_bitwise_or(); lhs = make_binary("&&", std::move(lhs), std::move(rhs)); }
+	while (at(TokenKind::amp_amp)) {
+		++cursor;
+		auto rhs = parse_bitwise_or();
+		lhs = make_binary("&&", std::move(lhs), std::move(rhs));
+	}
 	return lhs;
 }
 Decl::Expr Parser::parse_bitwise_or() {
 	auto lhs = parse_bitwise_xor();
-	while (at(TokenKind::pipe))      { ++cursor; auto rhs = parse_bitwise_xor(); lhs = make_binary("|", std::move(lhs), std::move(rhs)); }
+	while (at(TokenKind::pipe)) {
+		++cursor;
+		auto rhs = parse_bitwise_xor();
+		lhs = make_binary("|", std::move(lhs), std::move(rhs));
+	}
 	return lhs;
 }
 Decl::Expr Parser::parse_bitwise_xor() {
 	auto lhs = parse_bitwise_and();
-	while (at(TokenKind::caret))     { ++cursor; auto rhs = parse_bitwise_and(); lhs = make_binary("^", std::move(lhs), std::move(rhs)); }
+	while (at(TokenKind::caret)) {
+		++cursor;
+		auto rhs = parse_bitwise_and();
+		lhs = make_binary("^", std::move(lhs), std::move(rhs));
+	}
 	return lhs;
 }
 Decl::Expr Parser::parse_bitwise_and() {
 	auto lhs = parse_equality();
-	while (at(TokenKind::amp))       { ++cursor; auto rhs = parse_equality(); lhs = make_binary("&", std::move(lhs), std::move(rhs)); }
+	while (at(TokenKind::amp)) {
+		++cursor;
+		auto rhs = parse_equality();
+		lhs = make_binary("&", std::move(lhs), std::move(rhs));
+	}
 	return lhs;
 }
 Decl::Expr Parser::parse_equality() {
@@ -1513,11 +1630,20 @@ Decl::Expr Parser::parse_relational() {
 		   at(TokenKind::greater) || at(TokenKind::greater_equal)) {
 		std::string op;
 		switch (peek().kind) {
-		case TokenKind::less:          op = "<";  break;
-		case TokenKind::less_equal:    op = "<="; break;
-		case TokenKind::greater:       op = ">";  break;
-		case TokenKind::greater_equal: op = ">="; break;
-		default: break;
+		case TokenKind::less:
+			op = "<";
+			break;
+		case TokenKind::less_equal:
+			op = "<=";
+			break;
+		case TokenKind::greater:
+			op = ">";
+			break;
+		case TokenKind::greater_equal:
+			op = ">=";
+			break;
+		default:
+			break;
 		}
 		++cursor;
 		auto rhs = parse_additive();
@@ -1551,11 +1677,20 @@ Decl::Expr Parser::parse_unary() {
 		const SourceSpan operator_span = peek().span;
 		std::string op;
 		switch (peek().kind) {
-		case TokenKind::plus:  op = "+"; break;
-		case TokenKind::minus: op = "-"; break;
-		case TokenKind::bang:  op = "!"; break;
-		case TokenKind::tilde: op = "~"; break;
-		default: break;
+		case TokenKind::plus:
+			op = "+";
+			break;
+		case TokenKind::minus:
+			op = "-";
+			break;
+		case TokenKind::bang:
+			op = "!";
+			break;
+		case TokenKind::tilde:
+			op = "~";
+			break;
+		default:
+			break;
 		}
 		++cursor;
 		auto child = parse_unary();
@@ -1594,7 +1729,8 @@ Decl::Expr Parser::parse_postfix() {
 			if (!at(TokenKind::right_paren)) {
 				while (true) {
 					expr.children.push_back(parse_expression());
-					if (!consume(TokenKind::comma)) break;
+					if (!consume(TokenKind::comma))
+						break;
 				}
 			}
 			if (!expect(TokenKind::right_paren, "expected ')' after call arguments")) {
@@ -1607,7 +1743,8 @@ Decl::Expr Parser::parse_postfix() {
 		if (at(TokenKind::left_bracket)) {
 			++cursor;
 			auto index = parse_expression();
-			if (!expect(TokenKind::right_bracket, "expected ']' after index")) break;
+			if (!expect(TokenKind::right_bracket, "expected ']' after index"))
+				break;
 			base = make_binary("[]", std::move(base), std::move(index));
 			continue;
 		}
@@ -1670,7 +1807,8 @@ Decl::Expr Parser::parse_primary() {
 }
 
 std::string Parser::source_between(std::size_t begin_cursor, std::size_t end_cursor) const {
-	if (end_cursor <= begin_cursor || begin_cursor >= tokens.size()) return {};
+	if (end_cursor <= begin_cursor || begin_cursor >= tokens.size())
+		return {};
 	const std::size_t end = end_cursor > tokens.size() ? tokens.size() : end_cursor;
 	const auto s = tokens[begin_cursor].span.begin.offset;
 	const auto e = tokens[end - 1].span.begin.offset + tokens[end - 1].span.length;

@@ -2,8 +2,8 @@
 #include "artifact/linker.hpp"
 #include "sema/mangler.hpp"
 
-#include <catch2/catch_test_macros.hpp>
 #include <array>
+#include <catch2/catch_test_macros.hpp>
 
 using namespace rtsl;
 

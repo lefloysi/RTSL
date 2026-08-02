@@ -17,17 +17,21 @@ std::string_view token_spelling(TokenKind kind) {
 	// came from. The compiler collapses the switch to a jump table.
 	switch (kind) {
 #define RTSL_KEYWORD(name, spelling) \
-	case TokenKind::kw_##name: return spelling;
+	case TokenKind::kw_##name:       \
+		return spelling;
 #define RTSL_PUNCTUATOR(name, spelling) \
-	case TokenKind::name: return spelling;
+	case TokenKind::name:               \
+		return spelling;
 #include "frontend/tokens.def"
-	default: return "";
+	default:
+		return "";
 	}
 }
 
 TokenKind keyword_kind(std::string_view text) {
 #define RTSL_KEYWORD(name, spelling) \
-	if (text == spelling) return TokenKind::kw_##name;
+	if (text == spelling)            \
+		return TokenKind::kw_##name;
 #include "frontend/tokens.def"
 	return TokenKind::identifier;
 }
@@ -155,7 +159,7 @@ Token Lexer::lex_punctuation() {
 	// spellings of any length. Anything unmatched is an invalid character.
 #define RTSL_PUNCTUATOR(name, spelling)                    \
 	if (rest.starts_with(spelling)) {                      \
-		cursor += std::string_view(spelling).size();      \
+		cursor += std::string_view(spelling).size();       \
 		return make_token(TokenKind::name, begin, cursor); \
 	}
 #include "frontend/tokens.def"

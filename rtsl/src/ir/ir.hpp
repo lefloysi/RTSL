@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ir.hpp>
 #include "sema/sema.hpp"
+#include <ir.hpp>
 
 namespace rtsl {
 

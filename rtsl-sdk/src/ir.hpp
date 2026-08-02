@@ -10,7 +10,6 @@
 
 namespace rtsl {
 
-
 // Backend-neutral storage classes carried by pointer and variable ops.
 enum class StorageClass : u08 {
 	Function = 0,
@@ -29,11 +28,13 @@ enum class IROp : u16 {
 inline constexpr std::size_t wire_op_count = 0
 #define RTSL_WIRE_OP(name, display_name) +1
 #include "wire_ops.def"
-;
+	;
 
 [[nodiscard]] inline constexpr const char* ir_op_name(IROp op) {
 	switch (op) {
-#define RTSL_WIRE_OP(name, display_name) case IROp::name: return display_name;
+#define RTSL_WIRE_OP(name, display_name) \
+	case IROp::name:                     \
+		return display_name;
 #include "wire_ops.def"
 	}
 	return "OpUnknown";

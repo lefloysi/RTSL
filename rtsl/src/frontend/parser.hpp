@@ -1,8 +1,8 @@
 #pragma once
 
 #include "frontend/ast.hpp"
-#include "support/basic_diagnostics.hpp"
 #include "frontend/token.hpp"
+#include "support/basic_diagnostics.hpp"
 
 #include <span>
 #include <string>
@@ -38,11 +38,11 @@ class Parser {
 	// {...}`, or a compiler-generated `__anon_struct_N` for anonymous bodies.
 	struct ParsedType {
 		std::string spelling;
-		bool has_body = false;     // a `{ fields }` body was parsed
-		bool is_anonymous = false; // body without a source-level name
-		std::vector<StructField> fields;               // body fields (copy)
+		bool has_body = false;								// a `{ fields }` body was parsed
+		bool is_anonymous = false;							// body without a source-level name
+		std::vector<StructField> fields;					// body fields (copy)
 		std::vector<StructMemberFunction> member_functions; // body `fn name(...)`
-		std::vector<ParameterDecl> constructor_parameters; // body `fn T(...)`
+		std::vector<ParameterDecl> constructor_parameters;	// body `fn T(...)`
 		bool is_reference = false;
 		bool is_const = false;
 		bool has_pointer = false;
@@ -97,10 +97,7 @@ class Parser {
 	void maybe_parse_return_boundary(std::string_view base_type);
 	void parse_return_boundary(std::string base_type);
 	// Struct body: fields + member function declarations.
-	void parse_struct_body(std::vector<StructField>& fields,
-						   std::vector<StructMemberFunction>& member_functions,
-						   std::vector<ParameterDecl>& constructor_parameters,
-						   std::string_view owner_name);
+	void parse_struct_body(std::vector<StructField>& fields, std::vector<StructMemberFunction>& member_functions, std::vector<ParameterDecl>& constructor_parameters, std::string_view owner_name);
 	void parse_uniform_body(const Decl& decl);
 
 	// Statements.

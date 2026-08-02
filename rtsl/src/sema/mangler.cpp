@@ -39,12 +39,18 @@ static std::string encode_type(std::string_view type) {
 		type.remove_prefix(6);
 		return "K" + encode_type(type);
 	}
-	if (type == "void") return "v";
-	if (type == "bool") return "b";
-	if (type == "f32") return "f";
-	if (type == "f64") return "d";
-	if (type == "i32") return "i";
-	if (type == "u32") return "j";
+	if (type == "void")
+		return "v";
+	if (type == "bool")
+		return "b";
+	if (type == "f32")
+		return "f";
+	if (type == "f64")
+		return "d";
+	if (type == "i32")
+		return "i";
+	if (type == "u32")
+		return "j";
 	return encode_source_name(type);
 }
 
@@ -53,16 +59,19 @@ std::string mangle_rtsl(std::string_view name, std::string_view stage, std::span
 	if (!stage.empty()) {
 		out = "_ZN4rtsl5stage";
 		out += encode_source_name(stage);
-		for (const auto part : split_qualified_name(name)) out += encode_name_part(part);
+		for (const auto part : split_qualified_name(name))
+			out += encode_name_part(part);
 		out += "E";
 	} else {
 		out = "_Z";
 		const auto parts = split_qualified_name(name);
-		if (parts.size() > 1) out += "N";
+		if (parts.size() > 1)
+			out += "N";
 		for (const auto part : parts) {
 			out += encode_name_part(part);
 		}
-		if (parts.size() > 1) out += "E";
+		if (parts.size() > 1)
+			out += "E";
 	}
 
 	if (parameter_types.empty()) {

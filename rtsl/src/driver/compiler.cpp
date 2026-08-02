@@ -56,8 +56,7 @@ fs::path resolve_import_source(const CompilerInvocation& invocation, std::string
 	return resolve_in_roots(invocation, name, source_extension());
 }
 
-bool CompilerInstance::load_or_build_import(const CompilerInvocation& invocation, std::string_view name,
-	std::vector<u08>& bytes, std::unordered_set<std::string>& active_builds) {
+bool CompilerInstance::load_or_build_import(const CompilerInvocation& invocation, std::string_view name, std::vector<u08>& bytes, std::unordered_set<std::string>& active_builds) {
 	// Prefer an existing .rtslm sidecar: it's already the interface form and
 	// carries no body work to redo.
 	if (const auto module_path = resolve_import(invocation, name); !module_path.empty()) {
@@ -77,8 +76,7 @@ bool CompilerInstance::load_or_build_import(const CompilerInvocation& invocation
 	}
 	const auto canonical = fs::weakly_canonical(source_path).string();
 	if (!active_builds.insert(canonical).second) {
-		diagnostics_.report(DiagnosticCode::compiler_validation_failed, DiagnosticSeverity::error, {}, invocation.source_name,
-			std::format("import cycle detected while building '{}'", name));
+		diagnostics_.report(DiagnosticCode::compiler_validation_failed, DiagnosticSeverity::error, {}, invocation.source_name, std::format("import cycle detected while building '{}'", name));
 		return false;
 	}
 
@@ -114,8 +112,7 @@ void CompilerInstance::compile_source_to(Artifact& artifact, std::string_view so
 	compile_source_to_impl(artifact, source, std::move(invocation), active_builds);
 }
 
-void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_view source,
-	CompilerInvocation invocation, std::unordered_set<std::string>& active_builds) {
+void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_view source, CompilerInvocation invocation, std::unordered_set<std::string>& active_builds) {
 	artifact = Artifact{ .kind = ArtifactKind::object };
 	const auto preprocessed = preprocess_source(source, invocation.defines);
 	const auto invocation_source_name = invocation.source_name;
@@ -137,14 +134,12 @@ void CompilerInstance::compile_source_to_impl(Artifact& artifact, std::string_vi
 			continue;
 		}
 		if (bytes.empty()) {
-			diagnostics_.report(DiagnosticCode::compiler_no_input, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
-								std::format("failed to resolve import '{}'", import_name));
+			diagnostics_.report(DiagnosticCode::compiler_no_input, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name, std::format("failed to resolve import '{}'", import_name));
 			continue;
 		}
 		Artifact imported;
 		if (!read_artifact(bytes, imported, &diagnostics_)) {
-			diagnostics_.report(DiagnosticCode::compiler_file_read_failed, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name,
-								std::format("failed to load import '{}'", import_name));
+			diagnostics_.report(DiagnosticCode::compiler_file_read_failed, DiagnosticSeverity::error, sources_.location_at(file_id, 0), invocation_source_name, std::format("failed to load import '{}'", import_name));
 			continue;
 		}
 		imported_modules.push_back(LoadedImport{ .name = import_name, .artifact = std::move(imported) });

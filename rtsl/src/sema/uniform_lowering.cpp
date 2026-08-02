@@ -89,7 +89,8 @@ ResourceBindingKind resource_binding_kind(std::string_view spelling) {
 
 const ResourceTypeInfo* resource_type_info(std::string_view spelling) {
 	for (const auto& entry : kResourceBindingKinds) {
-		if (entry.spelling == spelling) return &entry.info;
+		if (entry.spelling == spelling)
+			return &entry.info;
 	}
 	return nullptr;
 }

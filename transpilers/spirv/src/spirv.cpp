@@ -72,34 +72,56 @@ void emit_string(std::vector<std::uint32_t>& section, spv::Op op, std::span<cons
 
 std::optional<spv::StorageClass> storage_class(ir::StorageClass value) {
 	switch (value) {
-	case ir::StorageClass::function: return spv::StorageClass::Function;
-	case ir::StorageClass::uniform: return spv::StorageClass::Uniform;
-	case ir::StorageClass::uniform_constant: return spv::StorageClass::UniformConstant;
-	case ir::StorageClass::storage_buffer: return spv::StorageClass::StorageBuffer;
-	case ir::StorageClass::push_constant: return spv::StorageClass::PushConstant;
-	case ir::StorageClass::private_: return spv::StorageClass::Private;
+	case ir::StorageClass::function:
+		return spv::StorageClass::Function;
+	case ir::StorageClass::uniform:
+		return spv::StorageClass::Uniform;
+	case ir::StorageClass::uniform_constant:
+		return spv::StorageClass::UniformConstant;
+	case ir::StorageClass::storage_buffer:
+		return spv::StorageClass::StorageBuffer;
+	case ir::StorageClass::push_constant:
+		return spv::StorageClass::PushConstant;
+	case ir::StorageClass::private_:
+		return spv::StorageClass::Private;
 	}
 	return std::nullopt;
 }
 
 spv::Decoration decoration(ir::DecorationKind kind) {
 	switch (kind) {
-	case ir::DecorationKind::block: return spv::Decoration::Block;
-	case ir::DecorationKind::row_major: return spv::Decoration::RowMajor;
-	case ir::DecorationKind::column_major: return spv::Decoration::ColMajor;
-	case ir::DecorationKind::array_stride: return spv::Decoration::ArrayStride;
-	case ir::DecorationKind::matrix_stride: return spv::Decoration::MatrixStride;
-	case ir::DecorationKind::builtin: return spv::Decoration::BuiltIn;
-	case ir::DecorationKind::no_perspective: return spv::Decoration::NoPerspective;
-	case ir::DecorationKind::flat: return spv::Decoration::Flat;
-	case ir::DecorationKind::centroid: return spv::Decoration::Centroid;
-	case ir::DecorationKind::sample: return spv::Decoration::Sample;
-	case ir::DecorationKind::non_writable: return spv::Decoration::NonWritable;
-	case ir::DecorationKind::non_readable: return spv::Decoration::NonReadable;
-	case ir::DecorationKind::location: return spv::Decoration::Location;
-	case ir::DecorationKind::binding: return spv::Decoration::Binding;
-	case ir::DecorationKind::descriptor_set: return spv::Decoration::DescriptorSet;
-	case ir::DecorationKind::offset: return spv::Decoration::Offset;
+	case ir::DecorationKind::block:
+		return spv::Decoration::Block;
+	case ir::DecorationKind::row_major:
+		return spv::Decoration::RowMajor;
+	case ir::DecorationKind::column_major:
+		return spv::Decoration::ColMajor;
+	case ir::DecorationKind::array_stride:
+		return spv::Decoration::ArrayStride;
+	case ir::DecorationKind::matrix_stride:
+		return spv::Decoration::MatrixStride;
+	case ir::DecorationKind::builtin:
+		return spv::Decoration::BuiltIn;
+	case ir::DecorationKind::no_perspective:
+		return spv::Decoration::NoPerspective;
+	case ir::DecorationKind::flat:
+		return spv::Decoration::Flat;
+	case ir::DecorationKind::centroid:
+		return spv::Decoration::Centroid;
+	case ir::DecorationKind::sample:
+		return spv::Decoration::Sample;
+	case ir::DecorationKind::non_writable:
+		return spv::Decoration::NonWritable;
+	case ir::DecorationKind::non_readable:
+		return spv::Decoration::NonReadable;
+	case ir::DecorationKind::location:
+		return spv::Decoration::Location;
+	case ir::DecorationKind::binding:
+		return spv::Decoration::Binding;
+	case ir::DecorationKind::descriptor_set:
+		return spv::Decoration::DescriptorSet;
+	case ir::DecorationKind::offset:
+		return spv::Decoration::Offset;
 	}
 	std::unreachable();
 }
@@ -243,10 +265,10 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::BranchArgumen
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::BranchConditionalArguments& arguments) {
 	words.insert(words.end(), {
-		arguments.condition.value,
-		arguments.true_target.value,
-		arguments.false_target.value,
-	});
+								  arguments.condition.value,
+								  arguments.true_target.value,
+								  arguments.false_target.value,
+							  });
 }
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::SelectionMergeArguments& arguments) {
@@ -255,10 +277,10 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::SelectionMerg
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::LoopMergeArguments& arguments) {
 	words.insert(words.end(), {
-		arguments.merge_block.value,
-		arguments.continue_block.value,
-		word(spv::LoopControlMask::MaskNone),
-	});
+								  arguments.merge_block.value,
+								  arguments.continue_block.value,
+								  word(spv::LoopControlMask::MaskNone),
+							  });
 }
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::ReturnValueArguments& arguments) {
@@ -267,16 +289,17 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::ReturnValueAr
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::FunctionCallArguments& arguments) {
 	words.push_back(arguments.function.value);
-	for (const ir::Id argument : arguments.arguments) words.push_back(argument.value);
+	for (const ir::Id argument : arguments.arguments)
+		words.push_back(argument.value);
 }
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::ImageSampleExplicitLodArguments& arguments) {
 	words.insert(words.end(), {
-		arguments.sampled_image.value,
-		arguments.coordinate.value,
-		word(spv::ImageOperandsMask::Lod),
-		arguments.lod.value,
-	});
+								  arguments.sampled_image.value,
+								  arguments.coordinate.value,
+								  word(spv::ImageOperandsMask::Lod),
+								  arguments.lod.value,
+							  });
 }
 
 void append_arguments(std::vector<std::uint32_t>& words, const ir::ImageWriteArguments& arguments) {
@@ -286,7 +309,8 @@ void append_arguments(std::vector<std::uint32_t>& words, const ir::ImageWriteArg
 void append_arguments(std::vector<std::uint32_t>& words, const ir::InstructionArguments& arguments) {
 	std::visit([&words](const auto& value) {
 		append_arguments(words, value);
-	}, arguments);
+	},
+			   arguments);
 }
 
 class SpirvEmitter {
@@ -309,7 +333,7 @@ class SpirvEmitter {
 			return std::unexpected(make_error(ErrorCode::invalid_entry, "entry.input", "entry input does not match the function parameter list", function->id));
 		}
 		if (entry->input && (function->parameters.front().type != entry->input->value_type ||
-			!entry->input->value || *entry->input->value != function->parameters.front().id)) {
+							 !entry->input->value || *entry->input->value != function->parameters.front().id)) {
 			return std::unexpected(make_error(ErrorCode::invalid_entry, "entry.input", "entry input payload does not match its function parameter", function->id));
 		}
 		if (!collect_reachable_functions()) {
@@ -348,8 +372,11 @@ class SpirvEmitter {
 		for (const ir::Function* reachable : reachable_functions) {
 			const auto signature = std::ranges::find_if(function_type_signatures, [&](const auto& existing) {
 				const ir::Function* candidate = existing.second;
-				if (candidate->return_type != reachable->return_type || candidate->parameters.size() != reachable->parameters.size()) return false;
-				for (std::size_t index = 0; index < candidate->parameters.size(); ++index) if (candidate->parameters[index].type != reachable->parameters[index].type) return false;
+				if (candidate->return_type != reachable->return_type || candidate->parameters.size() != reachable->parameters.size())
+					return false;
+				for (std::size_t index = 0; index < candidate->parameters.size(); ++index)
+					if (candidate->parameters[index].type != reachable->parameters[index].type)
+						return false;
 				return true;
 			});
 			if (signature != function_type_signatures.end()) {
@@ -371,9 +398,7 @@ class SpirvEmitter {
 		}
 
 		Shader shader{ .stage = stage };
-		shader.words.reserve(5 + capabilities.size() + extensions.size() + memory_model.size() +
-			entries.size() + execution_modes.size() + debug.size() + annotations.size() +
-			types_globals.size() + functions.size());
+		shader.words.reserve(5 + capabilities.size() + extensions.size() + memory_model.size() + entries.size() + execution_modes.size() + debug.size() + annotations.size() + types_globals.size() + functions.size());
 		shader.words.insert(shader.words.end(), { spv::MagicNumber, spv::Version, 0, next_id, 0 });
 		append(shader.words, capabilities);
 		append(shader.words, extensions);
@@ -392,8 +417,7 @@ class SpirvEmitter {
 		target.insert(target.end(), source.begin(), source.end());
 	}
 
-	Error make_error(ErrorCode code, std::string context, std::string message,
-		std::optional<ir::Id> id = std::nullopt, std::optional<ir::Op> op = std::nullopt) const {
+	Error make_error(ErrorCode code, std::string context, std::string message, std::optional<ir::Id> id = std::nullopt, std::optional<ir::Op> op = std::nullopt) const {
 		return Error{
 			.code = code,
 			.stage = stage,
@@ -404,8 +428,7 @@ class SpirvEmitter {
 		};
 	}
 
-	bool fail(ErrorCode code, std::string context, std::string message,
-		std::optional<ir::Id> id = std::nullopt, std::optional<ir::Op> op = std::nullopt) {
+	bool fail(ErrorCode code, std::string context, std::string message, std::optional<ir::Id> id = std::nullopt, std::optional<ir::Op> op = std::nullopt) {
 		if (!error) {
 			error = make_error(code, std::move(context), std::move(message), id, op);
 		}
@@ -419,12 +442,14 @@ class SpirvEmitter {
 	bool collect_reachable_functions() {
 		std::unordered_set<ir::Id> visited;
 		const auto visit = [&](auto&& self, const ir::Function& candidate) -> bool {
-			if (!visited.insert(candidate.id).second) return true;
+			if (!visited.insert(candidate.id).second)
+				return true;
 			for (const auto& block : candidate.blocks) {
 				for (const auto& instruction : block.instructions) {
 					const auto* call = instruction.arguments_if<ir::FunctionCallArguments>();
 					const ir::Function* target = call ? program.find_function(call->function) : nullptr;
-					if (call && (!target || !self(self, *target))) return false;
+					if (call && (!target || !self(self, *target)))
+						return false;
 				}
 			}
 			reachable_functions.push_back(&candidate);
@@ -474,8 +499,7 @@ class SpirvEmitter {
 		return id;
 	}
 
-	bool prepare_interface(const std::optional<Interface>& interface, spv::StorageClass storage,
-		std::vector<InterfaceVariable>& variables) {
+	bool prepare_interface(const std::optional<Interface>& interface, spv::StorageClass storage, std::vector<InterfaceVariable>& variables) {
 		if (!interface) {
 			return true;
 		}
@@ -518,8 +542,7 @@ class SpirvEmitter {
 		}
 		const std::array ext_prefix{ glsl_ext.value };
 		emit_string(extensions, spv::Op::OpExtInstImport, ext_prefix, "GLSL.std.450");
-		emit(memory_model, spv::Op::OpMemoryModel,
-			{ word(spv::AddressingModel::Logical), word(spv::MemoryModel::GLSL450) });
+		emit(memory_model, spv::Op::OpMemoryModel, { word(spv::AddressingModel::Logical), word(spv::MemoryModel::GLSL450) });
 
 		std::vector<std::uint32_t> interface_ids;
 		interface_ids.reserve(inputs.size() + outputs.size() + selected_resources.size());
@@ -538,8 +561,7 @@ class SpirvEmitter {
 		};
 		emit_string(entries, spv::Op::OpEntryPoint, entry_prefix, "main", interface_ids);
 		if (stage == Stage::fragment) {
-			emit(execution_modes, spv::Op::OpExecutionMode,
-				{ wrapper_function.value, word(spv::ExecutionMode::OriginUpperLeft) });
+			emit(execution_modes, spv::Op::OpExecutionMode, { wrapper_function.value, word(spv::ExecutionMode::OriginUpperLeft) });
 		}
 	}
 
@@ -576,22 +598,20 @@ class SpirvEmitter {
 			}
 			operands.push_back(word(decoration(value.kind)));
 			operands.insert(operands.end(), value.literals.begin(), value.literals.end());
-			if (std::ranges::find(emitted_decorations, operands) != emitted_decorations.end()) continue;
+			if (std::ranges::find(emitted_decorations, operands) != emitted_decorations.end())
+				continue;
 			emitted_decorations.push_back(operands);
 			emit(annotations, value.member() ? spv::Op::OpMemberDecorate : spv::Op::OpDecorate, operands);
 		}
 
 		const auto decorate_interface = [&](const InterfaceVariable& variable) {
 			if (variable.element->builtin == Builtin::position) {
-				emit(annotations, spv::Op::OpDecorate,
-					{ variable.variable.value, word(spv::Decoration::BuiltIn), word(spv::BuiltIn::Position) });
+				emit(annotations, spv::Op::OpDecorate, { variable.variable.value, word(spv::Decoration::BuiltIn), word(spv::BuiltIn::Position) });
 			} else {
-				emit(annotations, spv::Op::OpDecorate,
-					{ variable.variable.value, word(spv::Decoration::Location), *variable.element->location });
+				emit(annotations, spv::Op::OpDecorate, { variable.variable.value, word(spv::Decoration::Location), *variable.element->location });
 			}
 			if (variable.element->interpolation == Interpolation::flat) {
-				emit(annotations, spv::Op::OpDecorate,
-					{ variable.variable.value, word(spv::Decoration::Flat) });
+				emit(annotations, spv::Op::OpDecorate, { variable.variable.value, word(spv::Decoration::Flat) });
 			}
 		};
 		for (const auto& input : inputs) {
@@ -603,12 +623,10 @@ class SpirvEmitter {
 
 		for (const auto* resource : selected_resources) {
 			if (resource->access == Access::read_only) {
-				emit(annotations, spv::Op::OpDecorate,
-					{ resource->variable.value, word(spv::Decoration::NonWritable) });
+				emit(annotations, spv::Op::OpDecorate, { resource->variable.value, word(spv::Decoration::NonWritable) });
 			}
 			if (resource->access == Access::write_only) {
-				emit(annotations, spv::Op::OpDecorate,
-					{ resource->variable.value, word(spv::Decoration::NonReadable) });
+				emit(annotations, spv::Op::OpDecorate, { resource->variable.value, word(spv::Decoration::NonReadable) });
 			}
 		}
 		return true;
@@ -678,14 +696,18 @@ class SpirvEmitter {
 			if (!type.element_type || type.image.dimension == ir::ImageDimension::none) {
 				return fail(ErrorCode::unsupported_type, "types.image", "image type is missing its sampled type or shape", type.id);
 			}
-			const spv::Dim dimension = type.image.dimension == ir::ImageDimension::two ? spv::Dim::Dim2D
-				: type.image.dimension == ir::ImageDimension::three ? spv::Dim::Dim3D : spv::Dim::Cube;
+			const spv::Dim dimension = type.image.dimension == ir::ImageDimension::two	   ? spv::Dim::Dim2D
+									   : type.image.dimension == ir::ImageDimension::three ? spv::Dim::Dim3D
+																						   : spv::Dim::Cube;
 			operands.insert(operands.end(), {
-				type.element_type.value, word(dimension), 0,
-				type.image.arrayed ? 1u : 0u, 0,
-				type.image_class == ir::ImageClass::sampled ? 1u : 2u,
-				word(spv::ImageFormat::Unknown),
-			});
+												type.element_type.value,
+												word(dimension),
+												0,
+												type.image.arrayed ? 1u : 0u,
+												0,
+												type.image_class == ir::ImageClass::sampled ? 1u : 2u,
+												word(spv::ImageFormat::Unknown),
+											});
 			emit(types_globals, spv::Op::OpTypeImage, operands);
 			return true;
 		}
@@ -708,12 +730,12 @@ class SpirvEmitter {
 			}
 		}
 		for (const auto& pointer : pointer_types) {
-			emit(types_globals, spv::Op::OpTypePointer,
-				{ pointer.id.value, word(pointer.storage), pointer.value_type.value });
+			emit(types_globals, spv::Op::OpTypePointer, { pointer.id.value, word(pointer.storage), pointer.value_type.value });
 		}
 		for (const auto& [type_id, signature] : function_type_signatures) {
 			std::vector<std::uint32_t> operands{ type_id.value, signature->return_type.value };
-			for (const auto& parameter : signature->parameters) operands.push_back(parameter.type.value);
+			for (const auto& parameter : signature->parameters)
+				operands.push_back(parameter.type.value);
 			emit(types_globals, spv::Op::OpTypeFunction, operands);
 		}
 		emit(types_globals, spv::Op::OpTypeFunction, { wrapper_function_type.value, void_type.value });
@@ -758,18 +780,15 @@ class SpirvEmitter {
 			emit(types_globals, spv::Op::OpVariable, operands);
 		}
 		for (const auto& input : inputs) {
-			emit(types_globals, spv::Op::OpVariable,
-				{ input.pointer_type.value, input.variable.value, word(input.storage) });
+			emit(types_globals, spv::Op::OpVariable, { input.pointer_type.value, input.variable.value, word(input.storage) });
 		}
 		for (const auto& output : outputs) {
-			emit(types_globals, spv::Op::OpVariable,
-				{ output.pointer_type.value, output.variable.value, word(output.storage) });
+			emit(types_globals, spv::Op::OpVariable, { output.pointer_type.value, output.variable.value, word(output.storage) });
 		}
 		return true;
 	}
 
-	bool emit_result_instruction(spv::Op op, const ir::Instruction& instruction,
-		std::span<const std::uint32_t> prefix = {}) {
+	bool emit_result_instruction(spv::Op op, const ir::Instruction& instruction, std::span<const std::uint32_t> prefix = {}) {
 		if (!instruction.result_id || !instruction.type_id) {
 			return fail(ErrorCode::unsupported_instruction, "instructions", "result instruction is missing its result or type", instruction.result_id, instruction.op);
 		}
@@ -783,7 +802,8 @@ class SpirvEmitter {
 	ir::Id splat_to_result_vector(ir::Id value, const ir::Instruction& instruction) {
 		const auto operand_type_id = value_type(value);
 		const ir::Type* result_type = program.find_type(instruction.type_id);
-		if (!operand_type_id || !result_type || result_type->kind != ir::TypeKind::vector || *operand_type_id != result_type->element_type) return value;
+		if (!operand_type_id || !result_type || result_type->kind != ir::TypeKind::vector || *operand_type_id != result_type->element_type)
+			return value;
 		const ir::Id composite = fresh_id();
 		std::vector<std::uint32_t> operands{ instruction.type_id.value, composite.value };
 		operands.insert(operands.end(), result_type->element_count, value.value);
@@ -793,7 +813,8 @@ class SpirvEmitter {
 
 	bool emit_direct_instruction(spv::Op op, const ir::Instruction& instruction) {
 		const auto* binary = instruction.arguments_if<ir::BinaryArguments>();
-		if (!binary || instruction.op == ir::Op::VectorTimesScalar) return emit_result_instruction(op, instruction);
+		if (!binary || instruction.op == ir::Op::VectorTimesScalar)
+			return emit_result_instruction(op, instruction);
 		const ir::Id lhs = splat_to_result_vector(binary->lhs, instruction);
 		const ir::Id rhs = splat_to_result_vector(binary->rhs, instruction);
 		emit(functions, op, { instruction.type_id.value, instruction.result_id.value, lhs.value, rhs.value });
@@ -844,13 +865,14 @@ class SpirvEmitter {
 		case ir::Op::FMax:
 		case ir::Op::FMix:
 		case ir::Op::SmoothStep: {
-			const std::uint32_t operation = instruction.op == ir::Op::FAbs ? GLSLstd450FAbs
-				: instruction.op == ir::Op::Floor ? GLSLstd450Floor
-				: instruction.op == ir::Op::Fract ? GLSLstd450Fract
-				: instruction.op == ir::Op::Sqrt ? GLSLstd450Sqrt
-				: instruction.op == ir::Op::FMin ? GLSLstd450FMin
-				: instruction.op == ir::Op::FMax ? GLSLstd450FMax
-				: instruction.op == ir::Op::FMix ? GLSLstd450FMix : GLSLstd450SmoothStep;
+			const std::uint32_t operation = instruction.op == ir::Op::FAbs	  ? GLSLstd450FAbs
+											: instruction.op == ir::Op::Floor ? GLSLstd450Floor
+											: instruction.op == ir::Op::Fract ? GLSLstd450Fract
+											: instruction.op == ir::Op::Sqrt  ? GLSLstd450Sqrt
+											: instruction.op == ir::Op::FMin  ? GLSLstd450FMin
+											: instruction.op == ir::Op::FMax  ? GLSLstd450FMax
+											: instruction.op == ir::Op::FMix  ? GLSLstd450FMix
+																			  : GLSLstd450SmoothStep;
 			const std::array prefix{ glsl_ext.value, operation };
 			return emit_result_instruction(spv::Op::OpExtInst, instruction, prefix);
 		}
@@ -896,9 +918,7 @@ class SpirvEmitter {
 
 	bool emit_source_function(const ir::Function& source) {
 		function = &source;
-		emit(functions, spv::Op::OpFunction,
-			{ function->return_type.value, function->id.value,
-				word(spv::FunctionControlMask::MaskNone), source_function_types.at(function->id).value });
+		emit(functions, spv::Op::OpFunction, { function->return_type.value, function->id.value, word(spv::FunctionControlMask::MaskNone), source_function_types.at(function->id).value });
 		for (const auto& parameter : function->parameters) {
 			emit(functions, spv::Op::OpFunctionParameter, { parameter.type.value, parameter.id.value });
 		}
@@ -908,12 +928,14 @@ class SpirvEmitter {
 			if (block_index == 0) {
 				for (const auto& source_block : function->blocks) {
 					for (const auto& instruction : source_block.instructions) {
-						if (instruction.op == ir::Op::Variable && !emit_instruction(instruction)) return false;
+						if (instruction.op == ir::Op::Variable && !emit_instruction(instruction))
+							return false;
 					}
 				}
 			}
 			for (const auto& instruction : block.instructions) {
-				if (instruction.op == ir::Op::Variable) continue;
+				if (instruction.op == ir::Op::Variable)
+					continue;
 				if (!emit_instruction(instruction)) {
 					return false;
 				}
@@ -924,13 +946,14 @@ class SpirvEmitter {
 	}
 
 	bool emit_source_functions() {
-		for (const ir::Function* reachable : reachable_functions) if (!emit_source_function(*reachable)) return false;
+		for (const ir::Function* reachable : reachable_functions)
+			if (!emit_source_function(*reachable))
+				return false;
 		function = program.find_function(entry->function);
 		return function != nullptr;
 	}
 
-	std::optional<ir::Id> load_interface_payload(const Interface& interface,
-		std::span<const InterfaceVariable> variables) {
+	std::optional<ir::Id> load_interface_payload(const Interface& interface, std::span<const InterfaceVariable> variables) {
 		std::vector<std::pair<std::optional<std::uint32_t>, ir::Id>> loaded;
 		loaded.reserve(variables.size());
 		for (const auto& variable : variables) {
@@ -971,8 +994,7 @@ class SpirvEmitter {
 		return result;
 	}
 
-	bool store_interface_payload(const Interface& interface, std::span<const InterfaceVariable> variables,
-		ir::Id payload_value) {
+	bool store_interface_payload(const Interface& interface, std::span<const InterfaceVariable> variables, ir::Id payload_value) {
 		const ir::Type* payload = program.find_type(interface.value_type);
 		if (!payload) {
 			return fail(ErrorCode::invalid_entry, "entry.output", "output payload type does not exist", interface.value_type);
@@ -989,17 +1011,14 @@ class SpirvEmitter {
 				return fail(ErrorCode::invalid_entry, "entry.output", "struct output element has an invalid member index", interface.value_type);
 			}
 			const ir::Id extracted = fresh_id();
-			emit(functions, spv::Op::OpCompositeExtract,
-				{ variable.element->type.value, extracted.value, payload_value.value, *variable.element->member });
+			emit(functions, spv::Op::OpCompositeExtract, { variable.element->type.value, extracted.value, payload_value.value, *variable.element->member });
 			emit(functions, spv::Op::OpStore, { variable.variable.value, extracted.value });
 		}
 		return true;
 	}
 
 	bool emit_wrapper() {
-		emit(functions, spv::Op::OpFunction,
-			{ void_type.value, wrapper_function.value,
-				word(spv::FunctionControlMask::MaskNone), wrapper_function_type.value });
+		emit(functions, spv::Op::OpFunction, { void_type.value, wrapper_function.value, word(spv::FunctionControlMask::MaskNone), wrapper_function_type.value });
 		emit(functions, spv::Op::OpLabel, { wrapper_label.value });
 
 		std::vector<std::uint32_t> arguments;

@@ -30,32 +30,43 @@ struct rtsl_linker_t {
 namespace {
 
 void set_result(rtsl_context context, int code, const char* text) {
-	if (context) context->result = rtsl_result{ code, text };
+	if (context)
+		context->result = rtsl_result{ code, text };
 }
 
 rtsl_output_kind to_c_kind(rtsl::ArtifactKind kind) {
 	switch (kind) {
-	case rtsl::ArtifactKind::object: return RTSL_OUTPUT_OBJECT;
-	case rtsl::ArtifactKind::module: return RTSL_OUTPUT_MODULE;
-	case rtsl::ArtifactKind::library: return RTSL_OUTPUT_LIBRARY;
-	case rtsl::ArtifactKind::program: return RTSL_OUTPUT_PROGRAM;
+	case rtsl::ArtifactKind::object:
+		return RTSL_OUTPUT_OBJECT;
+	case rtsl::ArtifactKind::module:
+		return RTSL_OUTPUT_MODULE;
+	case rtsl::ArtifactKind::library:
+		return RTSL_OUTPUT_LIBRARY;
+	case rtsl::ArtifactKind::program:
+		return RTSL_OUTPUT_PROGRAM;
 	}
 	return RTSL_OUTPUT_OBJECT;
 }
 
 rtsl_diagnostic_severity to_c_severity(rtsl::DiagnosticSeverity severity) {
 	switch (severity) {
-	case rtsl::DiagnosticSeverity::ignored: return RTSL_DIAG_IGNORED;
-	case rtsl::DiagnosticSeverity::note: return RTSL_DIAG_NOTE;
-	case rtsl::DiagnosticSeverity::warning: return RTSL_DIAG_WARNING;
-	case rtsl::DiagnosticSeverity::error: return RTSL_DIAG_ERROR;
-	case rtsl::DiagnosticSeverity::fatal: return RTSL_DIAG_FATAL;
+	case rtsl::DiagnosticSeverity::ignored:
+		return RTSL_DIAG_IGNORED;
+	case rtsl::DiagnosticSeverity::note:
+		return RTSL_DIAG_NOTE;
+	case rtsl::DiagnosticSeverity::warning:
+		return RTSL_DIAG_WARNING;
+	case rtsl::DiagnosticSeverity::error:
+		return RTSL_DIAG_ERROR;
+	case rtsl::DiagnosticSeverity::fatal:
+		return RTSL_DIAG_FATAL;
 	}
 	return RTSL_DIAG_FATAL;
 }
 
 rtsl_module link(rtsl_linker linker, bool program) {
-	if (!linker) return nullptr;
+	if (!linker)
+		return nullptr;
 	try {
 		auto artifact = program ? linker->linker.link_program() : linker->linker.link_library();
 		if (linker->context->compiler.diagnostics().has_error() || artifact.bytes.empty()) {
@@ -90,7 +101,8 @@ size_t rtslCtxGetDiagnosticCount(rtsl_context context) {
 }
 
 rtsl_diagnostic rtslCtxGetDiagnostic(rtsl_context context, size_t index) {
-	if (!context || index >= context->compiler.diagnostics().diagnostics().size()) return {};
+	if (!context || index >= context->compiler.diagnostics().diagnostics().size())
+		return {};
 	const auto& diagnostic = context->compiler.diagnostics().diagnostics()[index];
 	return rtsl_diagnostic{
 		.code = diagnostic.code,
@@ -120,8 +132,10 @@ rtsl_module rtslCompileSource(rtsl_context context, const char* source, size_t s
 			return nullptr;
 		}
 		auto* module = new (std::nothrow) rtsl_module_t{ .artifact = std::move(artifact) };
-		if (!module) set_result(context, RTSL_ERROR_INTERNAL, "allocation failed");
-		else set_result(context, RTSL_OK, "ok");
+		if (!module)
+			set_result(context, RTSL_ERROR_INTERNAL, "allocation failed");
+		else
+			set_result(context, RTSL_OK, "ok");
 		return module;
 	} catch (...) {
 		set_result(context, RTSL_ERROR_INTERNAL, "internal compiler error");
@@ -141,8 +155,10 @@ rtsl_module rtslLoadModule(rtsl_context context, const uint8_t* data, size_t siz
 			return nullptr;
 		}
 		auto* module = new (std::nothrow) rtsl_module_t{ .artifact = std::move(artifact) };
-		if (!module) set_result(context, RTSL_ERROR_INTERNAL, "allocation failed");
-		else set_result(context, RTSL_OK, "ok");
+		if (!module)
+			set_result(context, RTSL_ERROR_INTERNAL, "allocation failed");
+		else
+			set_result(context, RTSL_OK, "ok");
 		return module;
 	} catch (...) {
 		set_result(context, RTSL_ERROR_INTERNAL, "internal error while loading artifact");
@@ -151,7 +167,8 @@ rtsl_module rtslLoadModule(rtsl_context context, const uint8_t* data, size_t siz
 }
 
 rtsl_blob rtslModuleGetBytecode(rtsl_module module) {
-	if (!module) return {};
+	if (!module)
+		return {};
 	return rtsl_blob{ module->artifact.bytes.data(), module->artifact.bytes.size() };
 }
 
@@ -164,9 +181,11 @@ void rtslDestroyModule(rtsl_module module) {
 }
 
 rtsl_linker rtslCreateLinker(rtsl_context context) {
-	if (!context) return nullptr;
+	if (!context)
+		return nullptr;
 	auto* linker = new (std::nothrow) rtsl_linker_t{ *context };
-	if (!linker) set_result(context, RTSL_ERROR_INTERNAL, "failed to create linker");
+	if (!linker)
+		set_result(context, RTSL_ERROR_INTERNAL, "failed to create linker");
 	return linker;
 }
 
@@ -175,7 +194,8 @@ int rtslLinkerAddModule(rtsl_linker linker, rtsl_module module) {
 }
 
 int rtslLinkerAddBlob(rtsl_linker linker, const uint8_t* data, size_t size) {
-	if (!linker || (!data && size != 0)) return 0;
+	if (!linker || (!data && size != 0))
+		return 0;
 	return linker->linker.add_artifact_bytes(std::span<const rtsl::u08>{ data, size }) ? 1 : 0;
 }
 

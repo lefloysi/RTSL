@@ -8,7 +8,8 @@ namespace rtsl {
 
 std::vector<u08> write_artifact(ArtifactKind kind, const IRModule& module) {
 	auto result = codec::encode_artifact(kind, module);
-	if (!result) return {};
+	if (!result)
+		return {};
 	return std::move(*result);
 }
 
@@ -20,10 +21,10 @@ bool read_artifact(std::span<const u08> data, Artifact& artifact, DiagnosticEngi
 	}
 	if (diagnostics) {
 		std::string message = result.error().context;
-		if (!message.empty()) message += ": ";
+		if (!message.empty())
+			message += ": ";
 		message += result.error().message;
-		diagnostics->report(DiagnosticCode::artifact_error, DiagnosticSeverity::error,
-			{}, "<artifact>", std::move(message));
+		diagnostics->report(DiagnosticCode::artifact_error, DiagnosticSeverity::error, {}, "<artifact>", std::move(message));
 	}
 	return false;
 }

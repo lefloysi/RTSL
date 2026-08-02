@@ -8,8 +8,8 @@
 #include <CLI/CLI.hpp>
 
 #include <filesystem>
-#include <span>
 #include <iostream>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -154,8 +154,7 @@ int main(int argc, char** argv) {
 	std::vector<std::string> compile_include_dirs;
 	compile->add_option("input", compile_input, "Input .rtsl file")->required();
 	compile->add_option("-o,--output", compile_output, "Output .rtslo file")->required();
-	compile->add_option("-I,--include-dir", compile_include_dirs,
-		"Search directory for imported .rtslm module interfaces (repeatable)");
+	compile->add_option("-I,--include-dir", compile_include_dirs, "Search directory for imported .rtslm module interfaces (repeatable)");
 
 	auto link_program = app.add_subcommand("link-program", "Link objects/libraries into a program");
 	std::vector<std::string> link_program_inputs;

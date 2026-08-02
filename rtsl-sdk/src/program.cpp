@@ -43,12 +43,18 @@ bool valid_storage_class(std::uint32_t value) {
 
 ir::StorageClass storage_class(std::uint32_t value) {
 	switch (value) {
-	case 0: return ir::StorageClass::function;
-	case 3: return ir::StorageClass::uniform;
-	case 4: return ir::StorageClass::uniform_constant;
-	case 5: return ir::StorageClass::storage_buffer;
-	case 6: return ir::StorageClass::push_constant;
-	default: return ir::StorageClass::private_;
+	case 0:
+		return ir::StorageClass::function;
+	case 3:
+		return ir::StorageClass::uniform;
+	case 4:
+		return ir::StorageClass::uniform_constant;
+	case 5:
+		return ir::StorageClass::storage_buffer;
+	case 6:
+		return ir::StorageClass::push_constant;
+	default:
+		return ir::StorageClass::private_;
 	}
 }
 
@@ -71,52 +77,62 @@ std::expected<ir::Type, LoadError> make_type(const IRInstruction& instruction) {
 
 	switch (instruction.op) {
 	case IROp::TypeVoid:
-		if (!exact(0, 0)) return malformed();
+		if (!exact(0, 0))
+			return malformed();
 		type.kind = ir::TypeKind::void_;
 		break;
 	case IROp::TypeBool:
-		if (!exact(0, 0)) return malformed();
+		if (!exact(0, 0))
+			return malformed();
 		type.kind = ir::TypeKind::boolean;
 		break;
 	case IROp::TypeInt:
 	case IROp::TypeUInt:
 	case IROp::TypeFloat:
-		if (!exact(0, 1) || instruction.literals.front() == 0) return malformed();
-		type.kind = instruction.op == IROp::TypeInt ? ir::TypeKind::signed_integer
-			: instruction.op == IROp::TypeUInt ? ir::TypeKind::unsigned_integer : ir::TypeKind::floating;
+		if (!exact(0, 1) || instruction.literals.front() == 0)
+			return malformed();
+		type.kind = instruction.op == IROp::TypeInt	   ? ir::TypeKind::signed_integer
+					: instruction.op == IROp::TypeUInt ? ir::TypeKind::unsigned_integer
+													   : ir::TypeKind::floating;
 		type.bit_width = instruction.literals.front();
 		break;
 	case IROp::TypeVector:
 	case IROp::TypeMatrix:
-		if (!exact(1, 1) || instruction.literals.front() == 0) return malformed();
+		if (!exact(1, 1) || instruction.literals.front() == 0)
+			return malformed();
 		type.kind = instruction.op == IROp::TypeVector ? ir::TypeKind::vector : ir::TypeKind::matrix;
 		type.element_type = instruction.operands.front();
 		type.element_count = instruction.literals.front();
 		break;
 	case IROp::TypeStruct:
-		if (!instruction.literals.empty()) return malformed();
+		if (!instruction.literals.empty())
+			return malformed();
 		type.kind = ir::TypeKind::structure;
 		type.members = instruction.operands;
 		break;
 	case IROp::TypePointer:
-		if (!exact(1, 1) || !valid_storage_class(instruction.literals.front())) return malformed();
+		if (!exact(1, 1) || !valid_storage_class(instruction.literals.front()))
+			return malformed();
 		type.kind = ir::TypeKind::pointer;
 		type.element_type = instruction.operands.front();
 		type.storage_class = storage_class(instruction.literals.front());
 		break;
 	case IROp::TypeArray:
-		if (!exact(2, 0)) return malformed();
+		if (!exact(2, 0))
+			return malformed();
 		type.kind = ir::TypeKind::array;
 		type.element_type = instruction.operands[0];
 		type.array_length = instruction.operands[1];
 		break;
 	case IROp::TypeRuntimeArray:
-		if (!exact(1, 0)) return malformed();
+		if (!exact(1, 0))
+			return malformed();
 		type.kind = ir::TypeKind::runtime_array;
 		type.element_type = instruction.operands[0];
 		break;
 	case IROp::TypeFunction:
-		if (instruction.operands.empty() || !instruction.literals.empty()) return malformed();
+		if (instruction.operands.empty() || !instruction.literals.empty())
+			return malformed();
 		type.kind = ir::TypeKind::function;
 		type.element_type = instruction.operands.front();
 		type.members.assign(instruction.operands.begin() + 1, instruction.operands.end());
@@ -125,7 +141,8 @@ std::expected<ir::Type, LoadError> make_type(const IRInstruction& instruction) {
 		if (!exact(1, 3) || instruction.literals[0] == 0 ||
 			instruction.literals[0] > static_cast<std::uint32_t>(ir::ImageDimension::cube) ||
 			instruction.literals[1] > 1 ||
-			instruction.literals[2] > static_cast<std::uint32_t>(ir::ImageClass::storage)) return malformed();
+			instruction.literals[2] > static_cast<std::uint32_t>(ir::ImageClass::storage))
+			return malformed();
 		type.kind = ir::TypeKind::image;
 		type.element_type = instruction.operands[0];
 		type.image = ir::ImageShape{
@@ -135,11 +152,13 @@ std::expected<ir::Type, LoadError> make_type(const IRInstruction& instruction) {
 		type.image_class = static_cast<ir::ImageClass>(instruction.literals[2]);
 		break;
 	case IROp::TypeSampler:
-		if (!exact(0, 0)) return malformed();
+		if (!exact(0, 0))
+			return malformed();
 		type.kind = ir::TypeKind::sampler;
 		break;
 	case IROp::TypeSampledImage:
-		if (!exact(1, 0)) return malformed();
+		if (!exact(1, 0))
+			return malformed();
 		type.kind = ir::TypeKind::sampled_image;
 		type.element_type = instruction.operands[0];
 		break;
@@ -163,8 +182,9 @@ std::expected<ir::Constant, LoadError> make_constant(const IRInstruction& instru
 	case IROp::ConstantFloat:
 		if (!instruction.operands.empty() || instruction.literals.empty())
 			return std::unexpected(invalid_program("constants", "scalar constant has an invalid shape"));
-		constant.kind = instruction.op == IROp::ConstantInt ? ir::ConstantKind::signed_integer
-			: instruction.op == IROp::ConstantUInt ? ir::ConstantKind::unsigned_integer : ir::ConstantKind::floating;
+		constant.kind = instruction.op == IROp::ConstantInt	   ? ir::ConstantKind::signed_integer
+						: instruction.op == IROp::ConstantUInt ? ir::ConstantKind::unsigned_integer
+															   : ir::ConstantKind::floating;
 		constant.words = instruction.literals;
 		break;
 	case IROp::ConstantComposite:
@@ -181,7 +201,7 @@ std::expected<ir::Constant, LoadError> make_constant(const IRInstruction& instru
 
 bool is_terminator(ir::Op op) {
 	return op == ir::Op::Branch || op == ir::Op::BranchConditional ||
-		op == ir::Op::Return || op == ir::Op::ReturnValue;
+		   op == ir::Op::Return || op == ir::Op::ReturnValue;
 }
 
 const ir::Type* find_type(std::span<const ir::Type> types, ir::Id id) {
@@ -194,10 +214,11 @@ const ir::Constant* find_constant(std::span<const ir::Constant> constants, ir::I
 	return found == constants.end() ? nullptr : &*found;
 }
 
-bool equivalent_type(std::span<const ir::Type> types, std::span<const ir::Constant> constants,
-	ir::Id lhs_id, ir::Id rhs_id, std::size_t depth = 0) {
-	if (lhs_id == rhs_id) return true;
-	if (depth > 64) return false;
+bool equivalent_type(std::span<const ir::Type> types, std::span<const ir::Constant> constants, ir::Id lhs_id, ir::Id rhs_id, std::size_t depth = 0) {
+	if (lhs_id == rhs_id)
+		return true;
+	if (depth > 64)
+		return false;
 	const ir::Type* lhs = find_type(types, lhs_id);
 	const ir::Type* rhs = find_type(types, rhs_id);
 	if (!lhs || !rhs || lhs->kind != rhs->kind || lhs->bit_width != rhs->bit_width ||
@@ -208,7 +229,8 @@ bool equivalent_type(std::span<const ir::Type> types, std::span<const ir::Consta
 		return false;
 	}
 	if (lhs->element_type || rhs->element_type) {
-		if (!equivalent_type(types, constants, lhs->element_type, rhs->element_type, depth + 1)) return false;
+		if (!equivalent_type(types, constants, lhs->element_type, rhs->element_type, depth + 1))
+			return false;
 	}
 	if (lhs->array_length || rhs->array_length) {
 		const ir::Constant* lhs_length = find_constant(constants, lhs->array_length);
@@ -219,16 +241,20 @@ bool equivalent_type(std::span<const ir::Type> types, std::span<const ir::Consta
 		}
 	}
 	for (std::size_t i = 0; i < lhs->members.size(); ++i) {
-		if (!equivalent_type(types, constants, lhs->members[i], rhs->members[i], depth + 1)) return false;
+		if (!equivalent_type(types, constants, lhs->members[i], rhs->members[i], depth + 1))
+			return false;
 	}
 	return true;
 }
 
 std::optional<ir::Op> normalized_op(IROp op) {
 	switch (op) {
-#define RTSL_IR_OP(name, display_name) case IROp::name: return ir::Op::name;
+#define RTSL_IR_OP(name, display_name) \
+	case IROp::name:                   \
+		return ir::Op::name;
 #include "rtsl/ops.def"
-	default: return std::nullopt;
+	default:
+		return std::nullopt;
 	}
 }
 
@@ -258,52 +284,60 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 		break;
 	case IROp::Variable:
 		valid = source.result_id && source.type_id && operands <= 1 && literals == 1 &&
-			source.literals.front() == static_cast<std::uint32_t>(ir::StorageClass::function);
-		if (valid) instruction.arguments = ir::VariableArguments{
-			.initializer = operands == 0 ? std::nullopt : std::optional<ir::Id>{ source.operands.front() },
-		};
+				source.literals.front() == static_cast<std::uint32_t>(ir::StorageClass::function);
+		if (valid)
+			instruction.arguments = ir::VariableArguments{
+				.initializer = operands == 0 ? std::nullopt : std::optional<ir::Id>{ source.operands.front() },
+			};
 		break;
 	case IROp::Load:
 		valid = exact(1, 0);
-		if (valid) instruction.arguments = ir::LoadArguments{ .pointer = source.operands[0] };
+		if (valid)
+			instruction.arguments = ir::LoadArguments{ .pointer = source.operands[0] };
 		break;
 	case IROp::Store:
 		valid = exact(2, 0);
-		if (valid) instruction.arguments = ir::StoreArguments{ .pointer = source.operands[0], .value = source.operands[1] };
+		if (valid)
+			instruction.arguments = ir::StoreArguments{ .pointer = source.operands[0], .value = source.operands[1] };
 		break;
 	case IROp::AccessChain:
 		valid = operands >= 1 && literals == 0;
-		if (valid) instruction.arguments = ir::AccessChainArguments{
-			.base = source.operands[0],
-			.indices = { source.operands.begin() + 1, source.operands.end() },
-		};
+		if (valid)
+			instruction.arguments = ir::AccessChainArguments{
+				.base = source.operands[0],
+				.indices = { source.operands.begin() + 1, source.operands.end() },
+			};
 		break;
 	case IROp::CompositeConstruct:
 		valid = literals == 0;
-		if (valid) instruction.arguments = ir::CompositeConstructArguments{ .constituents = source.operands };
+		if (valid)
+			instruction.arguments = ir::CompositeConstructArguments{ .constituents = source.operands };
 		break;
 	case IROp::CompositeExtract:
 		valid = operands == 1 && literals >= 1;
-		if (valid) instruction.arguments = ir::CompositeExtractArguments{
-			.composite = source.operands[0],
-			.indices = source.literals,
-		};
+		if (valid)
+			instruction.arguments = ir::CompositeExtractArguments{
+				.composite = source.operands[0],
+				.indices = source.literals,
+			};
 		break;
 	case IROp::CompositeInsert:
 		valid = operands == 2 && literals >= 1;
-		if (valid) instruction.arguments = ir::CompositeInsertArguments{
-			.composite = source.operands[0],
-			.object = source.operands[1],
-			.indices = source.literals,
-		};
+		if (valid)
+			instruction.arguments = ir::CompositeInsertArguments{
+				.composite = source.operands[0],
+				.object = source.operands[1],
+				.indices = source.literals,
+			};
 		break;
 	case IROp::VectorShuffle:
 		valid = operands == 2 && literals >= 1;
-		if (valid) instruction.arguments = ir::VectorShuffleArguments{
-			.first = source.operands[0],
-			.second = source.operands[1],
-			.components = source.literals,
-		};
+		if (valid)
+			instruction.arguments = ir::VectorShuffleArguments{
+				.first = source.operands[0],
+				.second = source.operands[1],
+				.components = source.literals,
+			};
 		break;
 	case IROp::FNegate:
 	case IROp::LogicalNot:
@@ -320,81 +354,124 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 	case IROp::ImageQuerySize:
 	case IROp::SNegate:
 		valid = exact(1, 0);
-		if (valid) instruction.arguments = ir::UnaryArguments{ .operand = source.operands[0] };
+		if (valid)
+			instruction.arguments = ir::UnaryArguments{ .operand = source.operands[0] };
 		break;
-	case IROp::FAdd: case IROp::FSub: case IROp::FMul: case IROp::FDiv: case IROp::FMod:
-	case IROp::IAdd: case IROp::ISub: case IROp::IMul: case IROp::SDiv: case IROp::UDiv:
-	case IROp::SMod: case IROp::UMod: case IROp::VectorTimesScalar: case IROp::MatrixTimesScalar:
-	case IROp::MatrixTimesVector: case IROp::MatrixTimesMatrix: case IROp::Dot: case IROp::Cross:
-	case IROp::FOrdEqual: case IROp::FOrdNotEqual: case IROp::FOrdLess: case IROp::FOrdLessEqual:
-	case IROp::FOrdGreater: case IROp::FOrdGreaterEqual: case IROp::IEqual: case IROp::INotEqual:
-	case IROp::SLess: case IROp::SLessEqual: case IROp::SGreater: case IROp::SGreaterEqual:
-	case IROp::ULess: case IROp::ULessEqual: case IROp::UGreater: case IROp::UGreaterEqual:
-	case IROp::LogicalAnd: case IROp::LogicalOr: case IROp::SampledImage:
-	case IROp::ImageSampleImplicitLod: case IROp::ImageRead:
-	case IROp::BitwiseAnd: case IROp::BitwiseOr: case IROp::BitwiseXor:
-	case IROp::FMin: case IROp::FMax:
+	case IROp::FAdd:
+	case IROp::FSub:
+	case IROp::FMul:
+	case IROp::FDiv:
+	case IROp::FMod:
+	case IROp::IAdd:
+	case IROp::ISub:
+	case IROp::IMul:
+	case IROp::SDiv:
+	case IROp::UDiv:
+	case IROp::SMod:
+	case IROp::UMod:
+	case IROp::VectorTimesScalar:
+	case IROp::MatrixTimesScalar:
+	case IROp::MatrixTimesVector:
+	case IROp::MatrixTimesMatrix:
+	case IROp::Dot:
+	case IROp::Cross:
+	case IROp::FOrdEqual:
+	case IROp::FOrdNotEqual:
+	case IROp::FOrdLess:
+	case IROp::FOrdLessEqual:
+	case IROp::FOrdGreater:
+	case IROp::FOrdGreaterEqual:
+	case IROp::IEqual:
+	case IROp::INotEqual:
+	case IROp::SLess:
+	case IROp::SLessEqual:
+	case IROp::SGreater:
+	case IROp::SGreaterEqual:
+	case IROp::ULess:
+	case IROp::ULessEqual:
+	case IROp::UGreater:
+	case IROp::UGreaterEqual:
+	case IROp::LogicalAnd:
+	case IROp::LogicalOr:
+	case IROp::SampledImage:
+	case IROp::ImageSampleImplicitLod:
+	case IROp::ImageRead:
+	case IROp::BitwiseAnd:
+	case IROp::BitwiseOr:
+	case IROp::BitwiseXor:
+	case IROp::FMin:
+	case IROp::FMax:
 		valid = exact(2, 0);
-		if (valid) instruction.arguments = ir::BinaryArguments{ .lhs = source.operands[0], .rhs = source.operands[1] };
+		if (valid)
+			instruction.arguments = ir::BinaryArguments{ .lhs = source.operands[0], .rhs = source.operands[1] };
 		break;
 	case IROp::FMix:
 	case IROp::SmoothStep:
 		valid = exact(3, 0);
-		if (valid) instruction.arguments = ir::TernaryArguments{
-			.first = source.operands[0],
-			.second = source.operands[1],
-			.third = source.operands[2],
-		};
+		if (valid)
+			instruction.arguments = ir::TernaryArguments{
+				.first = source.operands[0],
+				.second = source.operands[1],
+				.third = source.operands[2],
+			};
 		break;
 	case IROp::ImageSampleExplicitLod:
 		valid = exact(3, 0);
-		if (valid) instruction.arguments = ir::ImageSampleExplicitLodArguments{
-			.sampled_image = source.operands[0],
-			.coordinate = source.operands[1],
-			.lod = source.operands[2],
-		};
+		if (valid)
+			instruction.arguments = ir::ImageSampleExplicitLodArguments{
+				.sampled_image = source.operands[0],
+				.coordinate = source.operands[1],
+				.lod = source.operands[2],
+			};
 		break;
 	case IROp::ImageWrite:
 		valid = exact(3, 0);
-		if (valid) instruction.arguments = ir::ImageWriteArguments{
-			.image = source.operands[0],
-			.coordinate = source.operands[1],
-			.texel = source.operands[2],
-		};
+		if (valid)
+			instruction.arguments = ir::ImageWriteArguments{
+				.image = source.operands[0],
+				.coordinate = source.operands[1],
+				.texel = source.operands[2],
+			};
 		break;
 	case IROp::Branch:
 		valid = exact(1, 0);
-		if (valid) instruction.arguments = ir::BranchArguments{ .target = source.operands[0] };
+		if (valid)
+			instruction.arguments = ir::BranchArguments{ .target = source.operands[0] };
 		break;
 	case IROp::SelectionMerge:
 		valid = exact(1, 0);
-		if (valid) instruction.arguments = ir::SelectionMergeArguments{ .merge_block = source.operands[0] };
+		if (valid)
+			instruction.arguments = ir::SelectionMergeArguments{ .merge_block = source.operands[0] };
 		break;
 	case IROp::ReturnValue:
 		valid = exact(1, 0);
-		if (valid) instruction.arguments = ir::ReturnValueArguments{ .value = source.operands[0] };
+		if (valid)
+			instruction.arguments = ir::ReturnValueArguments{ .value = source.operands[0] };
 		break;
 	case IROp::FunctionCall:
 		valid = source.operands.size() >= 1 && source.literals.empty() && source.operands.front();
-		if (valid) instruction.arguments = ir::FunctionCallArguments{
-			.function = source.operands.front(),
-			.arguments = { source.operands.begin() + 1, source.operands.end() },
-		};
+		if (valid)
+			instruction.arguments = ir::FunctionCallArguments{
+				.function = source.operands.front(),
+				.arguments = { source.operands.begin() + 1, source.operands.end() },
+			};
 		break;
 	case IROp::BranchConditional:
 		valid = exact(3, 0);
-		if (valid) instruction.arguments = ir::BranchConditionalArguments{
-			.condition = source.operands[0],
-			.true_target = source.operands[1],
-			.false_target = source.operands[2],
-		};
+		if (valid)
+			instruction.arguments = ir::BranchConditionalArguments{
+				.condition = source.operands[0],
+				.true_target = source.operands[1],
+				.false_target = source.operands[2],
+			};
 		break;
 	case IROp::LoopMerge:
 		valid = exact(2, 0);
-		if (valid) instruction.arguments = ir::LoopMergeArguments{
-			.merge_block = source.operands[0],
-			.continue_block = source.operands[1],
-		};
+		if (valid)
+			instruction.arguments = ir::LoopMergeArguments{
+				.merge_block = source.operands[0],
+				.continue_block = source.operands[1],
+			};
 		break;
 	case IROp::Return:
 		valid = exact(0, 0);
@@ -404,13 +481,13 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 	}
 
 	const bool produces_value = source.op == IROp::Variable || source.op == IROp::Load ||
-		source.op == IROp::AccessChain || source.op == IROp::CompositeConstruct ||
-		source.op == IROp::CompositeExtract || source.op == IROp::CompositeInsert ||
-		source.op == IROp::VectorShuffle ||
-		(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
-		(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
-		(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::FunctionCall;
-	if (produces_value != static_cast<bool>(source.result_id) || produces_value != static_cast<bool>(source.type_id)) { 
+								source.op == IROp::AccessChain || source.op == IROp::CompositeConstruct ||
+								source.op == IROp::CompositeExtract || source.op == IROp::CompositeInsert ||
+								source.op == IROp::VectorShuffle ||
+								(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
+								(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
+								(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::FunctionCall;
+	if (produces_value != static_cast<bool>(source.result_id) || produces_value != static_cast<bool>(source.type_id)) {
 		valid = false;
 	}
 	if (!valid) {
@@ -464,7 +541,8 @@ bool ir::Instruction::references(ir::Id id) const noexcept {
 			return value.image == id || value.coordinate == id || value.texel == id;
 		}
 		return false;
-	}, arguments);
+	},
+					  arguments);
 }
 
 struct Program::Data {
@@ -500,7 +578,8 @@ std::uint32_t Program::id_bound() const noexcept {
 }
 
 std::span<const ir::Decoration> Program::decorations(ir::Id target) const noexcept {
-	if (!data_ || target.value >= data_->decoration_index.size()) return {};
+	if (!data_ || target.value >= data_->decoration_index.size())
+		return {};
 	const DecorationRange range = data_->decoration_index[target.value];
 	return std::span<const ir::Decoration>{ data_->decorations }.subspan(range.begin, range.count);
 }
@@ -522,9 +601,11 @@ const ir::Function* Program::find_function(ir::Id id) const noexcept {
 }
 
 const EntryPoint* Program::entry(Stage stage) const noexcept {
-	if (!data_) return nullptr;
+	if (!data_)
+		return nullptr;
 	for (const auto& entry_point : data_->entries) {
-		if (entry_point.stage == stage) return &entry_point;
+		if (entry_point.stage == stage)
+			return &entry_point;
 	}
 	return nullptr;
 }
@@ -541,7 +622,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 	try {
 		const auto encoded = std::span<const u08>{ reinterpret_cast<const u08*>(bytes.data()), bytes.size() };
 		auto decoded = codec::decode_artifact(encoded);
-		if (!decoded) return std::unexpected(std::move(decoded.error()));
+		if (!decoded)
+			return std::unexpected(std::move(decoded.error()));
 		if (decoded->kind != ArtifactKind::program) {
 			return std::unexpected(LoadError{
 				.code = LoadErrorCode::wrong_artifact_kind,
@@ -583,11 +665,13 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 			pool_definitions[instruction.result_id.value] = true;
 			if (is_type_op(instruction.op)) {
 				auto type = make_type(instruction);
-				if (!type) return std::unexpected(std::move(type.error()));
+				if (!type)
+					return std::unexpected(std::move(type.error()));
 				data->types.push_back(std::move(*type));
 			} else if (is_constant_op(instruction.op)) {
 				auto constant = make_constant(instruction);
-				if (!constant) return std::unexpected(std::move(constant.error()));
+				if (!constant)
+					return std::unexpected(std::move(constant.error()));
 				data->constants.push_back(std::move(*constant));
 			} else {
 				return std::unexpected(invalid_program("type_constant_pool", "pool contains a non type/constant operation"));
@@ -636,7 +720,7 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 					if (auto result = define(instruction.result_id, "function.blocks"); !result)
 						return std::unexpected(std::move(result.error()));
 					if (!function.blocks.empty() && (function.blocks.back().instructions.empty() ||
-						!is_terminator(function.blocks.back().instructions.back().op))) {
+													 !is_terminator(function.blocks.back().instructions.back().op))) {
 						return std::unexpected(invalid_program("function.blocks", "basic block does not end with a terminator"));
 					}
 					function.blocks.push_back(ir::Block{ .id = instruction.result_id });
@@ -653,7 +737,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				if (function.blocks.empty())
 					return std::unexpected(invalid_program("function.blocks", "instruction appears before the first label"));
 				auto normalized = normalize_instruction(instruction);
-				if (!normalized) return std::unexpected(std::move(normalized.error()));
+				if (!normalized)
+					return std::unexpected(std::move(normalized.error()));
 				if (instruction.result_id) {
 					if (auto result = define(instruction.result_id, "function.instructions"); !result)
 						return std::unexpected(std::move(result.error()));
@@ -675,21 +760,28 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 			return {};
 		};
 		for (const auto& instruction : module.type_constant_pool) {
-			if (auto result = reference(instruction.type_id, "type_constant_pool.type"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(instruction.type_id, "type_constant_pool.type"); !result)
+				return std::unexpected(std::move(result.error()));
 			for (const auto operand : instruction.operands)
-				if (auto result = reference(operand, "type_constant_pool.operand"); !result) return std::unexpected(std::move(result.error()));
+				if (auto result = reference(operand, "type_constant_pool.operand"); !result)
+					return std::unexpected(std::move(result.error()));
 		}
 		for (const auto& global : module.global_variables) {
-			if (auto result = reference(global.type_id, "globals.type"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(global.type_id, "globals.type"); !result)
+				return std::unexpected(std::move(result.error()));
 			for (const auto operand : global.operands)
-				if (auto result = reference(operand, "globals.initializer"); !result) return std::unexpected(std::move(result.error()));
+				if (auto result = reference(operand, "globals.initializer"); !result)
+					return std::unexpected(std::move(result.error()));
 		}
 		for (const auto& function : module.functions) {
-			if (auto result = reference(function.return_type_id, "functions.return_type"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(function.return_type_id, "functions.return_type"); !result)
+				return std::unexpected(std::move(result.error()));
 			for (const auto& instruction : function.body) {
-				if (auto result = reference(instruction.type_id, "instructions.type"); !result) return std::unexpected(std::move(result.error()));
+				if (auto result = reference(instruction.type_id, "instructions.type"); !result)
+					return std::unexpected(std::move(result.error()));
 				for (const auto operand : instruction.operands)
-					if (auto result = reference(operand, "instructions.operand"); !result) return std::unexpected(std::move(result.error()));
+					if (auto result = reference(operand, "instructions.operand"); !result)
+						return std::unexpected(std::move(result.error()));
 			}
 		}
 
@@ -701,22 +793,29 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 			if (stage_index >= seen_stages.size() || seen_stages[stage_index])
 				return std::unexpected(invalid_program("entries.stage", "program contains an invalid or duplicate shader stage"));
 			seen_stages[stage_index] = true;
-			if (auto result = reference(entry_point.function, "entries.function"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(entry_point.function, "entries.function"); !result)
+				return std::unexpected(std::move(result.error()));
 			const auto validate_interface = [&](const std::optional<Interface>& interface, std::string_view context) -> std::expected<void, LoadError> {
-				if (!interface) return {};
-				if (auto result = reference(interface->value_type, context); !result) return result;
+				if (!interface)
+					return {};
+				if (auto result = reference(interface->value_type, context); !result)
+					return result;
 				if (interface->value) {
-					if (auto result = reference(*interface->value, context); !result) return result;
+					if (auto result = reference(*interface->value, context); !result)
+						return result;
 				}
 				for (const auto& element : interface->elements) {
-					if (auto result = reference(element.type, context); !result) return result;
+					if (auto result = reference(element.type, context); !result)
+						return result;
 					if (element.builtin != Builtin::none && element.location)
 						return std::unexpected(invalid_program(std::string(context), "built-in interface element also has a user location"));
 				}
 				return {};
 			};
-			if (auto result = validate_interface(entry_point.input, "entries.input"); !result) return std::unexpected(std::move(result.error()));
-			if (auto result = validate_interface(entry_point.output, "entries.output"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = validate_interface(entry_point.input, "entries.input"); !result)
+				return std::unexpected(std::move(result.error()));
+			if (auto result = validate_interface(entry_point.output, "entries.output"); !result)
+				return std::unexpected(std::move(result.error()));
 		}
 
 		data->resources = std::move(module.resources);
@@ -726,8 +825,10 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				static_cast<std::size_t>(resource.image.dimension) > static_cast<std::size_t>(ImageDimension::cube)) {
 				return std::unexpected(invalid_program("resources", "resource contains an invalid enum value"));
 			}
-			if (auto result = reference(resource.variable, "resources.variable"); !result) return std::unexpected(std::move(result.error()));
-			if (auto result = reference(resource.value_type, "resources.value_type"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(resource.variable, "resources.variable"); !result)
+				return std::unexpected(std::move(result.error()));
+			if (auto result = reference(resource.value_type, "resources.value_type"); !result)
+				return std::unexpected(std::move(result.error()));
 		}
 
 		data->entries = std::move(module.entries);
@@ -735,19 +836,24 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 			for (const auto& entry_point : data->entries) {
 				std::unordered_set<ir::Id> visited;
 				const auto uses_resource = [&](auto&& self, ir::Id function_id) -> bool {
-					if (!visited.insert(function_id).second) return false;
+					if (!visited.insert(function_id).second)
+						return false;
 					const auto found = std::ranges::find(data->functions, function_id, &ir::Function::id);
-					if (found == data->functions.end()) return false;
+					if (found == data->functions.end())
+						return false;
 					for (const auto& block : found->blocks) {
 						for (const auto& instruction : block.instructions) {
-							if (instruction.references(resource.variable)) return true;
-							if (const auto* call = instruction.arguments_if<ir::FunctionCallArguments>(); call && self(self, call->function)) return true;
+							if (instruction.references(resource.variable))
+								return true;
+							if (const auto* call = instruction.arguments_if<ir::FunctionCallArguments>(); call && self(self, call->function))
+								return true;
 						}
 					}
 					return false;
 				};
 				const bool used = uses_resource(uses_resource, entry_point.function);
-				if (used) resource.stages |= entry_point.stage == Stage::vertex ? StageMask::vertex : StageMask::fragment;
+				if (used)
+					resource.stages |= entry_point.stage == Stage::vertex ? StageMask::vertex : StageMask::fragment;
 			}
 		}
 
@@ -755,7 +861,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 		for (const IRDecoration& decoration : module.decorations) {
 			if (static_cast<std::size_t>(decoration.kind) > static_cast<std::size_t>(IRDecorationKind::RowMajor))
 				return std::unexpected(invalid_program("decorations", "decoration contains an invalid kind"));
-			if (auto result = reference(decoration.target, "decorations.target"); !result) return std::unexpected(std::move(result.error()));
+			if (auto result = reference(decoration.target, "decorations.target"); !result)
+				return std::unexpected(std::move(result.error()));
 			data->decorations.push_back(ir::Decoration{
 				.target = decoration.target,
 				.kind = static_cast<ir::DecorationKind>(decoration.kind),
@@ -772,21 +879,27 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 		data->global_index.resize(id_limit);
 		data->function_index.resize(id_limit);
 		data->decoration_index.resize(id_limit);
-		for (const auto& type : data->types) data->type_index[type.id.value] = &type;
-		for (const auto& constant : data->constants) data->constant_index[constant.id.value] = &constant;
-		for (const auto& global : data->globals) data->global_index[global.id.value] = &global;
-		for (const auto& function : data->functions) data->function_index[function.id.value] = &function;
+		for (const auto& type : data->types)
+			data->type_index[type.id.value] = &type;
+		for (const auto& constant : data->constants)
+			data->constant_index[constant.id.value] = &constant;
+		for (const auto& global : data->globals)
+			data->global_index[global.id.value] = &global;
+		for (const auto& function : data->functions)
+			data->function_index[function.id.value] = &function;
 		for (std::size_t i = 0; i < data->decorations.size();) {
 			const std::size_t begin = i;
 			const std::uint32_t target = data->decorations[i].target.value;
-			while (i < data->decorations.size() && data->decorations[i].target.value == target) ++i;
+			while (i < data->decorations.size() && data->decorations[i].target.value == target)
+				++i;
 			data->decoration_index[target] = DecorationRange{ .begin = begin, .count = i - begin };
 		}
 
 		const auto validate_normalized_interface = [&](const Interface& interface,
-			std::string_view context) -> std::expected<void, LoadError> {
+													   std::string_view context) -> std::expected<void, LoadError> {
 			const ir::Type* payload = data->type_index[interface.value_type.value];
-			if (!payload) return std::unexpected(invalid_program(std::string(context), "interface payload is not a type"));
+			if (!payload)
+				return std::unexpected(invalid_program(std::string(context), "interface payload is not a type"));
 			for (std::size_t i = 0; i < interface.elements.size(); ++i) {
 				const InterfaceElement& element = interface.elements[i];
 				if (element.builtin == Builtin::none && !element.location) {
@@ -813,7 +926,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 
 		for (const EntryPoint& entry_point : data->entries) {
 			const ir::Function* function = data->function_index[entry_point.function.value];
-			if (!function) return std::unexpected(invalid_program("entries.function", "entry does not reference a function"));
+			if (!function)
+				return std::unexpected(invalid_program("entries.function", "entry does not reference a function"));
 			if (entry_point.input) {
 				if (auto result = validate_normalized_interface(*entry_point.input, "entries.input"); !result)
 					return std::unexpected(std::move(result.error()));
@@ -847,9 +961,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				return std::unexpected(invalid_program("resources", "resource does not match its global pointer"));
 			}
 			const ir::StorageClass expected_storage =
-				resource.kind == ResourceKind::uniform_buffer ? ir::StorageClass::uniform :
-				resource.kind == ResourceKind::storage_buffer ? ir::StorageClass::storage_buffer :
-				ir::StorageClass::uniform_constant;
+				resource.kind == ResourceKind::uniform_buffer ? ir::StorageClass::uniform : resource.kind == ResourceKind::storage_buffer ? ir::StorageClass::storage_buffer
+																																		  : ir::StorageClass::uniform_constant;
 			if (global->storage_class != expected_storage || pointer->storage_class != expected_storage) {
 				return std::unexpected(invalid_program("resources", "resource kind does not match its storage class"));
 			}
@@ -858,13 +971,15 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				return std::unexpected(invalid_program("resources", "resource kind does not match its image shape"));
 			}
 			const ir::Type* value_type = data->type_index[resource.value_type.value];
-			if (!value_type) return std::unexpected(invalid_program("resources", "resource value is not a type"));
+			if (!value_type)
+				return std::unexpected(invalid_program("resources", "resource value is not a type"));
 			if (resource.kind == ResourceKind::sampler && value_type->kind != ir::TypeKind::sampler) {
 				return std::unexpected(invalid_program("resources", "sampler resource does not use a sampler type"));
 			}
 			if (resource.kind == ResourceKind::sampled_texture) {
 				const ir::Type* image_type = value_type->kind == ir::TypeKind::sampled_image
-					? data->type_index[value_type->element_type.value] : nullptr;
+												 ? data->type_index[value_type->element_type.value]
+												 : nullptr;
 				if (!image_type || image_type->kind != ir::TypeKind::image ||
 					image_type->image_class != ir::ImageClass::sampled ||
 					image_type->image.dimension != resource.image.dimension ||
@@ -886,8 +1001,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				const auto begin = data->decorations.begin() + static_cast<std::ptrdiff_t>(range.begin);
 				const auto end = begin + static_cast<std::ptrdiff_t>(range.count);
 				if (std::ranges::find_if(begin, end, [](const ir::Decoration& value) {
-					return value.kind == ir::DecorationKind::block && !value.member();
-				}) == end) {
+						return value.kind == ir::DecorationKind::block && !value.member();
+					}) == end) {
 					return std::unexpected(invalid_program("resources", "buffer resource type is missing its block decoration"));
 				}
 			}
@@ -902,8 +1017,10 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 		const EntryPoint* vertex = nullptr;
 		const EntryPoint* fragment = nullptr;
 		for (const auto& entry_point : data->entries) {
-			if (entry_point.stage == Stage::vertex) vertex = &entry_point;
-			if (entry_point.stage == Stage::fragment) fragment = &entry_point;
+			if (entry_point.stage == Stage::vertex)
+				vertex = &entry_point;
+			if (entry_point.stage == Stage::fragment)
+				fragment = &entry_point;
 		}
 		if (vertex && fragment && fragment->input) {
 			if (!vertex->output) {
@@ -912,8 +1029,8 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 			for (const InterfaceElement& input : fragment->input->elements) {
 				const auto output = std::ranges::find_if(vertex->output->elements, [&](const InterfaceElement& candidate) {
 					return input.builtin != Builtin::none
-						? candidate.builtin == input.builtin
-						: candidate.builtin == Builtin::none && candidate.location == input.location;
+							   ? candidate.builtin == input.builtin
+							   : candidate.builtin == Builtin::none && candidate.location == input.location;
 				});
 				if (output == vertex->output->elements.end() || output->interpolation != input.interpolation ||
 					!equivalent_type(data->types, data->constants, output->type, input.type)) {

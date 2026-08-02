@@ -1,7 +1,7 @@
 #pragma once
 
-#include <artifact.hpp>
 #include "support/basic_source_manager.hpp"
+#include <artifact.hpp>
 
 #include <string>
 #include <string_view>
@@ -128,7 +128,7 @@ struct LayoutDecl {
 	LayoutRule rule = LayoutRule::unset;
 	bool is_inline_struct = false;
 	bool is_runtime_array = false;
-	std::string type_spelling;              // only when !is_inline_struct
+	std::string type_spelling;				// only when !is_inline_struct
 	std::vector<StructField> inline_fields; // only when is_inline_struct
 	SourceSpan span{};
 };

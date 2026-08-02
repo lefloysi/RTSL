@@ -5,15 +5,15 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-#    if defined(RTSL_BUILD_SHARED)
-#        define RTSL_API __declspec(dllexport)
-#    elif defined(RTSL_SHARED)
-#        define RTSL_API __declspec(dllimport)
-#    else
-#        define RTSL_API
-#    endif
+#if defined(RTSL_BUILD_SHARED)
+#define RTSL_API __declspec(dllexport)
+#elif defined(RTSL_SHARED)
+#define RTSL_API __declspec(dllimport)
 #else
-#    define RTSL_API
+#define RTSL_API
+#endif
+#else
+#define RTSL_API
 #endif
 
 #ifdef __cplusplus
@@ -25,47 +25,47 @@ typedef struct rtsl_linker_t* rtsl_linker;
 typedef struct rtsl_module_t* rtsl_module;
 
 typedef struct rtsl_blob {
-    const uint8_t* data;
-    size_t size;
+	const uint8_t* data;
+	size_t size;
 } rtsl_blob;
 
 typedef enum rtsl_output_kind {
-    RTSL_OUTPUT_OBJECT = 1,
-    RTSL_OUTPUT_MODULE = 2,
-    RTSL_OUTPUT_LIBRARY = 3,
-    RTSL_OUTPUT_PROGRAM = 4
+	RTSL_OUTPUT_OBJECT = 1,
+	RTSL_OUTPUT_MODULE = 2,
+	RTSL_OUTPUT_LIBRARY = 3,
+	RTSL_OUTPUT_PROGRAM = 4
 } rtsl_output_kind;
 
 typedef enum rtsl_result_code {
-    RTSL_OK = 0,
-    RTSL_ERROR_INVALID_ARGUMENT = 1,
-    RTSL_ERROR_COMPILE_FAILED = 2,
-    RTSL_ERROR_LINK_FAILED = 3,
-    RTSL_ERROR_INTERNAL = 4,
-    RTSL_ERROR_ARTIFACT_FAILED = 5
+	RTSL_OK = 0,
+	RTSL_ERROR_INVALID_ARGUMENT = 1,
+	RTSL_ERROR_COMPILE_FAILED = 2,
+	RTSL_ERROR_LINK_FAILED = 3,
+	RTSL_ERROR_INTERNAL = 4,
+	RTSL_ERROR_ARTIFACT_FAILED = 5
 } rtsl_result_code;
 
 typedef struct rtsl_result {
-    int code;
-    const char* text;
+	int code;
+	const char* text;
 } rtsl_result;
 
 typedef enum rtsl_diagnostic_severity {
-    RTSL_DIAG_IGNORED = 0,
-    RTSL_DIAG_NOTE = 1,
-    RTSL_DIAG_WARNING = 2,
-    RTSL_DIAG_ERROR = 3,
-    RTSL_DIAG_FATAL = 4
+	RTSL_DIAG_IGNORED = 0,
+	RTSL_DIAG_NOTE = 1,
+	RTSL_DIAG_WARNING = 2,
+	RTSL_DIAG_ERROR = 3,
+	RTSL_DIAG_FATAL = 4
 } rtsl_diagnostic_severity;
 
 typedef struct rtsl_diagnostic {
-    int code;
-    rtsl_diagnostic_severity severity;
-    const char* source_name;
-    size_t offset;
-    uint32_t line;
-    uint32_t column;
-    const char* text;
+	int code;
+	rtsl_diagnostic_severity severity;
+	const char* source_name;
+	size_t offset;
+	uint32_t line;
+	uint32_t column;
+	const char* text;
 } rtsl_diagnostic;
 
 RTSL_API rtsl_context rtslCreateContext(void);

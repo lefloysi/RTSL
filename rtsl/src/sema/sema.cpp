@@ -31,23 +31,19 @@ std::string resolve_stage_attribute(std::span<const Attribute> attributes, std::
 	std::string stage;
 	for (const auto& attribute : attributes) {
 		if (attribute.name != "stage") {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "unknown function attribute '@" + attribute.name + "'");
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name, "unknown function attribute '@" + attribute.name + "'");
 			continue;
 		}
 		if (attribute.value.empty()) {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "stage attribute requires ': <identifier>'");
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name, "stage attribute requires ': <identifier>'");
 			continue;
 		}
 		if (!stage.empty() && stage != attribute.value) {
-			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "function has multiple stage attributes");
+			diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, attribute.span.begin, source_name, "function has multiple stage attributes");
 			continue;
 		}
 		if (!is_graphics_stage(attribute.value)) {
-			diagnostics.report(DiagnosticCode::sema_invalid_stage, DiagnosticSeverity::error, attribute.span.begin, source_name,
-							   "unsupported stage '" + attribute.value + "'; expected 'vertex' or 'fragment'");
+			diagnostics.report(DiagnosticCode::sema_invalid_stage, DiagnosticSeverity::error, attribute.span.begin, source_name, "unsupported stage '" + attribute.value + "'; expected 'vertex' or 'fragment'");
 			continue;
 		}
 		stage = attribute.value;
@@ -92,8 +88,7 @@ void resolve_stage_interface_tags(std::span<StageInterface> interfaces, std::str
 			for (const auto& tag : field.tags) {
 				const StageBoundaryMeaning meaning = stage_boundary_meaning(tag);
 				if (!meaning.known) {
-					diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, {}, source_name,
-									   "unknown pipeline tag '" + tag + "'");
+					diagnostics.report(DiagnosticCode::sema_unknown_name, DiagnosticSeverity::error, {}, source_name, "unknown pipeline tag '" + tag + "'");
 					continue;
 				}
 				field.interpolation = meaning.interpolation;
@@ -189,13 +184,11 @@ bool type_resolves(std::string_view name, const std::unordered_set<std::string_v
 	return known.contains(name);
 }
 
-void check_type_reference(std::string_view name, SourceLocation location, std::string_view source_name,
-	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_type_reference(std::string_view name, SourceLocation location, std::string_view source_name, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	if (type_resolves(name, known)) {
 		return;
 	}
-	diagnostics.report(DiagnosticCode::sema_unknown_type, DiagnosticSeverity::error, location, source_name,
-					   "unknown type '" + std::string(name) + "'");
+	diagnostics.report(DiagnosticCode::sema_unknown_type, DiagnosticSeverity::error, location, source_name, "unknown type '" + std::string(name) + "'");
 }
 
 // ----------------------------------------------------------------------------
@@ -218,32 +211,49 @@ bool is_vector_type(std::string_view type) {
 
 // Scalar element spelling of a vector type ("vec4" -> "f32", "uvec2" -> "u32").
 std::string_view vector_element(std::string_view type) {
-	if (type.starts_with("uvec")) return "u32";
-	if (type.starts_with("ivec")) return "i32";
-	if (type.starts_with("vec")) return "f32";
+	if (type.starts_with("uvec"))
+		return "u32";
+	if (type.starts_with("ivec"))
+		return "i32";
+	if (type.starts_with("vec"))
+		return "f32";
 	return {};
 }
 
 // Reconstruct a vector spelling from an element scalar and component count, e.g.
 // ("f32", 3) -> "vec3". Returns "" for shapes that have no spelling.
 std::string vector_spelling(std::string_view element, std::size_t components) {
-	if (components < 2 || components > 4) return {};
+	if (components < 2 || components > 4)
+		return {};
 	const char n = static_cast<char>('0' + components);
-	if (element == "f32") return std::string("vec") + n;
-	if (element == "i32") return std::string("ivec") + n;
-	if (element == "u32") return std::string("uvec") + n;
+	if (element == "f32")
+		return std::string("vec") + n;
+	if (element == "i32")
+		return std::string("ivec") + n;
+	if (element == "u32")
+		return std::string("uvec") + n;
 	return {};
 }
 
 // A run of vector swizzle components (x/y/z/w, r/g/b/a, s/t/p/q) selecting 1..4
 // lanes. One component yields the element scalar; several yield a vector.
 bool is_swizzle(std::string_view name) {
-	if (name.empty() || name.size() > 4) return false;
+	if (name.empty() || name.size() > 4)
+		return false;
 	for (char c : name) {
 		switch (c) {
-		case 'x': case 'y': case 'z': case 'w':
-		case 'r': case 'g': case 'b': case 'a':
-		case 's': case 't': case 'p': case 'q':
+		case 'x':
+		case 'y':
+		case 'z':
+		case 'w':
+		case 'r':
+		case 'g':
+		case 'b':
+		case 'a':
+		case 's':
+		case 't':
+		case 'p':
+		case 'q':
 			break;
 		default:
 			return false;
@@ -254,9 +264,11 @@ bool is_swizzle(std::string_view name) {
 
 std::string_view struct_field_type(std::span<const StructDecl> structs, std::string_view struct_name, std::string_view field) {
 	for (const auto& decl : structs) {
-		if (decl.name != struct_name) continue;
+		if (decl.name != struct_name)
+			continue;
 		for (const auto& member : decl.fields) {
-			if (member.name == field) return member.type;
+			if (member.name == field)
+				return member.type;
 		}
 	}
 	return {};
@@ -357,11 +369,16 @@ std::string texture_dimension_type(std::string_view type) {
 
 std::string stdlib_return_type(const StdlibFunction& function, std::span<const std::string> arguments) {
 	switch (function.return_rule) {
-	case StdlibFunction::ReturnRule::fixed_vec4: return "vec4";
-	case StdlibFunction::ReturnRule::same: return arguments.empty() ? std::string{} : arguments[0];
-	case StdlibFunction::ReturnRule::argument_2: return arguments.size() < 3 ? std::string{} : arguments[2];
-	case StdlibFunction::ReturnRule::unsigned_shape: return arguments.empty() ? std::string{} : unsigned_shape(arguments[0]);
-	case StdlibFunction::ReturnRule::texture_dimensions: return arguments.empty() ? std::string{} : texture_dimension_type(arguments[0]);
+	case StdlibFunction::ReturnRule::fixed_vec4:
+		return "vec4";
+	case StdlibFunction::ReturnRule::same:
+		return arguments.empty() ? std::string{} : arguments[0];
+	case StdlibFunction::ReturnRule::argument_2:
+		return arguments.size() < 3 ? std::string{} : arguments[2];
+	case StdlibFunction::ReturnRule::unsigned_shape:
+		return arguments.empty() ? std::string{} : unsigned_shape(arguments[0]);
+	case StdlibFunction::ReturnRule::texture_dimensions:
+		return arguments.empty() ? std::string{} : texture_dimension_type(arguments[0]);
 	}
 	return {};
 }
@@ -472,11 +489,9 @@ std::string imported_uniform_name(std::string_view name, const SemanticModule& m
 using LocalEnv = std::unordered_map<std::string_view, std::string_view>;
 
 bool types_compatible(std::string_view target, std::string_view value);
-const SemanticSymbol* select_call_target(std::span<const SemanticSymbol> symbols, std::string_view name,
-	std::span<const std::string> argument_types);
+const SemanticSymbol* select_call_target(std::span<const SemanticSymbol> symbols, std::string_view name, std::span<const std::string> argument_types);
 
-std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module,
-	const std::unordered_set<std::string_view>& known) {
+std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module, const std::unordered_set<std::string_view>& known) {
 	switch (expr.kind) {
 	case Decl::Expr::Kind::literal_int:
 		return "i32";
@@ -564,8 +579,10 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 			return lhs;
 		}
 		// scalar * vector / vector * scalar keeps the vector shape.
-		if (is_vector_type(lhs) && is_scalar_type(rhs)) return lhs;
-		if (is_scalar_type(lhs) && is_vector_type(rhs)) return rhs;
+		if (is_vector_type(lhs) && is_scalar_type(rhs))
+			return lhs;
+		if (is_scalar_type(lhs) && is_vector_type(rhs))
+			return rhs;
 		return {};
 	}
 	case Decl::Expr::Kind::unknown:
@@ -578,8 +595,10 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 // or both scalars (int/float/uint literals coerce freely enough that flagging
 // scalar-to-scalar would produce false positives on valid code).
 bool types_compatible(std::string_view target, std::string_view value) {
-	if (target.empty() || value.empty()) return true;
-	if (target == value) return true;
+	if (target.empty() || value.empty())
+		return true;
+	if (target == value)
+		return true;
 	return is_scalar_type(target) && is_scalar_type(value);
 }
 
@@ -609,8 +628,7 @@ std::vector<const SemanticSymbol*> function_candidates(std::span<const SemanticS
 	return candidates;
 }
 
-const SemanticSymbol* select_call_target(std::span<const SemanticSymbol> symbols, std::string_view name,
-	std::span<const std::string> argument_types) {
+const SemanticSymbol* select_call_target(std::span<const SemanticSymbol> symbols, std::string_view name, std::span<const std::string> argument_types) {
 	const auto candidates = function_candidates(symbols, name);
 	const SemanticSymbol* selected = nullptr;
 	for (const auto* candidate : candidates) {
@@ -638,8 +656,7 @@ const SemanticSymbol* select_call_target(std::span<const SemanticSymbol> symbols
 // Check every call inside an expression tree. Only user functions are checked:
 // type constructors and builtins take flexible argument lists that this layer
 // does not model.
-void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module,
-	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	if (expr.kind == Decl::Expr::Kind::call && !expr.children.empty()) {
 		const std::string_view callee = expr.children.front().text;
 		const auto candidates = function_candidates(module.symbols, callee);
@@ -652,8 +669,7 @@ void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticM
 					argument_types.push_back(infer_expr_type(expr.children[i], locals, module, known));
 				}
 				if (!stdlib_arguments_match(*stdlib, argument_types)) {
-					diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-						std::format("invalid argument types for standard-library call '{}'", callee));
+					diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name, std::format("invalid argument types for standard-library call '{}'", callee));
 				}
 				for (const auto& child : expr.children) {
 					check_calls(child, locals, module, known, diagnostics);
@@ -666,8 +682,7 @@ void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticM
 				argument_types.push_back(infer_expr_type(expr.children[i], locals, module, known));
 			}
 			if (!select_call_target(module.symbols, callee, argument_types)) {
-				diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-								   std::format("no viable overload for call to '{}' with {} argument(s)", callee, argument_types.size()));
+				diagnostics.report(DiagnosticCode::sema_argument_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name, std::format("no viable overload for call to '{}' with {} argument(s)", callee, argument_types.size()));
 			}
 		}
 	}
@@ -676,16 +691,14 @@ void check_calls(const Decl::Expr& expr, const LocalEnv& locals, const SemanticM
 	}
 }
 
-void check_member_access(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module,
-	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_member_access(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	if (expr.kind == Decl::Expr::Kind::member && expr.op == "." && !expr.children.empty()) {
 		const std::string base = infer_expr_type(expr.children.front(), locals, module, known);
 		if (!base.empty()) {
 			const bool valid_struct_field = !value_field_type(module, base, expr.text).empty();
 			const bool valid_vector_swizzle = is_vector_type(base) && is_swizzle(expr.text);
 			if (!valid_struct_field && !valid_vector_swizzle) {
-				diagnostics.report(DiagnosticCode::sema_unknown_member, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-								   std::format("type '{}' has no member '{}'", base, expr.text));
+				diagnostics.report(DiagnosticCode::sema_unknown_member, DiagnosticSeverity::error, expr.span.begin, module.source_name, std::format("type '{}' has no member '{}'", base, expr.text));
 			}
 		}
 	}
@@ -694,14 +707,12 @@ void check_member_access(const Decl::Expr& expr, const LocalEnv& locals, const S
 	}
 }
 
-void check_indexing(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module,
-	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_indexing(const Decl::Expr& expr, const LocalEnv& locals, const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	if (expr.kind == Decl::Expr::Kind::binary && expr.op == "[]" && expr.children.size() == 2) {
 		const std::string base = infer_expr_type(expr.children[0], locals, module, known);
 		const std::string index = infer_expr_type(expr.children[1], locals, module, known);
 		if (!base.ends_with("[]") || (index != "i32" && index != "u32")) {
-			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name,
-				"indexing requires a runtime array and an i32 or u32 index");
+			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name, "indexing requires a runtime array and an i32 or u32 index");
 		}
 	}
 	for (const auto& child : expr.children) {
@@ -713,8 +724,7 @@ void check_indexing(const Decl::Expr& expr, const LocalEnv& locals, const Semant
 // types, the calls in its expressions, and — for `return` statements — the
 // returned value against `return_type` (empty means "not a checkable type,
 // skip"). `locals` and `known` are shared read-only for the whole body.
-void check_body_statement(const Decl::BodyStatement& statement, std::string_view return_type, const LocalEnv& locals,
-	const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_body_statement(const Decl::BodyStatement& statement, std::string_view return_type, const LocalEnv& locals, const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	if (statement.kind == Decl::BodyStatementKind::declaration) {
 		check_type_reference(statement.type_name, statement.span.begin, module.source_name, known, diagnostics);
 	}
@@ -724,8 +734,7 @@ void check_body_statement(const Decl::BodyStatement& statement, std::string_view
 	if (statement.kind == Decl::BodyStatementKind::return_stmt && statement.expr.kind != Decl::Expr::Kind::unknown) {
 		const std::string value = infer_expr_type(statement.expr, locals, module, known);
 		if (!types_compatible(return_type, value)) {
-			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, statement.span.begin, module.source_name,
-							   std::format("returned value of type '{}' is not compatible with the declared return type '{}'", value, return_type));
+			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, statement.span.begin, module.source_name, std::format("returned value of type '{}' is not compatible with the declared return type '{}'", value, return_type));
 		}
 	}
 	for (const auto& child : statement.children) {
@@ -736,8 +745,7 @@ void check_body_statement(const Decl::BodyStatement& statement, std::string_view
 	}
 }
 
-void check_function_body(const SemanticSymbol& symbol, const SemanticModule& module,
-	const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
+void check_function_body(const SemanticSymbol& symbol, const SemanticModule& module, const std::unordered_set<std::string_view>& known, DiagnosticEngine& diagnostics) {
 	LocalEnv locals;
 	for (const auto& parameter : symbol.parameters) {
 		locals.emplace(parameter.name, parameter.type);
@@ -834,34 +842,28 @@ void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
 		const std::string qn = qualified_layout_name(layout);
 		const auto target_it = uniform_indices.find(qn);
 		if (target_it == uniform_indices.end()) {
-			diagnostics.report(DiagnosticCode::layout_unknown_uniform, DiagnosticSeverity::error, layout.span.begin, module.source_name,
-							   std::format("layout refers to unknown uniform '{}'", qn));
+			diagnostics.report(DiagnosticCode::layout_unknown_uniform, DiagnosticSeverity::error, layout.span.begin, module.source_name, std::format("layout refers to unknown uniform '{}'", qn));
 			continue;
 		}
 		const auto& target = module.uniforms[target_it->second];
 		if (!is_buffer_resource_type(target.type)) {
-			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
-							   std::format("uniform '{}' has type {} and does not accept a layout", qn, target.type));
+			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name, std::format("uniform '{}' has type {} and does not accept a layout", qn, target.type));
 			continue;
 		}
 		layout.rule = resolve_layout_rule(layout.rule, target.type == "StorageBuffer");
 		if (layout.is_runtime_array && target.type != "StorageBuffer") {
-			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name,
-				"runtime-array layouts require a StorageBuffer binding");
+			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name, "runtime-array layouts require a StorageBuffer binding");
 		}
 		const auto [existing_it, inserted] = first_layout_for_uniform.emplace(target_it->second, li);
 		if (!inserted && !layouts_match(module.layouts[existing_it->second], layout)) {
-			diagnostics.report(DiagnosticCode::layout_duplicate, DiagnosticSeverity::error, layout.span.begin, module.source_name,
-							   std::format("conflicting layout for '{}'", qn));
+			diagnostics.report(DiagnosticCode::layout_duplicate, DiagnosticSeverity::error, layout.span.begin, module.source_name, std::format("conflicting layout for '{}'", qn));
 		}
 	}
 
 	for (std::size_t i = 0; i < module.uniforms.size(); ++i) {
 		const auto& uniform = module.uniforms[i];
 		if (is_buffer_resource_type(uniform.type) && !first_layout_for_uniform.contains(i)) {
-			diagnostics.report(DiagnosticCode::layout_missing_resource_type, DiagnosticSeverity::error, {}, module.source_name,
-							   std::format("{} '{}' has no layout", uniform.type == "UniformBuffer" ? "UniformBuffer" : "StorageBuffer",
-								   qualified_uniform_name(uniform)));
+			diagnostics.report(DiagnosticCode::layout_missing_resource_type, DiagnosticSeverity::error, {}, module.source_name, std::format("{} '{}' has no layout", uniform.type == "UniformBuffer" ? "UniformBuffer" : "StorageBuffer", qualified_uniform_name(uniform)));
 		}
 	}
 }
@@ -879,14 +881,12 @@ void validate_stage_interfaces(const SemanticModule& module, DiagnosticEngine& d
 	for (const auto& interface : module.stage_interfaces) {
 		const StructDecl* payload = find_struct(module.structs, interface.type_name);
 		if (!payload) {
-			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name,
-							   std::format("stage return boundary requires struct payload '{}'", interface.type_name));
+			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name, std::format("stage return boundary requires struct payload '{}'", interface.type_name));
 			continue;
 		}
 		for (const auto& field : interface.fields) {
 			if (struct_field_type(module.structs, interface.type_name, field.name).empty()) {
-				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name,
-								   std::format("stage return boundary field '{}' is not a member of '{}'", field.name, interface.type_name));
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, {}, module.source_name, std::format("stage return boundary field '{}' is not a member of '{}'", field.name, interface.type_name));
 			}
 		}
 	}
@@ -905,26 +905,22 @@ void check_stage_entry_signatures(const SemanticModule& module, DiagnosticEngine
 		}
 		for (const auto& parameter : symbol.parameters) {
 			if (parameter.is_reference) {
-				diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
-								   "stage entry parameters must be value types");
+				diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, symbol.span.begin, module.source_name, "stage entry parameters must be value types");
 			}
 		}
 		if (is_vertex_stage(symbol.stage) && symbol.return_type != "void" && symbol.return_type.empty() == false &&
 			!find_stage_interface(module.stage_interfaces, symbol.return_type, StageRole::varying)) {
-			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
-							   "vertex stage return type requires a return boundary");
+			diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name, "vertex stage return type requires a return boundary");
 		}
 		if (is_fragment_stage(symbol.stage) && !symbol.parameters.empty()) {
 			const std::string& input_type = symbol.parameters.front().type;
 			if (!input_type.empty() && input_type != "void" && find_struct(module.structs, input_type) &&
 				!find_stage_interface(module.stage_interfaces, input_type, StageRole::varying)) {
-				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
-								   std::format("fragment input '{}' requires the vertex stage return boundary payload", input_type));
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name, std::format("fragment input '{}' requires the vertex stage return boundary payload", input_type));
 			}
 			if (!input_type.empty() && input_type != "void" && find_struct(module.structs, input_type) &&
 				!vertex_return_payloads.empty() && !vertex_return_payloads.contains(input_type)) {
-				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name,
-								   std::format("fragment input '{}' does not match a vertex stage return payload", input_type));
+				diagnostics.report(DiagnosticCode::ir_invalid_stage_signature, DiagnosticSeverity::error, symbol.span.begin, module.source_name, std::format("fragment input '{}' does not match a vertex stage return payload", input_type));
 			}
 		}
 	}
@@ -1004,8 +1000,7 @@ SemanticModule Sema::analyze(const TranslationUnit& unit) {
 				const auto member_name = std::string_view(decl.name).substr(scope + 2);
 				const StructDecl* owner = find_struct(module.structs, owner_name);
 				if (owner && !declares_member_function(*owner, member_name, decl.parameters, decl.return_type)) {
-					diagnostics_.report(DiagnosticCode::sema_member_fn_no_declaration, DiagnosticSeverity::error, decl.span.begin, module.source_name,
-										"member function definition has no matching declaration in its owner type");
+					diagnostics_.report(DiagnosticCode::sema_member_fn_no_declaration, DiagnosticSeverity::error, decl.span.begin, module.source_name, "member function definition has no matching declaration in its owner type");
 				}
 			}
 		}

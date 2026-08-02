@@ -28,7 +28,8 @@ void shift_instruction(IRInstruction& inst, u32 offset) {
 
 void shift_interface(Interface& interface, u32 offset) {
 	interface.value_type = shifted_id(interface.value_type, offset);
-	if (interface.value) *interface.value = shifted_id(*interface.value, offset);
+	if (interface.value)
+		*interface.value = shifted_id(*interface.value, offset);
 	for (auto& element : interface.elements) {
 		element.type = shifted_id(element.type, offset);
 	}
@@ -36,8 +37,10 @@ void shift_interface(Interface& interface, u32 offset) {
 
 void shift_entry(EntryPoint& entry, u32 offset) {
 	entry.function = shifted_id(entry.function, offset);
-	if (entry.input) shift_interface(*entry.input, offset);
-	if (entry.output) shift_interface(*entry.output, offset);
+	if (entry.input)
+		shift_interface(*entry.input, offset);
+	if (entry.output)
+		shift_interface(*entry.output, offset);
 }
 
 // Merge `src` into `dst`. After this, `dst.next_id` is the new high-water
@@ -51,7 +54,8 @@ void merge_module(IRModule& dst, IRModule src) {
 		for (const auto& resource : dst.resources) {
 			descriptor_set_offset = std::max(descriptor_set_offset, resource.descriptor.set + 1);
 		}
-		for (auto& resource : src.resources) resource.descriptor.set += descriptor_set_offset;
+		for (auto& resource : src.resources)
+			resource.descriptor.set += descriptor_set_offset;
 		for (auto& decoration : src.decorations) {
 			if (decoration.kind == IRDecorationKind::DescriptorSet && !decoration.literals.empty()) {
 				decoration.literals.front() += descriptor_set_offset;
@@ -157,8 +161,7 @@ bool report_unresolved_program_calls(const IRModule& ir, DiagnosticEngine& diagn
 			if (!inst.literals.empty() && inst.literals[0] < ir.call_targets.size()) {
 				name = ir.call_targets[inst.literals[0]].display_name;
 			}
-			diagnostics.report(DiagnosticCode::link_unresolved_call, DiagnosticSeverity::error, {}, "<link>",
-							   "unresolved function call '" + name + "' in program link");
+			diagnostics.report(DiagnosticCode::link_unresolved_call, DiagnosticSeverity::error, {}, "<link>", "unresolved function call '" + name + "' in program link");
 			found = true;
 		}
 	}
@@ -181,8 +184,7 @@ bool report_duplicate_exported_functions(const Artifact& artifact, DiagnosticEng
 			continue;
 		}
 		if (!identities.insert(identity).second) {
-			diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
-							   "duplicate exported function identity '" + identity + "'");
+			diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>", "duplicate exported function identity '" + identity + "'");
 			found = true;
 		}
 	}
@@ -209,8 +211,7 @@ bool report_stale_imported_exports(const Artifact& artifact, DiagnosticEngine& d
 		if (it == export_hashes.end() || it->second == imported.interface_hash) {
 			continue;
 		}
-		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
-						   "stale imported interface for '" + imported.name + "'");
+		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>", "stale imported interface for '" + imported.name + "'");
 		found = true;
 	}
 	return found;
@@ -222,10 +223,14 @@ bool is_link_input_kind(ArtifactKind kind) {
 
 std::string_view artifact_kind_name(ArtifactKind kind) {
 	switch (kind) {
-	case ArtifactKind::object: return "object";
-	case ArtifactKind::module: return "module interface";
-	case ArtifactKind::library: return "library";
-	case ArtifactKind::program: return "program";
+	case ArtifactKind::object:
+		return "object";
+	case ArtifactKind::module:
+		return "module interface";
+	case ArtifactKind::library:
+		return "library";
+	case ArtifactKind::program:
+		return "program";
 	}
 	return "unknown";
 }
@@ -237,8 +242,7 @@ void serialize_program(Artifact& program, DiagnosticEngine& diagnostics) {
 		program.bytes.size(),
 	};
 	if (auto loaded = load_program(bytes); !loaded) {
-		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>",
-			"linked program violates the SDK contract at " + loaded.error().context + ": " + loaded.error().message);
+		diagnostics.report(DiagnosticCode::link_conflict, DiagnosticSeverity::error, {}, "<link>", "linked program violates the SDK contract at " + loaded.error().context + ": " + loaded.error().message);
 		program.bytes.clear();
 	}
 }
@@ -259,8 +263,7 @@ bool Linker::add_artifact(Artifact artifact) {
 		return false;
 	}
 	if (!is_link_input_kind(artifact.kind)) {
-		diagnostics_.report(DiagnosticCode::link_invalid_artifact_kind, DiagnosticSeverity::error, {}, "<link>",
-							"link input must be an object or library artifact, not " + std::string(artifact_kind_name(artifact.kind)));
+		diagnostics_.report(DiagnosticCode::link_invalid_artifact_kind, DiagnosticSeverity::error, {}, "<link>", "link input must be an object or library artifact, not " + std::string(artifact_kind_name(artifact.kind)));
 		return false;
 	}
 	inputs_.push_back(std::move(artifact));
@@ -369,37 +372,33 @@ static bool declares_graphics_stage(const Artifact& program) {
 
 void Linker::validate_program_stages(const Artifact& program) {
 	if (program.module.entries.empty()) {
-		diagnostics_.report(DiagnosticCode::link_missing_entry, DiagnosticSeverity::error, {}, "<link>",
-							"program link requires at least one stage entry point");
+		diagnostics_.report(DiagnosticCode::link_missing_entry, DiagnosticSeverity::error, {}, "<link>", "program link requires at least one stage entry point");
 		return;
 	}
-	if (!declares_graphics_stage(program)) return;
+	if (!declares_graphics_stage(program))
+		return;
 
 	bool has_vertex = false;
 	bool has_fragment = false;
 	for (const auto& entry : program.module.entries) {
 		if (entry.stage == Stage::vertex) {
 			if (has_vertex) {
-				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
-									"graphics program has more than one vertex stage entry point");
+				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>", "graphics program has more than one vertex stage entry point");
 			}
 			has_vertex = true;
 		}
 		if (entry.stage == Stage::fragment) {
 			if (has_fragment) {
-				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>",
-									"graphics program has more than one fragment stage entry point");
+				diagnostics_.report(DiagnosticCode::link_duplicate_stage, DiagnosticSeverity::error, {}, "<link>", "graphics program has more than one fragment stage entry point");
 			}
 			has_fragment = true;
 		}
 	}
 	if (!has_vertex) {
-		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>",
-							"graphics program is missing a vertex stage (vert)");
+		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>", "graphics program is missing a vertex stage (vert)");
 	}
 	if (!has_fragment) {
-		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>",
-							"graphics program is missing a fragment stage (frag)");
+		diagnostics_.report(DiagnosticCode::link_missing_stage, DiagnosticSeverity::error, {}, "<link>", "graphics program is missing a fragment stage (frag)");
 	}
 }
 

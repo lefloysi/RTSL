@@ -4,10 +4,10 @@
 // at the parser and not at whatever sema/IR does afterwards.
 
 #include "frontend/ast.hpp"
-#include "support/basic_diagnostics.hpp"
-#include "support/basic_source_manager.hpp"
 #include "frontend/lexer.hpp"
 #include "frontend/parser.hpp"
+#include "support/basic_diagnostics.hpp"
+#include "support/basic_source_manager.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -42,14 +42,16 @@ ParseResult parse(std::string_view source, std::string_view name = "test.rtsl") 
 // Locate the body statements of the first function-shape declaration.
 std::span<const Decl::BodyStatement> first_function_body(const TranslationUnit& unit) {
 	for (const auto& decl : unit.declarations) {
-		if (decl.kind == DeclKind::function) return decl.body_statements;
+		if (decl.kind == DeclKind::function)
+			return decl.body_statements;
 	}
 	return {};
 }
 
 const Decl* find_function(const TranslationUnit& unit) {
 	for (const auto& decl : unit.declarations) {
-		if (decl.kind == DeclKind::function) return &decl;
+		if (decl.kind == DeclKind::function)
+			return &decl;
 	}
 	return nullptr;
 }
@@ -248,12 +250,12 @@ TEST_CASE("boolean literals parse as boolean literals") {
 	// `true`/`false` are boolean literals, distinct from
 	// integer literals: they carry the bool type through sema and lower to
 	// OpConstantTrueFalse. text stays "1"/"0" as the encoded literal value.
-	auto r_true  = parse("fn t() { return true; }");
+	auto r_true = parse("fn t() { return true; }");
 	auto r_false = parse("fn t() { return false; }");
 	REQUIRE_FALSE(r_true.diagnostics.has_error());
 	REQUIRE_FALSE(r_false.diagnostics.has_error());
-	REQUIRE(first_function_body(r_true.unit)[0].expr.kind  == Decl::Expr::Kind::literal_bool);
-	REQUIRE(first_function_body(r_true.unit)[0].expr.text  == "1");
+	REQUIRE(first_function_body(r_true.unit)[0].expr.kind == Decl::Expr::Kind::literal_bool);
+	REQUIRE(first_function_body(r_true.unit)[0].expr.text == "1");
 	REQUIRE(first_function_body(r_false.unit)[0].expr.kind == Decl::Expr::Kind::literal_bool);
 	REQUIRE(first_function_body(r_false.unit)[0].expr.text == "0");
 }
@@ -404,7 +406,7 @@ TEST_CASE("function attribute records fragment stage value on the fn decl") {
 }
 
 TEST_CASE("function body flag distinguishes body from forward decl") {
-	auto r_body    = parse("fn t() {}");
+	auto r_body = parse("fn t() {}");
 	auto r_forward = parse("fn t();");
 	REQUIRE_FALSE(r_body.diagnostics.has_error());
 	REQUIRE_FALSE(r_forward.diagnostics.has_error());

@@ -8,10 +8,14 @@ namespace {
 
 std::string_view kind_name(ArtifactKind kind) {
 	switch (kind) {
-	case ArtifactKind::object: return "rtslo";
-	case ArtifactKind::module: return "rtslm";
-	case ArtifactKind::library: return "rtsll";
-	case ArtifactKind::program: return "rtslp";
+	case ArtifactKind::object:
+		return "rtslo";
+	case ArtifactKind::module:
+		return "rtslm";
+	case ArtifactKind::library:
+		return "rtsll";
+	case ArtifactKind::program:
+		return "rtslp";
 	}
 	return "unknown";
 }

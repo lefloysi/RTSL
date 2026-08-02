@@ -20,10 +20,14 @@ enum class ArtifactKind : u16 {
 
 [[nodiscard]] constexpr std::string_view artifact_extension(ArtifactKind kind) {
 	switch (kind) {
-	case ArtifactKind::object: return ".rtslo";
-	case ArtifactKind::module: return ".rtslm";
-	case ArtifactKind::library: return ".rtsll";
-	case ArtifactKind::program: return ".rtslp";
+	case ArtifactKind::object:
+		return ".rtslo";
+	case ArtifactKind::module:
+		return ".rtslm";
+	case ArtifactKind::library:
+		return ".rtsll";
+	case ArtifactKind::program:
+		return ".rtslp";
 	}
 	return ".rtslbin";
 }

@@ -1,11 +1,11 @@
 #pragma once
 
-#include "frontend/ast.hpp"
-#include "support/basic_diagnostics.hpp"
 #include "driver/compiler.hpp"
+#include "frontend/ast.hpp"
 #include "frontend/lexer.hpp"
 #include "frontend/parser.hpp"
 #include "sema/sema.hpp"
+#include "support/basic_diagnostics.hpp"
 
 #include <string>
 #include <string_view>

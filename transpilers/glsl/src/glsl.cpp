@@ -64,7 +64,7 @@ class Emitter {
 			return std::unexpected(make_error(ErrorCode::invalid_entry, "entry.parameters", "GLSL stage entries support zero or one payload parameter", function->id));
 		}
 		if (entry->input && (!entry->input->value || *entry->input->value != function->parameters.front().id ||
-			entry->input->value_type != function->parameters.front().type)) {
+							 entry->input->value_type != function->parameters.front().type)) {
 			return std::unexpected(make_error(ErrorCode::invalid_entry, "entry.input", "entry input does not match its function parameter", function->id));
 		}
 		if (!entry->output) {
@@ -162,8 +162,10 @@ class Emitter {
 			return std::nullopt;
 		}
 		switch (value->kind) {
-		case ir::TypeKind::void_: return "void";
-		case ir::TypeKind::boolean: return "bool";
+		case ir::TypeKind::void_:
+			return "void";
+		case ir::TypeKind::boolean:
+			return "bool";
 		case ir::TypeKind::signed_integer:
 			if (value->bit_width == 32) {
 				return "int";
@@ -208,8 +210,10 @@ class Emitter {
 			}
 			break;
 		}
-		case ir::TypeKind::structure: return type_name(id);
-		case ir::TypeKind::pointer: return glsl_type(value->element_type);
+		case ir::TypeKind::structure:
+			return type_name(id);
+		case ir::TypeKind::pointer:
+			return glsl_type(value->element_type);
 		case ir::TypeKind::image:
 		case ir::TypeKind::sampler:
 		case ir::TypeKind::sampled_image:
@@ -374,7 +378,8 @@ class Emitter {
 				if (use_texture_buffer_storage_emulation(*resource)) {
 					const ir::Type* block = type(resource->value_type);
 					const ir::Type* array = block && block->kind == ir::TypeKind::structure && block->members.size() == 1
-						? type(block->members.front()) : nullptr;
+												? type(block->members.front())
+												: nullptr;
 					const ir::Type* element_type = array && array->kind == ir::TypeKind::runtime_array ? type(array->element_type) : nullptr;
 					const auto element = array && array->kind == ir::TypeKind::runtime_array ? glsl_type(array->element_type) : std::nullopt;
 					if (!element || !element_type || element_type->kind != ir::TypeKind::vector || element_type->element_count != 4) {
@@ -384,7 +389,9 @@ class Emitter {
 					if (!scalar || (scalar->kind != ir::TypeKind::floating && scalar->kind != ir::TypeKind::unsigned_integer && scalar->kind != ir::TypeKind::signed_integer)) {
 						return fail(ErrorCode::unsupported_resource, "resources.storage_buffer", "texture-buffer storage emulation requires float/int/uint vector elements", resource->variable);
 					}
-					line(std::format("uniform {} {};", scalar->kind == ir::TypeKind::floating ? "samplerBuffer" : scalar->kind == ir::TypeKind::unsigned_integer ? "usamplerBuffer" : "isamplerBuffer", resource_uniform_name(*resource)));
+					line(std::format("uniform {} {};", scalar->kind == ir::TypeKind::floating ? "samplerBuffer" : scalar->kind == ir::TypeKind::unsigned_integer ? "usamplerBuffer"
+																																								 : "isamplerBuffer",
+									 resource_uniform_name(*resource)));
 					break;
 				}
 				if (!use_native_storage_buffer(*resource)) {
@@ -392,7 +399,8 @@ class Emitter {
 				}
 				const ir::Type* block = type(resource->value_type);
 				const ir::Type* array = block && block->kind == ir::TypeKind::structure && block->members.size() == 1
-					? type(block->members.front()) : nullptr;
+											? type(block->members.front())
+											: nullptr;
 				const auto element = array && array->kind == ir::TypeKind::runtime_array ? glsl_type(array->element_type) : std::nullopt;
 				if (!element) {
 					return fail(ErrorCode::unsupported_resource, "resources.storage_buffer", "storage buffer must contain one runtime array", resource->variable);
@@ -452,12 +460,7 @@ class Emitter {
 				return false;
 			}
 			const std::string interpolation = element.interpolation == Interpolation::flat ? "flat " : "";
-			line(std::format("layout(location = {}) {}{} {} {};",
-				element.location.value_or(0),
-				interpolation,
-				qualifier,
-				*value,
-				interface_variable_name(element, output)));
+			line(std::format("layout(location = {}) {}{} {} {};", element.location.value_or(0), interpolation, qualifier, *value, interface_variable_name(element, output)));
 		}
 		if (!interface->elements.empty()) {
 			line();
@@ -570,14 +573,16 @@ class Emitter {
 				declared.insert(parameter.id);
 			}
 		} else {
-			for (const auto& parameter : function->parameters) declared.insert(parameter.id);
+			for (const auto& parameter : function->parameters)
+				declared.insert(parameter.id);
 		}
 		for (const auto& block : function->blocks) {
 			for (const auto& instruction : block.instructions) {
 				if (!instruction.result_id || declared.contains(instruction.result_id) || instruction.op == ir::Op::AccessChain) {
 					continue;
 				}
-				if (const ir::Type* result = type(instruction.type_id); result && result->kind == ir::TypeKind::void_) continue;
+				if (const ir::Type* result = type(instruction.type_id); result && result->kind == ir::TypeKind::void_)
+					continue;
 				if (instruction.op == ir::Op::Load) {
 					const auto* arguments = instruction.arguments_if<ir::LoadArguments>();
 					if (arguments && resource_by_variable.contains(arguments->pointer)) {
@@ -899,7 +904,7 @@ class Emitter {
 				return fail(ErrorCode::unsupported_instruction, "instructions.load", "load references an unknown pointer", instruction.result_id, instruction.op);
 			}
 			if (const auto found = resource_by_variable.find(arguments->pointer); found != resource_by_variable.end() &&
-				(found->second->kind == ResourceKind::sampled_texture || found->second->kind == ResourceKind::sampler)) {
+																				  (found->second->kind == ResourceKind::sampled_texture || found->second->kind == ResourceKind::sampler)) {
 				expressions[instruction.result_id] = *pointer;
 				return true;
 			}
@@ -915,11 +920,16 @@ class Emitter {
 			line(std::format("{} = {};", *pointer, *value));
 			return true;
 		}
-		case ir::Op::AccessChain: return emit_access_chain(instruction);
-		case ir::Op::CompositeConstruct: return emit_construct(instruction);
-		case ir::Op::CompositeExtract: return emit_extract(instruction);
-		case ir::Op::CompositeInsert: return emit_insert(instruction);
-		case ir::Op::VectorShuffle: return emit_shuffle(instruction);
+		case ir::Op::AccessChain:
+			return emit_access_chain(instruction);
+		case ir::Op::CompositeConstruct:
+			return emit_construct(instruction);
+		case ir::Op::CompositeExtract:
+			return emit_extract(instruction);
+		case ir::Op::CompositeInsert:
+			return emit_insert(instruction);
+		case ir::Op::VectorShuffle:
+			return emit_shuffle(instruction);
 		case ir::Op::FNegate:
 		case ir::Op::SNegate:
 		case ir::Op::LogicalNot: {
@@ -946,11 +956,11 @@ class Emitter {
 			if (!operand) {
 				return false;
 			}
-			const std::string_view function = instruction.op == ir::Op::FAbs ? "abs"
-				: instruction.op == ir::Op::Floor ? "floor"
-				: instruction.op == ir::Op::Fract ? "fract" : "sqrt";
-			return assign(instruction.result_id, instruction.op == ir::Op::BitwiseNot
-				? std::format("(~{})", *operand) : std::format("{}({})", function, *operand));
+			const std::string_view function = instruction.op == ir::Op::FAbs	? "abs"
+											  : instruction.op == ir::Op::Floor ? "floor"
+											  : instruction.op == ir::Op::Fract ? "fract"
+																				: "sqrt";
+			return assign(instruction.result_id, instruction.op == ir::Op::BitwiseNot ? std::format("(~{})", *operand) : std::format("{}({})", function, *operand));
 		}
 		case ir::Op::FMin:
 		case ir::Op::FMax: {
@@ -1001,8 +1011,8 @@ class Emitter {
 			if (!scalar) {
 				return false;
 			}
-			const std::string function_name = scalar->kind == ir::TypeKind::floating ? "uintBitsToFloat" :
-				scalar->kind == ir::TypeKind::signed_integer ? "floatBitsToInt" : "floatBitsToUint";
+			const std::string function_name = scalar->kind == ir::TypeKind::floating ? "uintBitsToFloat" : scalar->kind == ir::TypeKind::signed_integer ? "floatBitsToInt"
+																																						: "floatBitsToUint";
 			return assign(instruction.result_id, std::format("{}({})", function_name, *operand));
 		}
 		case ir::Op::ImageQuerySize: {
@@ -1037,13 +1047,16 @@ class Emitter {
 			std::string call = function_name(target->id) + "(";
 			for (std::size_t index = 0; index < arguments->arguments.size(); ++index) {
 				const auto argument = expression(arguments->arguments[index]);
-				if (!argument) return false;
-				if (index) call += ", ";
+				if (!argument)
+					return false;
+				if (index)
+					call += ", ";
 				call += *argument;
 			}
 			call += ")";
 			const ir::Type* return_type = type(target->return_type);
-			if (!return_type) return false;
+			if (!return_type)
+				return false;
 			if (return_type->kind == ir::TypeKind::void_) {
 				line(call + ";");
 				return true;
@@ -1074,10 +1087,13 @@ class Emitter {
 			return true;
 		case ir::Op::ReturnValue: {
 			const auto* arguments = instruction.arguments_if<ir::ReturnValueArguments>();
-			if (!arguments) return false;
-			if (emitting_entry) return emit_output(arguments->value);
+			if (!arguments)
+				return false;
+			if (emitting_entry)
+				return emit_output(arguments->value);
 			const auto value = expression(arguments->value);
-			if (!value) return false;
+			if (!value)
+				return false;
 			line(std::format("return {};", *value));
 			return true;
 		}
@@ -1088,39 +1104,71 @@ class Emitter {
 		std::string_view operation;
 		switch (instruction.op) {
 		case ir::Op::FAdd:
-		case ir::Op::IAdd: operation = "+"; break;
+		case ir::Op::IAdd:
+			operation = "+";
+			break;
 		case ir::Op::FSub:
-		case ir::Op::ISub: operation = "-"; break;
+		case ir::Op::ISub:
+			operation = "-";
+			break;
 		case ir::Op::FMul:
 		case ir::Op::IMul:
 		case ir::Op::VectorTimesScalar:
-		case ir::Op::MatrixTimesScalar: operation = "*"; break;
+		case ir::Op::MatrixTimesScalar:
+			operation = "*";
+			break;
 		case ir::Op::FDiv:
 		case ir::Op::SDiv:
-		case ir::Op::UDiv: operation = "/"; break;
+		case ir::Op::UDiv:
+			operation = "/";
+			break;
 		case ir::Op::SMod:
-		case ir::Op::UMod: operation = "%"; break;
+		case ir::Op::UMod:
+			operation = "%";
+			break;
 		case ir::Op::FOrdEqual:
-		case ir::Op::IEqual: operation = "=="; break;
+		case ir::Op::IEqual:
+			operation = "==";
+			break;
 		case ir::Op::FOrdNotEqual:
-		case ir::Op::INotEqual: operation = "!="; break;
+		case ir::Op::INotEqual:
+			operation = "!=";
+			break;
 		case ir::Op::FOrdLess:
 		case ir::Op::SLess:
-		case ir::Op::ULess: operation = "<"; break;
+		case ir::Op::ULess:
+			operation = "<";
+			break;
 		case ir::Op::FOrdLessEqual:
 		case ir::Op::SLessEqual:
-		case ir::Op::ULessEqual: operation = "<="; break;
+		case ir::Op::ULessEqual:
+			operation = "<=";
+			break;
 		case ir::Op::FOrdGreater:
 		case ir::Op::SGreater:
-		case ir::Op::UGreater: operation = ">"; break;
+		case ir::Op::UGreater:
+			operation = ">";
+			break;
 		case ir::Op::FOrdGreaterEqual:
 		case ir::Op::SGreaterEqual:
-		case ir::Op::UGreaterEqual: operation = ">="; break;
-		case ir::Op::LogicalAnd: operation = "&&"; break;
-		case ir::Op::LogicalOr: operation = "||"; break;
-		case ir::Op::BitwiseAnd: operation = "&"; break;
-		case ir::Op::BitwiseOr: operation = "|"; break;
-		case ir::Op::BitwiseXor: operation = "^"; break;
+		case ir::Op::UGreaterEqual:
+			operation = ">=";
+			break;
+		case ir::Op::LogicalAnd:
+			operation = "&&";
+			break;
+		case ir::Op::LogicalOr:
+			operation = "||";
+			break;
+		case ir::Op::BitwiseAnd:
+			operation = "&";
+			break;
+		case ir::Op::BitwiseOr:
+			operation = "|";
+			break;
+		case ir::Op::BitwiseXor:
+			operation = "^";
+			break;
 		default:
 			return fail(ErrorCode::unsupported_instruction, "instructions", "RTIR operation is not supported by the GLSL backend", instruction.result_id, instruction.op);
 		}
@@ -1132,18 +1180,22 @@ class Emitter {
 		std::vector<const ir::Function*> ordered;
 		std::unordered_set<ir::Id> visited;
 		const auto visit = [&](auto&& self, const ir::Function& candidate) -> bool {
-			if (!visited.insert(candidate.id).second) return true;
+			if (!visited.insert(candidate.id).second)
+				return true;
 			for (const auto& block : candidate.blocks) {
 				for (const auto& instruction : block.instructions) {
 					const auto* call = instruction.arguments_if<ir::FunctionCallArguments>();
 					const ir::Function* target = call ? program.find_function(call->function) : nullptr;
-					if (call && (!target || !self(self, *target))) return false;
+					if (call && (!target || !self(self, *target)))
+						return false;
 				}
 			}
-			if (candidate.id != entry->function) ordered.push_back(&candidate);
+			if (candidate.id != entry->function)
+				ordered.push_back(&candidate);
 			return true;
 		};
-		if (!visit(visit, *function)) return fail(ErrorCode::unsupported_instruction, "instructions.call", "function call target does not exist");
+		if (!visit(visit, *function))
+			return fail(ErrorCode::unsupported_instruction, "instructions.call", "function call target does not exist");
 
 		for (const ir::Function* candidate : ordered) {
 			function = candidate;
@@ -1151,27 +1203,42 @@ class Emitter {
 			expressions.clear();
 			pointers.clear();
 			const auto return_type = glsl_type(function->return_type);
-			if (!return_type) return false;
+			if (!return_type)
+				return false;
 			std::string parameters;
 			for (std::size_t index = 0; index < function->parameters.size(); ++index) {
 				const auto parameter_type = glsl_type(function->parameters[index].type);
-				if (!parameter_type) return false;
-				if (index) parameters += ", ";
+				if (!parameter_type)
+					return false;
+				if (index)
+					parameters += ", ";
 				parameters += std::format("{} {}", *parameter_type, value_name(function->parameters[index].id));
 			}
 			line(std::format("{} {}({}) {{", *return_type, function_name(function->id), parameters));
 			++indent;
-			if (!declare_values(false)) return false;
+			if (!declare_values(false))
+				return false;
 			const bool state_machine = function->blocks.size() > 1;
 			if (state_machine) {
 				line(std::format("uint rtsl_block = {}u;", function->blocks.front().id.value));
-				line("while (true) {"); ++indent;
-				line("switch (rtsl_block) {"); ++indent;
+				line("while (true) {");
+				++indent;
+				line("switch (rtsl_block) {");
+				++indent;
 			}
 			for (const auto& block : function->blocks) {
-				if (state_machine) { line(std::format("case {}u: {{", block.id.value)); ++indent; }
-				for (const auto& instruction : block.instructions) if (!emit_instruction(instruction, state_machine)) return false;
-				if (state_machine) { line("break;"); --indent; line("}"); }
+				if (state_machine) {
+					line(std::format("case {}u: {{", block.id.value));
+					++indent;
+				}
+				for (const auto& instruction : block.instructions)
+					if (!emit_instruction(instruction, state_machine))
+						return false;
+				if (state_machine) {
+					line("break;");
+					--indent;
+					line("}");
+				}
 			}
 			if (state_machine) {
 				const ir::Type* result = type(function->return_type);
@@ -1184,7 +1251,10 @@ class Emitter {
 					}
 					line(std::format("default: return {};", *zero));
 				}
-				--indent; line("}"); --indent; line("}");
+				--indent;
+				line("}");
+				--indent;
+				line("}");
 			}
 			--indent;
 			line("}");

@@ -45,12 +45,17 @@ struct error {
 	explicit operator bool() const { return !message.empty(); }
 
 	void add_context(std::string_view prefix) {
-		if (message.empty()) return;
+		if (message.empty())
+			return;
 		message = std::format("{} : {}", prefix, message);
 	}
 };
 
-#define RTSL_BIN_TRY(expr) do { if (auto _rtsl_err = (expr); _rtsl_err) return _rtsl_err; } while (false)
+#define RTSL_BIN_TRY(expr)                      \
+	do {                                        \
+		if (auto _rtsl_err = (expr); _rtsl_err) \
+			return _rtsl_err;                   \
+	} while (false)
 
 // Named field reference — how callers describe "this field goes on the wire
 // with this label for diagnostics". The label never touches the byte stream.
@@ -111,9 +116,11 @@ struct context_scope {
 	std::string previous;
 
 	context_scope(Stream& s, std::string_view name) : stream(s), previous(s.context_str()) {
-		if (name.empty()) return;
+		if (name.empty())
+			return;
 		std::string next = previous;
-		if (!next.empty()) next += " : ";
+		if (!next.empty())
+			next += " : ";
 		next.append(name);
 		stream.set_context(std::move(next));
 	}
@@ -122,7 +129,8 @@ struct context_scope {
 
 template <typename Stream>
 void add_context_prefix(const Stream& stream, error& err) {
-	if (!err || stream.context_str().empty()) return;
+	if (!err || stream.context_str().empty())
+		return;
 	err.add_context(stream.context_str());
 }
 
@@ -131,9 +139,13 @@ void add_context_prefix(const Stream& stream, error& err) {
 // instantiated on non-enum T (it's ill-formed there). This is what lets one
 // scalar body handle both integer and enum encoding.
 template <typename T, bool IsEnum = std::is_enum_v<T>>
-struct storage_type { using type = T; };
+struct storage_type {
+	using type = T;
+};
 template <typename T>
-struct storage_type<T, true> { using type = std::underlying_type_t<T>; };
+struct storage_type<T, true> {
+	using type = std::underlying_type_t<T>;
+};
 template <typename T>
 using storage_type_t = typename storage_type<T>::type;
 
@@ -178,7 +190,8 @@ struct read_stream {
 	error read_bytes(std::span<std::byte> out) {
 		if (out.size() > remaining())
 			return error(std::format("read of {} bytes at offset {} exceeds input ({} bytes remain)", out.size(), cursor_, remaining()));
-		if (!out.empty()) std::memcpy(out.data(), input_.data() + cursor_, out.size());
+		if (!out.empty())
+			std::memcpy(out.data(), input_.data() + cursor_, out.size());
 		cursor_ += out.size();
 		return {};
 	}
@@ -217,7 +230,8 @@ struct read_stream {
 		auto step = [&](auto&& f) -> bool {
 			detail::context_scope scope(*this, f.name);
 			err = process(*this, f.value);
-			if (err) detail::add_context_prefix(*this, err);
+			if (err)
+				detail::add_context_prefix(*this, err);
 			return !err;
 		};
 		(step(std::forward<Fields>(fields)) && ...);
@@ -238,9 +252,9 @@ struct write_stream {
 	write_stream() = default;
 
 	error write_bytes(std::span<const std::byte> in) {
-		if (in.empty()) return {};
-		output_.insert(output_.end(), reinterpret_cast<const u08*>(in.data()),
-			reinterpret_cast<const u08*>(in.data()) + in.size());
+		if (in.empty())
+			return {};
+		output_.insert(output_.end(), reinterpret_cast<const u08*>(in.data()), reinterpret_cast<const u08*>(in.data()) + in.size());
 		return {};
 	}
 
@@ -264,7 +278,8 @@ struct write_stream {
 		auto step = [&](auto&& f) -> bool {
 			detail::context_scope scope(*this, f.name);
 			err = process(*this, f.value);
-			if (err) detail::add_context_prefix(*this, err);
+			if (err)
+				detail::add_context_prefix(*this, err);
 			return !err;
 		};
 		(step(std::forward<Fields>(fields)) && ...);
@@ -284,23 +299,29 @@ struct write_stream {
 // is the lf::bin `data<T, D>` pattern applied uniformly.
 
 namespace detail {
-	template <typename T> struct is_std_vector : std::false_type {};
-	template <typename E> struct is_std_vector<std::vector<E>> : std::true_type {};
-}
+template <typename T>
+struct is_std_vector : std::false_type {};
+template <typename E>
+struct is_std_vector<std::vector<E>> : std::true_type {};
+} // namespace detail
 
 template <typename T>
 concept vector_data = detail::is_std_vector<std::remove_cvref_t<T>>::value;
 
 template <byte_stream Stream, fixed_integer Int>
 error process(Stream& stream, Int& value) {
-	if constexpr (writable_stream<Stream>) return detail::write_le_scalar(stream, value);
-	else                                   return detail::read_le_scalar(stream, value);
+	if constexpr (writable_stream<Stream>)
+		return detail::write_le_scalar(stream, value);
+	else
+		return detail::read_le_scalar(stream, value);
 }
 
 template <byte_stream Stream, plain_enum Enum>
 error process(Stream& stream, Enum& value) {
-	if constexpr (writable_stream<Stream>) return detail::write_le_scalar(stream, value);
-	else                                   return detail::read_le_scalar(stream, value);
+	if constexpr (writable_stream<Stream>)
+		return detail::write_le_scalar(stream, value);
+	else
+		return detail::read_le_scalar(stream, value);
 }
 
 template <byte_stream Stream>
@@ -333,7 +354,8 @@ error process(Stream& stream, Str& value) {
 	if constexpr (writable_stream<Stream>) {
 		RTSL_BIN_TRY(detail::write_le_scalar(stream, static_cast<u32>(value.size())));
 		return stream.write_bytes(std::span<const std::byte>(
-			reinterpret_cast<const std::byte*>(value.data()), value.size()));
+			reinterpret_cast<const std::byte*>(value.data()), value.size()
+		));
 	} else {
 		u32 length = 0;
 		RTSL_BIN_TRY(detail::read_le_scalar(stream, length));
@@ -341,7 +363,8 @@ error process(Stream& stream, Str& value) {
 			return error(std::format("string length {} exceeds remaining input {}", length, stream.remaining()));
 		value.assign(length, '\0');
 		return stream.read_bytes(std::span<std::byte>(
-			reinterpret_cast<std::byte*>(value.data()), length));
+			reinterpret_cast<std::byte*>(value.data()), length
+		));
 	}
 }
 
@@ -384,7 +407,8 @@ error process(Stream& stream, std::optional<T>& value) {
 	if constexpr (writable_stream<Stream>) {
 		bool present = value.has_value();
 		RTSL_BIN_TRY(process(stream, present));
-		if (present) return process(stream, *value);
+		if (present)
+			return process(stream, *value);
 		return {};
 	} else {
 		bool present = false;
@@ -406,14 +430,16 @@ error process(Stream& stream, std::optional<T>& value) {
 template <typename T>
 std::expected<std::vector<u08>, error> write(const T& value) {
 	write_stream stream;
-	if (auto err = process(stream, value); err) return std::unexpected(std::move(err));
+	if (auto err = process(stream, value); err)
+		return std::unexpected(std::move(err));
 	return stream.take_written();
 }
 
 template <typename T>
 error read(std::span<const u08> bytes, T& value) {
 	read_stream stream(bytes);
-	if (auto err = process(stream, value); err) return err;
+	if (auto err = process(stream, value); err)
+		return err;
 	if (!stream.at_end())
 		return error(std::format("read finished with {} trailing bytes", stream.remaining()));
 	return {};

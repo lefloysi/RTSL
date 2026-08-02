@@ -24,11 +24,16 @@ void DiagnosticEngine::report(DiagnosticCode code, DiagnosticSeverity severity, 
 
 static std::string_view severity_name(DiagnosticSeverity severity) {
 	switch (severity) {
-	case DiagnosticSeverity::note: return "note";
-	case DiagnosticSeverity::warning: return "warning";
-	case DiagnosticSeverity::error: return "error";
-	case DiagnosticSeverity::fatal: return "error";
-	case DiagnosticSeverity::ignored: return "ignored";
+	case DiagnosticSeverity::note:
+		return "note";
+	case DiagnosticSeverity::warning:
+		return "warning";
+	case DiagnosticSeverity::error:
+		return "error";
+	case DiagnosticSeverity::fatal:
+		return "error";
+	case DiagnosticSeverity::ignored:
+		return "ignored";
 	}
 	return "error";
 }

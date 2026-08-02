@@ -1,11 +1,11 @@
-#include "artifact/artifact.hpp"
 #include "driver/compiler.hpp"
-#include "frontend/lexer.hpp"
+#include "artifact/artifact.hpp"
 #include "artifact/linker.hpp"
-#include "sema/mangler.hpp"
+#include "frontend/lexer.hpp"
 #include "frontend/parser.hpp"
 #include "rtsl/program.hpp"
 #include "rtslc.h"
+#include "sema/mangler.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -715,7 +715,8 @@ TEST_CASE("compiler preserves member-init constructors as function calls") {
 	REQUIRE_FALSE(artifact.bytes.empty());
 	bool found_call = false;
 	for (const auto& function : artifact.module.functions) {
-		for (const auto& instruction : function.body) found_call |= instruction.op == IROp::FunctionCall;
+		for (const auto& instruction : function.body)
+			found_call |= instruction.op == IROp::FunctionCall;
 	}
 	REQUIRE(found_call);
 }
@@ -843,8 +844,10 @@ TEST_CASE("compiler builds stage interfaces from the return boundary") {
 	const EntryPoint* vertex = nullptr;
 	const EntryPoint* fragment = nullptr;
 	for (const auto& entry : loaded.module.entries) {
-		if (entry.stage == Stage::vertex) vertex = &entry;
-		if (entry.stage == Stage::fragment) fragment = &entry;
+		if (entry.stage == Stage::vertex)
+			vertex = &entry;
+		if (entry.stage == Stage::fragment)
+			fragment = &entry;
 	}
 	REQUIRE(vertex != nullptr);
 	REQUIRE(fragment != nullptr);

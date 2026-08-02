@@ -1,7 +1,7 @@
-#include "support/basic_diagnostics.hpp"
-#include "support/basic_source_manager.hpp"
 #include "frontend/lexer.hpp"
 #include "frontend/parser.hpp"
+#include "support/basic_diagnostics.hpp"
+#include "support/basic_source_manager.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

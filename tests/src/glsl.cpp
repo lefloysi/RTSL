@@ -1,6 +1,6 @@
+#include "rtsl/glsl.hpp"
 #include "artifact/linker.hpp"
 #include "driver/compiler.hpp"
-#include "rtsl/glsl.hpp"
 #include "rtsl/program.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -52,7 +52,8 @@ TEST_CASE("GLSL transpiler lowers structured control flow through state machine"
 		"    f32 shade = 1.0;\n"
 		"    if (v.shade < 0.5) { shade = 0.7; }\n"
 		"    return vec4(shade, shade, shade, 1.0);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	auto fragment = glsl::transpile(*program, Stage::fragment, glsl::Options{ .version = 400 });
 	const std::string diagnostic = fragment.has_value() ? fragment->source : fragment.error().message;
@@ -72,7 +73,8 @@ TEST_CASE("GLSL transpiler emits called functions before callers") {
 		"fn choose(vec4 value, bool replace) -> vec4 { if (replace) { value.rgb = vec3(0.5); } return value; }\n"
 		"fn shade(u32 index) -> vec4 { return choose(color(index) * 0.5, index == u32(0)); }\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n");
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n"
+	);
 	REQUIRE(program.has_value());
 	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
 	require_transpiles(*program, Stage::fragment);

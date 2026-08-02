@@ -1,6 +1,6 @@
+#include "rtsl/hlsl.hpp"
 #include "artifact/linker.hpp"
 #include "driver/compiler.hpp"
-#include "rtsl/hlsl.hpp"
 #include "rtsl/program.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -48,16 +48,16 @@ std::string shell_command_prefix() {
 
 bool compiles(const hlsl::Shader& shader, std::string_view name) {
 	const std::filesystem::path source_path = std::filesystem::temp_directory_path() /
-		(std::string{ "rtsl-" } + std::string{ name } + ".hlsl");
+											  (std::string{ "rtsl-" } + std::string{ name } + ".hlsl");
 	const std::filesystem::path output_path = source_path.parent_path() /
-		(std::string{ "rtsl-" } + std::string{ name } + ".dxil");
+											  (std::string{ "rtsl-" } + std::string{ name } + ".dxil");
 	{
 		std::ofstream output{ source_path };
 		output << shader.source;
 	}
 	const char* profile = shader.stage == Stage::vertex ? "vs_6_0" : "ps_6_0";
 	const std::string command = shell_command_prefix() + shell_quote(RTSL_DXC) + " -E main -T " + std::string{ profile } +
-		" -HV 2021 -Ges -Fo " + shell_quote(output_path) + " " + shell_quote(source_path);
+								" -HV 2021 -Ges -Fo " + shell_quote(output_path) + " " + shell_quote(source_path);
 	return std::system(command.c_str()) == 0;
 }
 #endif
@@ -85,7 +85,8 @@ TEST_CASE("HLSL transpiler compiles both graphics stages") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return vec4(v.uv, 0.0, 1.0);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	require_compiles(*program, Stage::vertex, "vertex");
 	require_compiles(*program, Stage::fragment, "fragment");
@@ -105,7 +106,8 @@ TEST_CASE("HLSL transpiler compiles uniform and sampled texture resources") {
 		"}\n"
 		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 {\n"
 		"    return sample(texture, v.uv);\n"
-		"}\n");
+		"}\n"
+	);
 	REQUIRE(program.has_value());
 	require_compiles(*program, Stage::vertex, "vertex-resources");
 	require_compiles(*program, Stage::fragment, "fragment-resources");
@@ -122,7 +124,8 @@ TEST_CASE("HLSL transpiler compiles structured control flow") {
 		"    f32 shade = 1.0;\n"
 		"    if (v.shade < 0.5) { shade = 0.7; }\n"
 		"    return vec4(shade, shade, shade, 1.0);\n"
-		"}\n");
+		"}\n"
+	);
 	const std::string diagnostic = program.has_value() ? "loaded" : program.error().context + ": " + program.error().message;
 	INFO(diagnostic);
 	REQUIRE(program.has_value());
@@ -147,7 +150,8 @@ TEST_CASE("HLSL transpiler compiles terrain shader language surface") {
 		"    f32 value = sqrt(max(0.0, min(1.0, mod(f32(packed.x), dimensions.x))));\n"
 		"    f32 wave = smoothstep(0.0, 1.0, fract(abs(v.uv.y))) + floor(v.uv.x);\n"
 		"    return mix(sample(atlas, v.uv), vec4(value), wave);\n"
-		"}\n");
+		"}\n"
+	);
 	const std::string diagnostic = program.has_value() ? "loaded" : program.error().context + ": " + program.error().message;
 	INFO(diagnostic);
 	REQUIRE(program.has_value());
@@ -164,7 +168,8 @@ TEST_CASE("HLSL transpiler preserves and compiles user function calls") {
 		"fn choose(vec4 value, bool replace) -> vec4 { if (replace) { value.rgb = vec3(0.5); } return value; }\n"
 		"fn shade(u32 index) -> vec4 { return choose(color(index) * 0.5, index == u32(0)); }\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
-		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n");
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { return shade(u32(0)); }\n"
+	);
 	REQUIRE(program.has_value());
 	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
 	require_compiles(*program, Stage::fragment, "fragment-function-calls");

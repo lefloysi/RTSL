@@ -33,13 +33,11 @@ class CompilerInstance {
 	// false only for hard failures (parse/sema errors in the imported source
 	// or a cycle); a "not found anywhere" result returns true with `bytes`
 	// empty so the caller can emit its own diagnostic.
-	bool load_or_build_import(const CompilerInvocation& invocation, std::string_view name,
-		std::vector<u08>& bytes, std::unordered_set<std::string>& active_builds);
+	bool load_or_build_import(const CompilerInvocation& invocation, std::string_view name, std::vector<u08>& bytes, std::unordered_set<std::string>& active_builds);
 	// The workhorse behind `compile_source_to`; carries the active-build set
 	// through recursive autobuilds so an `import` chain that comes back to
 	// where it started reports as a cycle instead of stack-overflowing.
-	void compile_source_to_impl(Artifact& artifact, std::string_view source,
-		CompilerInvocation invocation, std::unordered_set<std::string>& active_builds);
+	void compile_source_to_impl(Artifact& artifact, std::string_view source, CompilerInvocation invocation, std::unordered_set<std::string>& active_builds);
 
 	SourceManager sources_;
 	DiagnosticEngine diagnostics_;
