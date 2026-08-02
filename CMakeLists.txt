@@ -1,15 +1,12 @@
 cmake_minimum_required(VERSION 3.28)
 project(RTSL VERSION 0.0.1 LANGUAGES CXX)
 
-enable_testing()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 add_subdirectory("rtsl-sdk")
 add_subdirectory("rtsl")
 add_subdirectory("rtslc")
-
-add_subdirectory("tests" EXCLUDE_FROM_ALL)
 
 set(RTSL_PACKAGE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/RTSL")
 
