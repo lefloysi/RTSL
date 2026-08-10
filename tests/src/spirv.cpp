@@ -2,6 +2,7 @@
 #include "artifact/linker.hpp"
 #include "driver/compiler.hpp"
 #include "rtsl/program.hpp"
+#include "temporary_workspace.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -44,11 +45,15 @@ std::string shell_command_prefix() {
 }
 
 bool validates(const spirv::Shader& shader, std::string_view name) {
-	const std::filesystem::path path = std::filesystem::temp_directory_path() /
-									   (std::string{ "rtsl-" } + std::string{ name } + ".spv");
+	test::TemporaryWorkspace workspace{ name };
+	if (!workspace.valid())
+		return false;
+	const std::filesystem::path path = workspace.path() / "shader.spv";
 	{
 		std::ofstream output{ path, std::ios::binary };
 		output.write(reinterpret_cast<const char*>(shader.words.data()), static_cast<std::streamsize>(shader.byte_size()));
+		if (!output)
+			return false;
 	}
 	const std::string command = shell_command_prefix() + shell_quote(RTSL_SPIRV_VAL) + " --target-env vulkan1.3 " + shell_quote(path);
 	return std::system(command.c_str()) == 0;

@@ -6,6 +6,7 @@
 #include "rtsl/program.hpp"
 #include "rtslc.h"
 #include "sema/mangler.hpp"
+#include "temporary_workspace.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -46,8 +47,9 @@ export fn helper() {}
 }
 
 TEST_CASE("compiler re-exports exported imports") {
-	const auto dir = std::filesystem::temp_directory_path() / "rtsl-export-import-test";
-	std::filesystem::create_directories(dir);
+	test::TemporaryWorkspace workspace{ "export-import" };
+	REQUIRE(workspace.valid());
+	const auto& dir = workspace.path();
 	const auto helper_path = dir / "helper.rtsl";
 	{
 		std::ofstream helper{ helper_path, std::ios::binary };
@@ -73,8 +75,9 @@ TEST_CASE("compiler re-exports exported imports") {
 }
 
 TEST_CASE("compiler reports source import cycles") {
-	const auto dir = std::filesystem::temp_directory_path() / "rtsl-import-cycle-test";
-	std::filesystem::create_directories(dir);
+	test::TemporaryWorkspace workspace{ "import-cycle" };
+	REQUIRE(workspace.valid());
+	const auto& dir = workspace.path();
 	{
 		std::ofstream a{ dir / "a.rtsl", std::ios::binary };
 		a << "import \"b.rtsl\";\nexport fn a() {}\n";
@@ -286,8 +289,9 @@ TEST_CASE("program link rejects duplicate fragment stage entries") {
 }
 
 TEST_CASE("program link resolves imported helper calls from separate objects") {
-	const auto dir = std::filesystem::temp_directory_path() / "rtsl-cross-object-program-test";
-	std::filesystem::create_directories(dir);
+	test::TemporaryWorkspace workspace{ "cross-object-program" };
+	REQUIRE(workspace.valid());
+	const auto& dir = workspace.path();
 
 	CompilerInstance compiler;
 	auto helper = compiler.compile_source(
@@ -358,8 +362,9 @@ TEST_CASE("linker rejects duplicate exported function identities") {
 }
 
 TEST_CASE("program link rejects unresolved imported calls") {
-	const auto dir = std::filesystem::temp_directory_path() / "rtsl-unresolved-import-test";
-	std::filesystem::create_directories(dir);
+	test::TemporaryWorkspace workspace{ "unresolved-import" };
+	REQUIRE(workspace.valid());
+	const auto& dir = workspace.path();
 	{
 		std::ofstream helper{ dir / "helper.rtsl", std::ios::binary };
 		helper << "export fn tint() -> vec4 { return vec4(1.0, 1.0, 1.0, 1.0); }\n";
@@ -387,8 +392,9 @@ TEST_CASE("program link rejects unresolved imported calls") {
 }
 
 TEST_CASE("linker rejects stale imported module interfaces") {
-	const auto dir = std::filesystem::temp_directory_path() / "rtsl-stale-interface-test";
-	std::filesystem::create_directories(dir);
+	test::TemporaryWorkspace workspace{ "stale-interface" };
+	REQUIRE(workspace.valid());
+	const auto& dir = workspace.path();
 
 	CompilerInstance interface_compiler;
 	auto old_helper = interface_compiler.compile_source(

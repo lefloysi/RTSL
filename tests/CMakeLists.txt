@@ -1,11 +1,6 @@
-find_package(Catch2 CONFIG QUIET)
+find_package(Catch2 CONFIG REQUIRED)
 
-if(NOT Catch2_FOUND)
-    message(STATUS "Catch2 not found; tests will not be built")
-    return()
-endif()
-
-add_executable("rtsl-sdk-tests"
+add_executable("rtsl-sdk-tests" EXCLUDE_FROM_ALL
     "src/sdk.cpp"
 )
 
@@ -21,7 +16,7 @@ add_test(
     COMMAND "rtsl-sdk-tests"
 )
 
-add_executable("rtsl-tests"
+add_executable("rtsl-tests" EXCLUDE_FROM_ALL
     "src/basic.cpp"
     "src/compiler.cpp"
     "src/artifact.cpp"

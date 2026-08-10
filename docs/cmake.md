@@ -18,7 +18,7 @@ list(APPEND CMAKE_MODULE_PATH "/path/to/RTSL/cmake")
 include(Rtsl)
 
 add_library(my_backend SHARED backend.cpp)
-target_link_libraries(my_backend PRIVATE RTSL::sdk RTSL::spirv)
+target_link_libraries(my_backend PRIVATE RTSL::sdk)
 
 rtsl_add_program(world_shader
     SYMBOL world_rtslp
@@ -63,11 +63,11 @@ rtsl_embed_program(<target>
 )
 ```
 
-The generated source includes the SDK and defines SDK-owned byte views:
+The generated source includes the SDK's public program header and defines
+SDK-owned byte views:
 
 ```cpp
-#include <rtsl/sdk.hpp>
-#include <rtsl/spirv.hpp>
+#include <rtsl/program.hpp>
 
 extern "C" const rtsl::ProgramBytes world_rtslp;
 
@@ -77,7 +77,9 @@ if (!program) {
     return;
 }
 
-auto vertex = rtsl::spirv::transpile(*program, rtsl::Stage::vertex);
 ```
 
-No compiler header or compiler library is required by runtime code.
+No compiler header or compiler library is required by runtime code. RTSL does
+not provide installed `RTSL::hlsl` or `RTSL::spirv` targets; its HLSL and
+SPIR-V transpiler sources are compiled directly by the RTSL test targets and
+Rutile backend targets that need them.

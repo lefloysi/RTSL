@@ -23,22 +23,18 @@ language release. Programs written with older artifact encodings must be rebuilt
 
 ```text
 backend ──> RTSL::sdk
-backend ──> RTSL::hlsl
-backend ──> RTSL::spirv
-RTSL::hlsl ──> RTSL::sdk
-RTSL::spirv ──> RTSL::sdk
-
 rtsl compiler ──> RTSL::sdk
 ```
 
-The SDK and target transpilers include no parser, semantic-analysis, linker,
-driver, or compiler C ABI headers. The compiler produces programs; backend
-libraries only consume them.
+The top-level RTSL build exports `RTSL::sdk`, `RTSL::rtsl`, and, when CLI11 is
+available, the `rtslc` executable. It does not define or install
+`RTSL::hlsl` or `RTSL::spirv`. The backend libraries consume programs through
+the SDK; compiler implementation details are not required at runtime.
 
 ## Loading
 
 ```cpp
-#include <rtsl/sdk.hpp>
+#include <rtsl/program.hpp>
 
 std::span<const std::byte> bytes = read_file("shader.rtslp");
 auto program = rtsl::load_program(bytes);
@@ -90,31 +86,9 @@ auto program = rtsl::load_program(game_world_shader);
 `ProgramBytes` is a borrowed view. `load_program` copies and normalizes the
 program into its own storage.
 
-## SPIR-V Transpiler
+## Transpiler Status
 
-SPIR-V is a separate project and SDK consumer:
-
-```cpp
-#include <rtsl/spirv.hpp>
-
-auto vertex = rtsl::spirv::transpile(program, rtsl::Stage::vertex);
-if (!vertex) {
-    log(vertex.error().context, vertex.error().message);
-    return;
-}
-
-create_shader_module(vertex->words, vertex->entry_point);
-```
-
-Each call emits one module with one `main` entry. The transpiler synthesizes
-physical input/output variables and a void wrapper around the selected typed
-RTSL entry function. It returns structured errors for a missing stage, invalid
-entry contract, unsupported type or operation, and allocation failure.
-
-## HLSL Transpiler
-
-`RTSL::hlsl` exposes the same stage-oriented boundary and emits HLSL source
-with a `main` entry point. Resource registers and spaces come directly from the
-linked program's descriptor reflection. Direct3D backends compile that source
-to DXIL with DXC; HLSL is an internal backend intermediate, not an authored or
-stored program format.
+The HLSL and SPIR-V transpiler sources are not standalone RTSL CMake targets or
+installed SDK libraries. RTSL test targets compile them as test sources, and
+Rutile backend targets compile the required source directly. There is therefore
+no supported `RTSL::hlsl` or `RTSL::spirv` package interface for consumers.

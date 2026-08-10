@@ -51,45 +51,39 @@ function(rtsl_add_program program_name)
         list(APPEND _rtsl_include_args -I "${dir}")
     endforeach()
 
-    file(MAKE_DIRECTORY "${RTSL_OUTPUT_DIR}")
-
+    set(_rtsl_source_include_dirs)
     foreach(source IN LISTS RTSL_SOURCES)
-        get_filename_component(source_name "${source}" NAME_WE)
-        set(_rtsl_module_${source_name} "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
+        get_filename_component(source_directory "${source}" DIRECTORY)
+        if(source_directory)
+            get_filename_component(source_directory "${source_directory}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        else()
+            set(source_directory "${CMAKE_CURRENT_SOURCE_DIR}")
+        endif()
+        list(APPEND _rtsl_source_include_dirs "${source_directory}")
     endforeach()
+    list(REMOVE_DUPLICATES _rtsl_source_include_dirs)
+    set(_rtsl_source_include_args)
+    foreach(dir IN LISTS _rtsl_source_include_dirs)
+        list(APPEND _rtsl_source_include_args -I "${dir}")
+    endforeach()
+
+    set(_rtsl_object_dir "${RTSL_OUTPUT_DIR}/objects")
+    file(MAKE_DIRECTORY "${_rtsl_object_dir}")
 
     set(_rtsl_objects)
     foreach(source IN LISTS RTSL_SOURCES)
         get_filename_component(source_name "${source}" NAME_WE)
-        set(object_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslo")
-        set(module_path "${RTSL_OUTPUT_DIR}/${source_name}.rtslm")
-
-        set(import_deps)
-        set(module_byproducts)
-        if(EXISTS "${source}")
-            file(STRINGS "${source}" _rtsl_import_lines REGEX "^[ \t]*(export[ \t]+)?import[ \t]")
-            foreach(line IN LISTS _rtsl_import_lines)
-                if(line MATCHES "(export[ \t]+)?import[ \t]+\"([^\"]+)\"")
-                    get_filename_component(_imported_base "${CMAKE_MATCH_2}" NAME_WE)
-                    if(DEFINED _rtsl_module_${_imported_base})
-                        list(APPEND import_deps "${_rtsl_module_${_imported_base}}")
-                    endif()
-                endif()
-            endforeach()
-
-            file(STRINGS "${source}" _rtsl_export_lines REGEX "^[ \t]*export[ \t]")
-            if(_rtsl_export_lines)
-                list(APPEND module_byproducts "${module_path}")
-            endif()
-        endif()
+        get_filename_component(source_path "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        string(SHA256 source_hash "${source_path}")
+        string(SUBSTRING "${source_hash}" 0 16 source_id)
+        set(object_path "${_rtsl_object_dir}/${source_name}-${source_id}.rtslo")
 
         add_custom_command(
             OUTPUT "${object_path}"
-            BYPRODUCTS ${module_byproducts}
             COMMAND "${_rtsl_compiler}" compile "${source}" -o "${object_path}"
-                -I "${RTSL_OUTPUT_DIR}"
+                ${_rtsl_source_include_args}
                 ${_rtsl_include_args}
-            DEPENDS "${source}" ${RTSL_DEPENDS} ${import_deps}
+            DEPENDS ${RTSL_SOURCES} ${RTSL_DEPENDS}
             VERBATIM
             COMMENT "RTSL compile ${source_name}"
         )
@@ -99,7 +93,7 @@ function(rtsl_add_program program_name)
     add_custom_command(
         OUTPUT "${RTSL_OUTPUT}"
         COMMAND "${_rtsl_compiler}" link-program ${_rtsl_objects} -o "${RTSL_OUTPUT}"
-        DEPENDS ${_rtsl_objects} ${RTSL_DEPENDS}
+        DEPENDS ${_rtsl_objects} ${RTSL_SOURCES} ${RTSL_DEPENDS}
         VERBATIM
         COMMENT "RTSL link ${program_name}"
     )
@@ -158,7 +152,7 @@ function(rtsl_embed_program target_name)
             "-DRTSL_EMBED_SYMBOLS=${_rtsl_symbol_arg}"
             "-DRTSL_EMBED_OUTPUT=${RTSL_OUTPUT}"
             -P "${RTSL_CMAKE_MODULE_DIR}/RtslEmbed.cmake"
-        DEPENDS ${_rtsl_inputs}
+        DEPENDS ${_rtsl_inputs} "${RTSL_CMAKE_MODULE_DIR}/RtslEmbed.cmake"
         VERBATIM
         COMMENT "RTSL embed -> ${target_name}"
     )

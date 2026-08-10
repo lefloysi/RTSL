@@ -4,9 +4,12 @@ project(RTSL VERSION 0.0.1 LANGUAGES CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+enable_testing()
+
 add_subdirectory("rtsl-sdk")
 add_subdirectory("rtsl")
 add_subdirectory("rtslc")
+add_subdirectory("tests")
 
 set(RTSL_PACKAGE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/RTSL")
 

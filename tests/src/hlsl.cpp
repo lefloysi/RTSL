@@ -2,6 +2,7 @@
 #include "artifact/linker.hpp"
 #include "driver/compiler.hpp"
 #include "rtsl/program.hpp"
+#include "temporary_workspace.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -47,13 +48,16 @@ std::string shell_command_prefix() {
 }
 
 bool compiles(const hlsl::Shader& shader, std::string_view name) {
-	const std::filesystem::path source_path = std::filesystem::temp_directory_path() /
-											  (std::string{ "rtsl-" } + std::string{ name } + ".hlsl");
-	const std::filesystem::path output_path = source_path.parent_path() /
-											  (std::string{ "rtsl-" } + std::string{ name } + ".dxil");
+	test::TemporaryWorkspace workspace{ name };
+	if (!workspace.valid())
+		return false;
+	const std::filesystem::path source_path = workspace.path() / "shader.hlsl";
+	const std::filesystem::path output_path = workspace.path() / "shader.dxil";
 	{
 		std::ofstream output{ source_path };
 		output << shader.source;
+		if (!output)
+			return false;
 	}
 	const char* profile = shader.stage == Stage::vertex ? "vs_6_0" : "ps_6_0";
 	const std::string command = shell_command_prefix() + shell_quote(RTSL_DXC) + " -E main -T " + std::string{ profile } +
