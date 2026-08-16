@@ -444,7 +444,7 @@ std::string uniform_value_type(std::string_view qualified_name, const SemanticMo
 			if (layout.is_inline_struct) {
 				return inline_layout_type_name(qualified_name);
 			}
-			return layout.is_runtime_array ? layout.type_spelling + "[]" : layout.type_spelling;
+			return layout.is_pointer ? layout.type_spelling + "*" : layout.type_spelling;
 		}
 		return {};
 	}
@@ -573,7 +573,7 @@ std::string infer_expr_type(const Decl::Expr& expr, const LocalEnv& locals, cons
 		const std::string lhs = infer_expr_type(expr.children[0], locals, module, known);
 		const std::string rhs = infer_expr_type(expr.children[1], locals, module, known);
 		if (expr.op == "[]") {
-			return lhs.ends_with("[]") ? lhs.substr(0, lhs.size() - 2) : std::string{};
+			return lhs.ends_with("*") ? lhs.substr(0, lhs.size() - 1) : std::string{};
 		}
 		if (!lhs.empty() && lhs == rhs) {
 			return lhs;
@@ -711,8 +711,8 @@ void check_indexing(const Decl::Expr& expr, const LocalEnv& locals, const Semant
 	if (expr.kind == Decl::Expr::Kind::binary && expr.op == "[]" && expr.children.size() == 2) {
 		const std::string base = infer_expr_type(expr.children[0], locals, module, known);
 		const std::string index = infer_expr_type(expr.children[1], locals, module, known);
-		if (!base.ends_with("[]") || (index != "i32" && index != "u32")) {
-			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name, "indexing requires a runtime array and an i32 or u32 index");
+		if (!base.ends_with("*") || (index != "i32" && index != "u32")) {
+			diagnostics.report(DiagnosticCode::sema_type_mismatch, DiagnosticSeverity::error, expr.span.begin, module.source_name, "indexing requires a pointer and an i32 or u32 index");
 		}
 	}
 	for (const auto& child : expr.children) {
@@ -819,7 +819,7 @@ LayoutRule resolve_layout_rule(LayoutRule declared, bool is_storage_buffer) {
 
 void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
 	const auto layouts_match = [](const LayoutDecl& a, const LayoutDecl& b) {
-		if (a.rule != b.rule || a.is_inline_struct != b.is_inline_struct || a.is_runtime_array != b.is_runtime_array || a.type_spelling != b.type_spelling ||
+		if (a.rule != b.rule || a.is_inline_struct != b.is_inline_struct || a.is_pointer != b.is_pointer || a.type_spelling != b.type_spelling ||
 			a.inline_fields.size() != b.inline_fields.size()) {
 			return false;
 		}
@@ -851,8 +851,8 @@ void validate_layouts(SemanticModule& module, DiagnosticEngine& diagnostics) {
 			continue;
 		}
 		layout.rule = resolve_layout_rule(layout.rule, target.type == "StorageBuffer");
-		if (layout.is_runtime_array && target.type != "StorageBuffer") {
-			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name, "runtime-array layouts require a StorageBuffer binding");
+		if (layout.is_pointer && target.type != "StorageBuffer") {
+			diagnostics.report(DiagnosticCode::layout_invalid_uniform_kind, DiagnosticSeverity::error, layout.span.begin, module.source_name, "pointer layouts require a StorageBuffer binding");
 		}
 		const auto [existing_it, inserted] = first_layout_for_uniform.emplace(target_it->second, li);
 		if (!inserted && !layouts_match(module.layouts[existing_it->second], layout)) {

@@ -35,6 +35,7 @@ bool valid_storage_class(std::uint32_t value) {
 	case 5:
 	case 6:
 	case 7:
+	case 8:
 		return true;
 	default:
 		return false;
@@ -53,6 +54,8 @@ ir::StorageClass storage_class(std::uint32_t value) {
 		return ir::StorageClass::storage_buffer;
 	case 6:
 		return ir::StorageClass::push_constant;
+	case 8:
+		return ir::StorageClass::physical_storage_buffer;
 	default:
 		return ir::StorageClass::private_;
 	}
@@ -345,6 +348,7 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 	case IROp::ConvertFToS:
 	case IROp::ConvertSToF:
 	case IROp::ConvertUToF:
+	case IROp::ConvertUToPtr:
 	case IROp::Bitcast:
 	case IROp::BitwiseNot:
 	case IROp::FAbs:
@@ -486,7 +490,7 @@ std::expected<ir::Instruction, LoadError> normalize_instruction(const IRInstruct
 								source.op == IROp::VectorShuffle ||
 								(source.op >= IROp::FAdd && source.op <= IROp::Bitcast) ||
 								(source.op >= IROp::SampledImage && source.op <= IROp::ImageRead) ||
-								(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::FunctionCall;
+				(source.op >= IROp::BitwiseAnd && source.op <= IROp::SNegate) || source.op == IROp::ConvertUToPtr || source.op == IROp::FunctionCall;
 	if (produces_value != static_cast<bool>(source.result_id) || produces_value != static_cast<bool>(source.type_id)) {
 		valid = false;
 	}
@@ -829,6 +833,15 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				return std::unexpected(std::move(result.error()));
 			if (auto result = reference(resource.value_type, "resources.value_type"); !result)
 				return std::unexpected(std::move(result.error()));
+			if (resource.is_pointer) {
+				if (resource.kind != ResourceKind::storage_buffer || !resource.pointee_type) {
+					return std::unexpected(invalid_program("resources", "pointer resource has an invalid kind or pointee type"));
+				}
+				if (auto result = reference(resource.pointee_type, "resources.pointee_type"); !result)
+					return std::unexpected(std::move(result.error()));
+			} else if (resource.pointee_type) {
+				return std::unexpected(invalid_program("resources", "non-pointer resource has a pointee type"));
+			}
 		}
 
 		data->entries = std::move(module.entries);
@@ -961,7 +974,7 @@ std::expected<Program, LoadError> load_program(std::span<const std::byte> bytes)
 				return std::unexpected(invalid_program("resources", "resource does not match its global pointer"));
 			}
 			const ir::StorageClass expected_storage =
-				resource.kind == ResourceKind::uniform_buffer ? ir::StorageClass::uniform : resource.kind == ResourceKind::storage_buffer ? ir::StorageClass::storage_buffer
+				resource.is_pointer ? ir::StorageClass::uniform : resource.kind == ResourceKind::uniform_buffer ? ir::StorageClass::uniform : resource.kind == ResourceKind::storage_buffer ? ir::StorageClass::storage_buffer
 																																		  : ir::StorageClass::uniform_constant;
 			if (global->storage_class != expected_storage || pointer->storage_class != expected_storage) {
 				return std::unexpected(invalid_program("resources", "resource kind does not match its storage class"));

@@ -63,10 +63,10 @@ TEST_CASE("GLSL transpiler lowers structured control flow through state machine"
 	REQUIRE(fragment->source.find("if (v") == std::string::npos);
 }
 
-TEST_CASE("GLSL transpiler emits called functions before callers") {
+TEST_CASE("GLSL transpiler rejects physical storage-buffer pointers") {
 	auto program = compile_glsl_program(
 		"uniform { readonly StorageBuffer colors; }\n"
-		"layout colors : vec4[];\n"
+		"layout colors : vec4*;\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"fn color(u32 index) -> vec4 { return colors[index]; }\n"
@@ -77,5 +77,7 @@ TEST_CASE("GLSL transpiler emits called functions before callers") {
 	);
 	REQUIRE(program.has_value());
 	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
-	require_transpiles(*program, Stage::fragment);
+	auto fragment = glsl::transpile(*program, Stage::fragment, glsl::Options{ .version = 400 });
+	REQUIRE_FALSE(fragment.has_value());
+	REQUIRE(fragment.error().context == "resources.pointer");
 }

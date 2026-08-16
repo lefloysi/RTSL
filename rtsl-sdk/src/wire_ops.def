@@ -107,5 +107,6 @@ RTSL_WIRE_OP(FMix, "OpExtInstFMix")
 RTSL_WIRE_OP(SmoothStep, "OpExtInstSmoothStep")
 RTSL_WIRE_OP(ImageQuerySize, "OpImageQuerySize")
 RTSL_WIRE_OP(SNegate, "OpSNegate")
+RTSL_WIRE_OP(ConvertUToPtr, "OpConvertUToPtr")
 
 #undef RTSL_WIRE_OP

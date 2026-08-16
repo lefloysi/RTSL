@@ -84,6 +84,8 @@ std::optional<spv::StorageClass> storage_class(ir::StorageClass value) {
 		return spv::StorageClass::PushConstant;
 	case ir::StorageClass::private_:
 		return spv::StorageClass::Private;
+	case ir::StorageClass::physical_storage_buffer:
+		return spv::StorageClass::PhysicalStorageBuffer;
 	}
 	return std::nullopt;
 }
@@ -132,7 +134,6 @@ struct DirectOperation {
 };
 
 constexpr std::array direct_operations{
-	DirectOperation{ ir::Op::Load, spv::Op::OpLoad },
 	DirectOperation{ ir::Op::AccessChain, spv::Op::OpAccessChain },
 	DirectOperation{ ir::Op::CompositeConstruct, spv::Op::OpCompositeConstruct },
 	DirectOperation{ ir::Op::CompositeExtract, spv::Op::OpCompositeExtract },
@@ -179,6 +180,7 @@ constexpr std::array direct_operations{
 	DirectOperation{ ir::Op::ConvertFToS, spv::Op::OpConvertFToS },
 	DirectOperation{ ir::Op::ConvertSToF, spv::Op::OpConvertSToF },
 	DirectOperation{ ir::Op::ConvertUToF, spv::Op::OpConvertUToF },
+	DirectOperation{ ir::Op::ConvertUToPtr, spv::Op::OpConvertUToPtr },
 	DirectOperation{ ir::Op::Bitcast, spv::Op::OpBitcast },
 	DirectOperation{ ir::Op::BitwiseAnd, spv::Op::OpBitwiseAnd },
 	DirectOperation{ ir::Op::BitwiseOr, spv::Op::OpBitwiseOr },
@@ -466,6 +468,12 @@ class SpirvEmitter {
 		});
 	}
 
+	bool uses_physical_storage_buffer_pointers() const {
+		return std::ranges::any_of(selected_resources, [](const Resource* resource) {
+			return resource->is_pointer;
+		});
+	}
+
 	std::optional<ir::Id> value_type(ir::Id id) const {
 		if (const ir::Constant* constant = program.find_constant(id)) {
 			return constant->type;
@@ -486,6 +494,50 @@ class SpirvEmitter {
 			}
 		}
 		return std::nullopt;
+	}
+
+	std::uint32_t physical_type_alignment(ir::Id type_id) const {
+		const ir::Type* type = program.find_type(type_id);
+		if (!type) {
+			return 0;
+		}
+		switch (type->kind) {
+		case ir::TypeKind::boolean:
+		case ir::TypeKind::signed_integer:
+		case ir::TypeKind::unsigned_integer:
+		case ir::TypeKind::floating:
+			return type->bit_width / 8;
+		case ir::TypeKind::vector: {
+			const std::uint32_t component_alignment = physical_type_alignment(type->element_type);
+			if (component_alignment == 0) {
+				return 0;
+			}
+			return component_alignment * (type->element_count == 3 ? 4 : type->element_count);
+		}
+		case ir::TypeKind::matrix:
+			return physical_type_alignment(type->element_type);
+		case ir::TypeKind::array:
+		case ir::TypeKind::runtime_array:
+			return physical_type_alignment(type->element_type);
+		case ir::TypeKind::structure: {
+			std::uint32_t alignment = 0;
+			for (const ir::Id member : type->members) {
+				alignment = std::max(alignment, physical_type_alignment(member));
+			}
+			return alignment;
+		}
+		default:
+			return 0;
+		}
+	}
+
+	std::uint32_t physical_pointer_alignment(ir::Id pointer_id) const {
+		const auto pointer_type_id = value_type(pointer_id);
+		const ir::Type* pointer_type = pointer_type_id ? program.find_type(*pointer_type_id) : nullptr;
+		if (!pointer_type || pointer_type->kind != ir::TypeKind::pointer || pointer_type->storage_class != ir::StorageClass::physical_storage_buffer) {
+			return 0;
+		}
+		return physical_type_alignment(pointer_type->element_type);
 	}
 
 	ir::Id pointer_type(ir::Id value_type, spv::StorageClass storage) {
@@ -526,6 +578,11 @@ class SpirvEmitter {
 
 	void emit_preamble() {
 		emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::Shader) });
+		if (uses_physical_storage_buffer_pointers()) {
+			emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::Int64) });
+			emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::PhysicalStorageBufferAddresses) });
+			emit_string(extensions, spv::Op::OpExtension, {}, "SPV_KHR_physical_storage_buffer");
+		}
 		if (uses_image_queries()) {
 			emit(capabilities, spv::Op::OpCapability, { word(spv::Capability::ImageQuery) });
 		}
@@ -542,7 +599,7 @@ class SpirvEmitter {
 		}
 		const std::array ext_prefix{ glsl_ext.value };
 		emit_string(extensions, spv::Op::OpExtInstImport, ext_prefix, "GLSL.std.450");
-		emit(memory_model, spv::Op::OpMemoryModel, { word(spv::AddressingModel::Logical), word(spv::MemoryModel::GLSL450) });
+		emit(memory_model, spv::Op::OpMemoryModel, { word(uses_physical_storage_buffer_pointers() ? spv::AddressingModel::PhysicalStorageBuffer64 : spv::AddressingModel::Logical), word(spv::MemoryModel::GLSL450) });
 
 		std::vector<std::uint32_t> interface_ids;
 		interface_ids.reserve(inputs.size() + outputs.size() + selected_resources.size());
@@ -622,6 +679,9 @@ class SpirvEmitter {
 		}
 
 		for (const auto* resource : selected_resources) {
+			if (resource->is_pointer) {
+				continue;
+			}
 			if (resource->access == Access::read_only) {
 				emit(annotations, spv::Op::OpDecorate, { resource->variable.value, word(spv::Decoration::NonWritable) });
 			}
@@ -850,9 +910,30 @@ class SpirvEmitter {
 			emit(functions, spv::Op::OpVariable, operands);
 			return true;
 		}
-		case ir::Op::Store:
-			emit_instruction_arguments(spv::Op::OpStore, instruction);
+		case ir::Op::Load: {
+			const auto* arguments = instruction.arguments_if<ir::LoadArguments>();
+			if (!arguments) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.load", "load has an invalid shape", instruction.result_id, instruction.op);
+			}
+			std::vector<std::uint32_t> operands{ instruction.type_id.value, instruction.result_id.value, arguments->pointer.value };
+			if (const std::uint32_t alignment = physical_pointer_alignment(arguments->pointer)) {
+				operands.insert(operands.end(), { word(spv::MemoryAccessMask::Aligned), alignment });
+			}
+			emit(functions, spv::Op::OpLoad, operands);
 			return true;
+		}
+		case ir::Op::Store: {
+			const auto* arguments = instruction.arguments_if<ir::StoreArguments>();
+			if (!arguments) {
+				return fail(ErrorCode::unsupported_instruction, "instructions.store", "store has an invalid shape", instruction.result_id, instruction.op);
+			}
+			std::vector<std::uint32_t> operands{ arguments->pointer.value, arguments->value.value };
+			if (const std::uint32_t alignment = physical_pointer_alignment(arguments->pointer)) {
+				operands.insert(operands.end(), { word(spv::MemoryAccessMask::Aligned), alignment });
+			}
+			emit(functions, spv::Op::OpStore, operands);
+			return true;
+		}
 		case ir::Op::Cross: {
 			const std::array prefix{ glsl_ext.value, static_cast<std::uint32_t>(GLSLstd450Cross) };
 			return emit_result_instruction(spv::Op::OpExtInst, instruction, prefix);

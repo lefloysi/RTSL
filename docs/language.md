@@ -70,25 +70,28 @@ RTSL source does not declare `input`, `output`, or `varying` blocks. After
 linking, `rtsl::Program::entries()` exposes each stage's validated input
 and output interface directly to transpilers.
 
-## Storage-buffer arrays
+## Storage-buffer pointers
 
-A storage-buffer layout can expose a runtime-sized array. The array is the
-entire buffer payload and supports dynamic `i32` or `u32` indexing.
+A storage-buffer layout can expose a device-addressable pointer. The pointer
+refers to the first value in the bound buffer and supports dynamic `i32` or
+`u32` indexing.
 
 ```rtsl
 uniform terrain {
     readonly StorageBuffer cells;
 }
 
-layout terrain::cells : uvec4[];
+layout terrain::cells : uvec4*;
 
 fn read_cell(u32 index) -> uvec4 {
     return terrain::cells[index];
 }
 ```
 
-Runtime-array layouts are valid only for `StorageBuffer` bindings. Their
-physical layout is `std430`; element stride is reflected in linked RTIR.
+Pointer layouts are valid only for `StorageBuffer` bindings. They lower to
+physical storage-buffer pointers in Vulkan SPIR-V and require buffer-device
+address support. HLSL and GLSL targets reject them explicitly rather than
+silently changing their resource semantics.
 
 ## Standard library
 

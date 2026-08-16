@@ -317,7 +317,6 @@ Parser::ParsedType Parser::parse_type() {
 	}
 	if (consume(TokenKind::star)) {
 		type.has_pointer = true;
-		diagnose_here("pointers are not RTSL source syntax");
 	}
 
 	return type;
@@ -325,6 +324,7 @@ Parser::ParsedType Parser::parse_type() {
 
 bool Parser::reject_non_parameter_type_qualifiers(const ParsedType& type, std::string_view context) {
 	if (type.has_pointer) {
+		diagnose_here(std::string("pointers are only supported by storage-buffer layouts; found pointer in ") + std::string(context));
 		return true;
 	}
 	if (!type.is_reference) {
@@ -975,7 +975,8 @@ void Parser::parse_layout() {
 		skip_to_declaration_boundary();
 		return;
 	}
-	if (reject_non_parameter_type_qualifiers(type, "layout declaration")) {
+	if (type.is_reference) {
+		diagnose_here("references are not supported in layout declarations");
 		skip_to_declaration_boundary();
 		return;
 	}
@@ -984,12 +985,15 @@ void Parser::parse_layout() {
 		layout.inline_fields = std::move(type.fields);
 	} else {
 		layout.type_spelling = std::move(type.spelling);
+		layout.is_pointer = type.has_pointer;
 		if (consume(TokenKind::left_bracket)) {
-			layout.is_runtime_array = true;
-			if (!expect(TokenKind::right_bracket, "expected ']' in runtime-array layout")) {
+			if (!expect(TokenKind::right_bracket, "expected ']' after legacy runtime-array layout")) {
 				skip_to_declaration_boundary();
 				return;
 			}
+			diagnose_here("runtime-array layouts are not RTSL source syntax; use a pointer type such as uvec4*");
+			skip_to_declaration_boundary();
+			return;
 		}
 	}
 
@@ -1196,6 +1200,7 @@ void Parser::parse_parameter_list(std::vector<ParameterDecl>& out) {
 			continue;
 		}
 		if (type.has_pointer) {
+			diagnose_here("pointers are only supported by storage-buffer layouts");
 			while (!at_end() && !at(TokenKind::comma) && !at(TokenKind::right_paren)) {
 				++cursor;
 			}
@@ -1542,6 +1547,7 @@ Decl::BodyStatement Parser::parse_expression_or_assignment_statement() {
 		stmt.kind = Decl::BodyStatementKind::assignment;
 		stmt.lhs = source_between(lhs_begin, lhs_end);
 		stmt.rhs = source_between(rhs_begin, rhs_end);
+		stmt.lvalue = std::move(lhs);
 		stmt.expr = std::move(rhs);
 	} else {
 		stmt.kind = Decl::BodyStatementKind::expression;

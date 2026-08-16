@@ -48,7 +48,9 @@ bin::error process(Stream& stream, ResourceData& resource) {
 		bin::field("access", resource.access),
 		bin::field("descriptor", resource.descriptor),
 		bin::field("variable", resource.variable),
-		bin::field("value_type", resource.value_type)
+		bin::field("value_type", resource.value_type),
+		bin::field("pointee_type", resource.pointee_type),
+		bin::field("is_pointer", resource.is_pointer)
 	);
 }
 

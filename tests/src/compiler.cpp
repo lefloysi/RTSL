@@ -1259,25 +1259,25 @@ TEST_CASE("type checker rejects invalid sample arguments") {
 	REQUIRE(artifact.bytes.empty());
 }
 
-TEST_CASE("runtime-array layouts require storage buffers") {
+TEST_CASE("pointer layouts require storage buffers") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"uniform { UniformBuffer values; }\n"
-		"layout values : vec4[];\n",
-		CompilerInvocation{ .source_name = "bad_runtime_array_resource.rtsl" }
+		"layout values : vec4*;\n",
+		CompilerInvocation{ .source_name = "bad_pointer_resource.rtsl" }
 	);
 	REQUIRE(compiler.diagnostics().has_error());
 	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::layout_invalid_uniform_kind));
 	REQUIRE(artifact.bytes.empty());
 }
 
-TEST_CASE("runtime-array indexing requires an integer index") {
+TEST_CASE("pointer indexing requires an integer index") {
 	CompilerInstance compiler;
 	auto artifact = compiler.compile_source(
 		"uniform { readonly StorageBuffer values; }\n"
-		"layout values : vec4[];\n"
+		"layout values : vec4*;\n"
 		"fn bad(f32 index) -> vec4 { return values[index]; }\n",
-		CompilerInvocation{ .source_name = "bad_runtime_array_index.rtsl" }
+		CompilerInvocation{ .source_name = "bad_pointer_index.rtsl" }
 	);
 	REQUIRE(compiler.diagnostics().has_error());
 	REQUIRE(has_diagnostic_code(compiler, DiagnosticCode::sema_type_mismatch));

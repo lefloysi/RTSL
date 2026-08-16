@@ -69,6 +69,7 @@ struct Decl {
 		std::string condition;
 		std::string loop_init;
 		std::string loop_continue;
+		Expr lvalue{};
 		Expr expr{};
 		std::vector<BodyStatement> children;
 		std::vector<BodyStatement> else_children;
@@ -127,7 +128,7 @@ struct LayoutDecl {
 	std::vector<std::string> path;
 	LayoutRule rule = LayoutRule::unset;
 	bool is_inline_struct = false;
-	bool is_runtime_array = false;
+	bool is_pointer = false;
 	std::string type_spelling;				// only when !is_inline_struct
 	std::vector<StructField> inline_fields; // only when is_inline_struct
 	SourceSpan span{};

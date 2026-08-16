@@ -74,6 +74,9 @@ class Emitter {
 		index_values();
 		for (const auto& resource : program.resources()) {
 			if (contains(resource.stages, stage)) {
+				if (resource.is_pointer) {
+					return std::unexpected(make_error(ErrorCode::unsupported_resource, "resources.pointer", "physical storage-buffer pointers require Vulkan SPIR-V", resource.variable));
+				}
 				resources.push_back(&resource);
 				resource_by_variable.emplace(resource.variable, &resource);
 			}
@@ -347,6 +350,9 @@ class Emitter {
 
 	bool emit_resources() {
 		for (const Resource* resource : resources) {
+			if (resource->is_pointer) {
+				return fail(ErrorCode::unsupported_resource, "resources.pointer", "physical storage-buffer pointers require Vulkan SPIR-V", resource->variable);
+			}
 			const std::string name = resource_name(*resource);
 			const auto binding = resource->descriptor.binding;
 			switch (resource->kind) {

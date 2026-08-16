@@ -32,6 +32,7 @@ enum class StorageClass : std::uint8_t {
 	storage_buffer = 5,
 	push_constant = 6,
 	private_ = 7,
+	physical_storage_buffer = 8,
 };
 
 enum class Op : std::uint16_t {

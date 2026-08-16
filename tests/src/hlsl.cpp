@@ -136,10 +136,10 @@ TEST_CASE("HLSL transpiler compiles structured control flow") {
 	require_compiles(*program, Stage::fragment, "fragment-control-flow");
 }
 
-TEST_CASE("HLSL transpiler compiles terrain shader language surface") {
+TEST_CASE("HLSL transpiler rejects physical storage-buffer pointers") {
 	auto program = compile_hlsl_program(
 		"uniform { readonly StorageBuffer cells; Sampler2D atlas; }\n"
-		"layout cells : uvec4[];\n"
+		"layout cells : uvec4*;\n"
 		"struct Point { vec3 position; vec2 uv; };\n"
 		"struct Vertex { vec4 position; vec2 uv; };\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {\n"
@@ -159,13 +159,15 @@ TEST_CASE("HLSL transpiler compiles terrain shader language surface") {
 	const std::string diagnostic = program.has_value() ? "loaded" : program.error().context + ": " + program.error().message;
 	INFO(diagnostic);
 	REQUIRE(program.has_value());
-	require_compiles(*program, Stage::fragment, "fragment-terrain-surface");
+	auto fragment = hlsl::transpile(*program, Stage::fragment);
+	REQUIRE_FALSE(fragment.has_value());
+	REQUIRE(fragment.error().context == "resources.pointer");
 }
 
-TEST_CASE("HLSL transpiler preserves and compiles user function calls") {
+TEST_CASE("HLSL pointer diagnostic is preserved through user function calls") {
 	auto program = compile_hlsl_program(
 		"uniform { readonly StorageBuffer colors; }\n"
-		"layout colors : vec4[];\n"
+		"layout colors : vec4*;\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"fn color(u32 index) -> vec4 { return colors[index]; }\n"
@@ -176,5 +178,7 @@ TEST_CASE("HLSL transpiler preserves and compiles user function calls") {
 	);
 	REQUIRE(program.has_value());
 	REQUIRE(contains(program->resources()[0].stages, Stage::fragment));
-	require_compiles(*program, Stage::fragment, "fragment-function-calls");
+	auto fragment = hlsl::transpile(*program, Stage::fragment);
+	REQUIRE_FALSE(fragment.has_value());
+	REQUIRE(fragment.error().context == "resources.pointer");
 }

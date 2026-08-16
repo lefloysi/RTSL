@@ -175,7 +175,7 @@ TEST_CASE("SPIR-V transpiler validates inline uniform block member access") {
 TEST_CASE("SPIR-V transpiler validates terrain shader language surface") {
 	auto program = compile_program(
 		"uniform { readonly StorageBuffer cells; Sampler2D atlas; }\n"
-		"layout cells : uvec4[];\n"
+		"layout cells : uvec4*;\n"
 		"struct Point { vec3 position; vec2 uv; };\n"
 		"struct Vertex { vec4 position; vec2 uv; };\n"
 		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip), uv(smooth) {\n"
@@ -203,7 +203,7 @@ TEST_CASE("SPIR-V transpiler validates terrain shader language surface") {
 TEST_CASE("SPIR-V transpiler preserves and validates user function calls") {
 	auto program = compile_program(
 		"uniform { readonly StorageBuffer colors; }\n"
-		"layout colors : vec4[];\n"
+		"layout colors : vec4*;\n"
 		"struct Point { vec3 position; };\n"
 		"struct Vertex { vec4 position; };\n"
 		"fn color(u32 index) -> vec4 { return colors[index]; }\n"
@@ -220,5 +220,22 @@ TEST_CASE("SPIR-V transpiler preserves and validates user function calls") {
 	REQUIRE(fragment.has_value());
 #ifdef RTSL_SPIRV_VAL
 	REQUIRE(validates(*fragment, "fragment-function-calls"));
+#endif
+}
+
+TEST_CASE("SPIR-V transpiler validates physical pointer stores") {
+	auto program = compile_program(
+		"uniform { StorageBuffer cells; }\n"
+		"layout cells : uvec4*;\n"
+		"struct Point { vec3 position; };\n"
+		"struct Vertex { vec4 position; };\n"
+		"@stage : vertex fn vertex_entry(Point p) -> Vertex : position(clip) { return Vertex(vec4(p.position, 1.0)); }\n"
+		"@stage : fragment fn fragment_entry(Vertex v) -> vec4 { cells[u32(0)] = uvec4(u32(1), u32(1), u32(1), u32(1)); return vec4(v.position.x); }\n"
+	);
+	REQUIRE(program.has_value());
+	auto fragment = spirv::transpile(*program, Stage::fragment);
+	REQUIRE(fragment.has_value());
+#ifdef RTSL_SPIRV_VAL
+	REQUIRE(validates(*fragment, "fragment-physical-pointer-store"));
 #endif
 }

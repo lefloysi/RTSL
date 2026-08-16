@@ -177,11 +177,10 @@ struct TypeInfo {
 					  Int,
 					  UInt,
 					  Float,
-					  Vector,
-					  Matrix,
-					  Struct,
-					  RuntimeArray,
-					  Unknown };
+			  Vector,
+			  Matrix,
+			  Struct,
+			  Unknown };
 	Kind kind = Kind::Unknown;
 	u32 width = 0;													// scalar width in bits
 	u32 components = 0;												// vector component count, matrix column count
@@ -307,18 +306,16 @@ class TypeRegistry {
 		return builder_.intern_type(std::format("ptr:{}:{}", raw_id(pointee), static_cast<u32>(sc)), IROp::TypePointer, ID<IRInstruction>{}, { pointee }, { static_cast<u32>(sc) });
 	}
 
-	ID<IRInstruction> runtime_array(std::string_view element_name) {
-		const std::string name = std::string(element_name) + "[]";
-		if (const ID<IRInstruction> existing = find(name)) {
-			return existing;
-		}
-		const ID<IRInstruction> element = find(element_name);
-		const ID<IRInstruction> id = builder_.intern_type(std::format("runtime_array:{}", raw_id(element)), IROp::TypeRuntimeArray, ID<IRInstruction>{}, { element }, {});
-		auto& info = info_[name];
-		info.id = id;
-		info.kind = TypeInfo::Kind::RuntimeArray;
-		info.element_type_id = element;
-		return id;
+	[[nodiscard]] ID<IRInstruction> runtime_array_of(ID<IRInstruction> element) {
+		return builder_.intern_type(std::format("runtime-array:{}", raw_id(element)), IROp::TypeRuntimeArray, ID<IRInstruction>{}, { element }, {});
+	}
+
+	[[nodiscard]] ID<IRInstruction> physical_array_block_of(ID<IRInstruction> array) {
+		return builder_.intern_type(std::format("physical-array-block:{}", raw_id(array)), IROp::TypeStruct, ID<IRInstruction>{}, { array }, {});
+	}
+
+	[[nodiscard]] ID<IRInstruction> device_address_type() {
+		return scalar("u64", TypeInfo::Kind::UInt, 64, IROp::TypeUInt);
 	}
 
   private:
@@ -516,10 +513,10 @@ const Intrinsic* find_intrinsic(std::string_view name, std::size_t parameter_cou
 
 class FunctionLowerer {
   public:
-	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn, std::span<const UniformBinding> uniforms, const StringMap<std::string>& using_uniforms, const StringMap<ID<IRInstruction>>& uniform_var_ids, const StringMap<ID<IRInstruction>>& uniform_var_type_ids, const StringMap<ID<IRInstruction>>& uniform_value_type_ids)
+	FunctionLowerer(IRBuilder& builder, TypeRegistry& types, IRFunction& fn, std::span<const UniformBinding> uniforms, const StringMap<std::string>& using_uniforms, const StringMap<ID<IRInstruction>>& uniform_var_ids, const StringMap<ID<IRInstruction>>& uniform_var_type_ids, const StringMap<ID<IRInstruction>>& uniform_value_type_ids, const StringMap<ID<IRInstruction>>& uniform_pointer_type_ids)
 		: builder_(builder), types_(types), fn_(fn), uniforms_(uniforms),
 		  using_uniforms_(using_uniforms), uniform_var_ids_(uniform_var_ids),
-		  uniform_var_type_ids_(uniform_var_type_ids), uniform_value_type_ids_(uniform_value_type_ids) {}
+		  uniform_var_type_ids_(uniform_var_type_ids), uniform_value_type_ids_(uniform_value_type_ids), uniform_pointer_type_ids_(uniform_pointer_type_ids) {}
 
 	void bind_parameter(std::string_view name, std::string_view type, ID<IRInstruction> param_id) {
 		const ID<IRInstruction> type_id = types_.find(type);
@@ -637,7 +634,7 @@ class FunctionLowerer {
 			lower_for(statement);
 			return;
 		case Decl::BodyStatementKind::assignment:
-			lower_assign(statement.lhs, statement.expr);
+			lower_assign(statement.lhs, statement.lvalue, statement.expr);
 			return;
 		case Decl::BodyStatementKind::declaration:
 			lower_decl(statement.type_name, statement.name, statement.expr);
@@ -956,12 +953,25 @@ class FunctionLowerer {
 		}
 	}
 
-	void lower_assign(std::string_view lhs, const Decl::Expr& rhs) {
+	void lower_assign(std::string_view lhs, const Decl::Expr& lvalue, const Decl::Expr& rhs) {
 		const std::string lhs_t = trim(lhs);
 
 		// Plain assignment to a local or a member of a struct local.
 		// We support: `name = expr` and `name.member = expr` and `this.member = expr`.
 		const Value v = lower_expr(rhs);
+		if (lvalue.kind == Decl::Expr::Kind::binary && lvalue.op == "[]" && lvalue.children.size() == 2) {
+			const Value base = lower_expr(lvalue.children[0]);
+			const Value index = lower_expr(lvalue.children[1]);
+			const Value pointer = emit_pointer_index(base, index, lvalue.span.begin);
+			if (!pointer.id || !v.id) {
+				return;
+			}
+			IRInstruction store;
+			store.op = IROp::Store;
+			store.operands = { pointer.id, v.id };
+			fn_.body.push_back(std::move(store));
+			return;
+		}
 
 		Lex lex{ lhs_t };
 		const Tok head = lex.next();
@@ -1471,9 +1481,30 @@ class FunctionLowerer {
 			const ID<IRInstruction> var_id = vit->second;
 			const ID<IRInstruction> ptr_ty = uniform_var_type_ids_.at(lookup_name);
 			const ID<IRInstruction> value_ty = uniform_value_type_ids_.at(lookup_name);
-			if (const TypeInfo* value_info = types_.info_by_id(value_ty);
-				value_info && value_info->kind == TypeInfo::Kind::RuntimeArray) {
-				return Value{ var_id, value_ty };
+			if (const auto pointer = uniform_pointer_type_ids_.find(lookup_name); pointer != uniform_pointer_type_ids_.end()) {
+				IRInstruction address_pointer;
+				address_pointer.op = IROp::AccessChain;
+				address_pointer.result_id = builder_.fresh_id();
+				address_pointer.type_id = types_.pointer_to(types_.device_address_type(), StorageClass::Uniform);
+				address_pointer.operands = { var_id, constant_uint(0) };
+				const ID<IRInstruction> address_pointer_id = address_pointer.result_id;
+				fn_.body.push_back(std::move(address_pointer));
+
+				IRInstruction address;
+				address.op = IROp::Load;
+				address.result_id = builder_.fresh_id();
+				address.type_id = types_.device_address_type();
+				address.operands = { address_pointer_id };
+				const ID<IRInstruction> address_id = address.result_id;
+				fn_.body.push_back(std::move(address));
+
+				IRInstruction convert;
+				convert.op = IROp::ConvertUToPtr;
+				convert.result_id = builder_.fresh_id();
+				convert.type_id = pointer->second;
+				convert.operands = { address_id };
+				fn_.body.push_back(std::move(convert));
+				return Value{ convert.result_id, pointer->second };
 			}
 			// Find the physical pointee and storage class by scanning the small
 			// compile-time type pool.
@@ -1820,27 +1851,70 @@ class FunctionLowerer {
 		return emit_binop(addition ? (is_float ? IROp::FAdd : IROp::IAdd) : (is_float ? IROp::FSub : IROp::ISub), lhs, rhs);
 	}
 
-	Value emit_index(const Value& base, const Value& index, SourceLocation location) {
-		const TypeInfo* array = types_.info_by_id(base.type_id);
-		if (!array || array->kind != TypeInfo::Kind::RuntimeArray) {
-			builder_.diagnose(location, "indexing currently requires a storage-buffer runtime array");
+	Value emit_pointer_index(const Value& base, const Value& index, SourceLocation location) {
+		ID<IRInstruction> block_type;
+		ID<IRInstruction> array_type;
+		ID<IRInstruction> pointee_type;
+		StorageClass storage = StorageClass::Function;
+		for (const auto& instruction : builder_.module().type_constant_pool) {
+			if (instruction.op != IROp::TypePointer || instruction.result_id != base.type_id) {
+				continue;
+			}
+			block_type = instruction.operands.front();
+			storage = static_cast<StorageClass>(instruction.literals.front());
+			break;
+		}
+		for (const auto& instruction : builder_.module().type_constant_pool) {
+			if (instruction.op == IROp::TypeStruct && instruction.result_id == block_type && instruction.operands.size() == 1) {
+				array_type = instruction.operands.front();
+				break;
+			}
+		}
+		for (const auto& instruction : builder_.module().type_constant_pool) {
+			if (instruction.op == IROp::TypeRuntimeArray && instruction.result_id == array_type) {
+				pointee_type = instruction.operands.front();
+				break;
+			}
+		}
+		if (!pointee_type || storage != StorageClass::PhysicalStorageBuffer) {
+			builder_.diagnose(location, "indexing requires a physical storage-buffer pointer");
 			return {};
 		}
 		IRInstruction chain;
 		chain.op = IROp::AccessChain;
 		chain.result_id = builder_.fresh_id();
-		chain.type_id = types_.pointer_to(array->element_type_id, StorageClass::StorageBuffer);
+		const ID<IRInstruction> pointer_type = types_.pointer_to(pointee_type, StorageClass::PhysicalStorageBuffer);
+		chain.type_id = pointer_type;
 		chain.operands = { base.id, constant_uint(0), index.id };
 		const ID<IRInstruction> chain_id = chain.result_id;
 		fn_.body.push_back(std::move(chain));
+		return Value{ chain_id, pointer_type };
+	}
+
+	Value emit_index(const Value& base, const Value& index, SourceLocation location) {
+		const Value pointer = emit_pointer_index(base, index, location);
+		if (!pointer.id) {
+			return {};
+		}
 
 		IRInstruction load;
 		load.op = IROp::Load;
 		load.result_id = builder_.fresh_id();
-		load.type_id = array->element_type_id;
-		load.operands = { chain_id };
+		const TypeInfo* pointer_info = nullptr;
+		for (const auto& instruction : builder_.module().type_constant_pool) {
+			if (instruction.op == IROp::TypePointer && instruction.result_id == pointer.type_id) {
+				pointer_info = types_.info_by_id(instruction.operands.front());
+				break;
+			}
+		}
+		if (!pointer_info) {
+			builder_.diagnose(location, "pointer indexing produced an invalid pointer type");
+			return {};
+		}
+		load.type_id = pointer_info->id;
+		load.operands = { pointer.id };
 		fn_.body.push_back(std::move(load));
-		return Value{ load.result_id, array->element_type_id };
+		return Value{ load.result_id, pointer_info->id };
 	}
 
 	Value emit_mul_like(TokKind op, const Value& lhs, const Value& rhs) {
@@ -1890,6 +1964,7 @@ class FunctionLowerer {
 	const StringMap<ID<IRInstruction>>& uniform_var_ids_;
 	const StringMap<ID<IRInstruction>>& uniform_var_type_ids_;
 	const StringMap<ID<IRInstruction>>& uniform_value_type_ids_;
+	const StringMap<ID<IRInstruction>>& uniform_pointer_type_ids_;
 	std::unordered_map<std::string, Local, TransparentStringHash, std::equal_to<>> locals_;
 
 	// Constructor lowering state. Active when the current function is a
@@ -2188,7 +2263,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		return qn;
 	};
 	const auto layouts_match = [](const LayoutDecl& a, const LayoutDecl& b) {
-		if (a.is_inline_struct != b.is_inline_struct || a.is_runtime_array != b.is_runtime_array)
+		if (a.is_inline_struct != b.is_inline_struct || a.is_pointer != b.is_pointer)
 			return false;
 		if (!a.is_inline_struct)
 			return a.type_spelling == b.type_spelling;
@@ -2238,6 +2313,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 	StringMap<ID<IRInstruction>> uniform_var_ids;
 	StringMap<ID<IRInstruction>> uniform_var_type_ids;
 	StringMap<ID<IRInstruction>> uniform_value_type_ids;
+	StringMap<ID<IRInstruction>> uniform_pointer_type_ids;
 	for (std::size_t uidx = 0; uidx < module.uniforms.size(); ++uidx) {
 		const auto& uniform = module.uniforms[uidx];
 		const std::string mangled = uniform_binding_name(uniform);
@@ -2254,6 +2330,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 
 		ID<IRInstruction> value_ty = ID<IRInstruction>{};
 		ID<IRInstruction> loaded_value_ty = ID<IRInstruction>{};
+		ID<IRInstruction> pointer_pointee_type = ID<IRInstruction>{};
+		bool is_pointer_resource = false;
 		std::optional<BufferLayout> buffer_layout;
 		std::size_t buffer_field_count = 0;
 		if (needs_layout) {
@@ -2273,21 +2351,48 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 					loaded_value_ty = value_ty;
 					buffer_layout = compute_buffer_layout(layout.inline_fields, rule);
 					buffer_field_count = layout.inline_fields.size();
-				} else if (layout.is_runtime_array) {
-					loaded_value_ty = types.runtime_array(layout.type_spelling);
-					StructField wrapper{ .type = layout.type_spelling + "[]", .name = "values" };
-					const std::array fields{ wrapper };
-					value_ty = types.register_anon_struct(qn + ":block", fields);
-					const StructField element{ .type = layout.type_spelling, .name = "element" };
-					const std::array elements{ element };
-					const BufferLayout element_layout = compute_buffer_layout(elements, rule);
-					const u32 stride = element_layout.members.empty() ? 0 : align_up(element_layout.members[0].consumed_size, element_layout.members[0].base_alignment);
+				} else if (layout.is_pointer) {
+					const ID<IRInstruction> pointee_type = types.find(layout.type_spelling);
+					pointer_pointee_type = pointee_type;
+					is_pointer_resource = true;
+					if (!pointee_type && diagnostics) {
+						diagnostics->report(DiagnosticCode::layout_unknown_type, DiagnosticSeverity::error, layout.span.begin, module.source_name, std::format("unknown pointer pointee type '{}' in layout for '{}'", layout.type_spelling, qn));
+					}
+					loaded_value_ty = types.device_address_type();
+					const StructField address_field{ .type = "u64", .name = "address" };
+					const std::array fields{ address_field };
+					value_ty = types.register_anon_struct(qn + ":address", fields);
 					buffer_layout = BufferLayout{
-						.members = { MemberLayout{ .offset = 0, .base_alignment = element_layout.alignment } },
-						.alignment = element_layout.alignment,
+						.members = { MemberLayout{ .offset = 0, .base_alignment = 8, .consumed_size = 8 } },
+						.alignment = 8,
+						.size = 8,
 					};
 					buffer_field_count = 1;
-					builder.add_decoration({ .target = loaded_value_ty, .kind = IRDecorationKind::ArrayStride, .literals = { stride } });
+					sc = StorageClass::Uniform;
+					const StructField pointer_element{ .type = layout.type_spelling, .name = "element" };
+					const std::array pointer_elements{ pointer_element };
+					const BufferLayout pointer_layout = compute_buffer_layout(pointer_elements, LayoutRule::std430);
+					if (pointer_layout.size == 0 && diagnostics) {
+						diagnostics->report(DiagnosticCode::layout_unknown_type, DiagnosticSeverity::error, layout.span.begin, module.source_name, std::format("pointer pointee type '{}' has no std430 layout", layout.type_spelling));
+					}
+					const ID<IRInstruction> pointer_array_type = types.runtime_array_of(pointee_type);
+					const ID<IRInstruction> pointer_block_type = types.physical_array_block_of(pointer_array_type);
+					builder.add_decoration({
+						.target = pointer_array_type,
+						.kind = IRDecorationKind::ArrayStride,
+						.literals = { pointer_layout.size },
+					});
+					builder.add_decoration({
+						.target = pointer_block_type,
+						.kind = IRDecorationKind::Block,
+					});
+					builder.add_decoration({
+						.target = pointer_block_type,
+						.kind = IRDecorationKind::Offset,
+						.member_index = 0,
+						.literals = { 0 },
+					});
+					uniform_pointer_type_ids[mangled] = types.pointer_to(pointer_block_type, StorageClass::PhysicalStorageBuffer);
 				} else {
 					loaded_value_ty = types.find(layout.type_spelling);
 					if (loaded_value_ty == ID<IRInstruction>{} && diagnostics) {
@@ -2335,6 +2440,8 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 			.descriptor = DescriptorBinding{ .set = uniform.set, .binding = uniform.member },
 			.variable = var_id,
 			.value_type = value_ty,
+			.pointee_type = pointer_pointee_type,
+			.is_pointer = is_pointer_resource,
 		};
 		ir.resources.push_back(std::move(resource));
 
@@ -2457,7 +2564,7 @@ IRModule lower_to_ir(const SemanticModule& module, DiagnosticEngine* diagnostics
 		fn.display_name = symbol.name;
 		ir.functions.push_back(std::move(fn));
 
-		FunctionLowerer lowerer{ builder, types, ir.functions.back(), module.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, uniform_value_type_ids };
+		FunctionLowerer lowerer{ builder, types, ir.functions.back(), module.uniforms, using_uniforms, uniform_var_ids, uniform_var_type_ids, uniform_value_type_ids, uniform_pointer_type_ids };
 		if (is_constructor) {
 			lowerer.begin_constructor(ctor_owner);
 		}

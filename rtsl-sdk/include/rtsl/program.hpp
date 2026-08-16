@@ -14,7 +14,7 @@
 namespace rtsl {
 
 inline constexpr std::uint16_t artifact_version_major = 1;
-inline constexpr std::uint16_t artifact_version_minor = 0;
+inline constexpr std::uint16_t artifact_version_minor = 1;
 
 enum class Stage : std::uint8_t {
 	vertex,
@@ -71,6 +71,8 @@ struct Resource {
 	DescriptorBinding descriptor{};
 	ir::Id variable{};
 	ir::Id value_type{};
+	ir::Id pointee_type{};
+	bool is_pointer = false;
 	StageMask stages = StageMask::none;
 };
 

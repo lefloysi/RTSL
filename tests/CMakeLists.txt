@@ -45,6 +45,26 @@ target_include_directories("rtsl-tests" PRIVATE
     "${PROJECT_SOURCE_DIR}/transpilers/spirv/include"
 )
 
+find_path(RTSL_SPIRV_HEADERS_DIR
+    NAMES
+        "spirv/unified1/spirv.hpp11"
+        "spirv-headers/spirv.hpp11"
+    HINTS "$ENV{VULKAN_SDK}/Include"
+)
+
+if (RTSL_SPIRV_HEADERS_DIR)
+    target_include_directories("rtsl-tests" PRIVATE "${RTSL_SPIRV_HEADERS_DIR}")
+endif()
+
+find_program(RTSL_SPIRV_VAL
+    NAMES "spirv-val"
+    HINTS "$ENV{VULKAN_SDK}/Bin"
+)
+
+if (RTSL_SPIRV_VAL)
+    target_compile_definitions("rtsl-tests" PRIVATE "RTSL_SPIRV_VAL=\"${RTSL_SPIRV_VAL}\"")
+endif()
+
 target_link_libraries("rtsl-tests" PRIVATE
     "rtsl"
     "Catch2::Catch2WithMain"

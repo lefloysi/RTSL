@@ -18,6 +18,7 @@ enum class StorageClass : u08 {
 	StorageBuffer = 5,
 	PushConstant = 6,
 	Private = 7,
+	PhysicalStorageBuffer = 8,
 };
 
 enum class IROp : u16 {

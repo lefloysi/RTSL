@@ -82,7 +82,7 @@ class Parser {
 	std::vector<Attribute> parse_attributes();
 
 	// The single type rule. Consumes:
-	//   'const'? type_atom '&'?
+	//   'const'? type_atom ('&' | '*')?
 	//   type_atom := 'struct' scoped_name? ('{' struct_body '}' )?
 	//              | (ident | 'void') ('::' ident)* ('<' ... '>')?
 	// A struct body registers the type in the translation unit (generated name
