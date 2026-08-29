@@ -1,178 +1,165 @@
-# Prompt for Continuing the RTSL Specification
+# RTSL Documentation Guidance
 
-You are helping design and write the Rutile Shading Language specification.
+This file records the working rules for maintaining the RTSL specification.
 
-The working files are in this directory:
 
-- `specification.md` is the normative language specification.
-- `notes.md` contains design decisions, examples, rough ideas, and open questions.
-- `n1570.pdf` may be outside this directory in the user's Downloads folder.
-- A GLSL specification is available in this directory as a reference.
+## Document Roles
 
-## Required Working Method
+- `specification.md` is normative. It contains confirmed syntax, semantics, validity rules, and
+  required observable behavior.
+- `notes.md` is a non-normative scratchpad. It contains unresolved decisions, incomplete grammar,
+  provisional syntax and examples, future ideas, and intentionally non-normative implementation
+  reminders.
+- `agent.md` records stable document organization and cross-document invariants.
 
-Read all of `specification.md` and `notes.md` whenever the user sends a message. The user may edit
-either file between messages, including while you are working. Treat newly appended notes as new
-design input and merge them into the organized sections without losing their meaning.
+Remove a note after its confirmed content has been incorporated into the specification. Do not
+maintain a second copy of settled specification prose in `notes.md`.
 
-Edit the files directly when the user makes or confirms a design decision. Use `apply_patch` for
-edits. Do not merely return replacement prose in chat unless the user asks for prose only.
 
-Keep every line at 100 characters or fewer. If the next word would exceed 100 characters, move it
-to the next line. Use three ASCII periods (`...`), never the Unicode ellipsis character.
+## Working Method
 
-After editing, check both files for:
+Read the current versions of all three files before editing them. The user may edit them while work
+is in progress, so re-read a file before replacing a large section and preserve new user material.
 
-- lines longer than 100 characters;
-- trailing whitespace;
-- Unicode ellipses;
-- malformed Markdown;
-- contradictory or duplicated rules;
-- unorganized raw notes left at the end of `notes.md`.
+Extract the smallest semantic rule from conversational material and write it as direct
+specification prose. Preserve the user's exact syntax and confirmed behavior. Do not invent missing
+semantics or import familiar language rules that the user did not select.
 
-Do not invent semantics to fill space. Put confirmed rules in `specification.md`. Put tentative
-ideas and unresolved alternatives in `notes.md`.
+Keep unresolved choices in `notes.md`. Keep backend strategies and host-API details out of
+normative language rules unless the specification intentionally makes them observable.
 
-## Writing and Reasoning Style
+Perform structural, semantic, and editorial reviews after a broad rewrite.
 
-The user is a programmer, not a professional technical writer. Their rough wording may be casual,
-but the underlying language design is deliberate. Extract the exact semantic decision before
-rewriting it as specification prose.
 
-Think independently. Do not agree automatically, and do not repeatedly apologize. If a proposed
-rule conflicts with another rule or has an important consequence, explain the concrete conflict.
-Distinguish syntax, semantics, implementation strategy, ABI, and file format.
+## Specification Organization
 
-Ask focused design questions that the user can answer from their intended language behavior. Do
-not ask obvious questions whose answers already follow from the notes. Ask one small related group
-at a time, then incorporate the answers.
+Order the normative chapters by semantic dependency:
 
-The user prefers the explanatory style of the GLSL specification. Use direct declarative prose.
-Use words such as "must" only when natural; the document does not need RFC-style repeated
-"MUST" and "MUST NOT" wording.
+1. Introduction
+2. Basics
+3. Types
+4. Declarations
+5. Definitions
+6. Expressions and Operators
+7. Statements and Control Flow
+8. Templates
+9. Modules
+10. Shader Stages and Interfaces
+11. RTSL IR and Artifacts
+12. Debugging
 
-## Document Structure
+Types defines type categories, identity, completeness, and semantic properties. Declarations
+defines type specifiers, declarators, attributes, qualifiers, and the syntax that introduces
+entities. Expressions and Operators defines conversions and operations on those types.
 
-Order concepts by dependency. Define source representation before lexical decomposition, tokens
-before grammar, declarations before rules that consume declarations, and types before expressions
-that operate on them.
+Arrays, pointers, and references are derived types, not built-in types. Their declarator syntax
+belongs in Declarations. Array conversion, subscripting, pointer operations, and reference binding
+belong in Expressions and Operators.
 
-Never repeat a heading as its only child. Avoid structures such as:
+Attributes and qualifiers remain with declarations. Definitions describe bodies, initializers,
+member sequences, and instantiated concrete content. Names, scopes, linkage, imports, exports, and
+module interfaces remain together under Modules.
 
-```text
-3. Translation Units
-3.1 Translation Units
-```
 
-Also avoid a parent heading formed by concatenating its children, such as "Declarations,
-Visibility, and Linkage" followed by separate visibility and linkage subsections. A chapter should
-introduce its main concept directly; subsections should cover narrower parts.
+## Declarator and Addressing Invariants
 
-Use a subsection only when it creates a real semantic subdivision. Do not combine concepts merely
-because they have similar effects. For example, whitespace and comments have separate definitions,
-even though both separate tokens.
+- Object declarators compose pointer, reference, array, and parenthesized forms. Functions retain
+  the dedicated `fn` syntax; object declarators do not introduce function pointers.
+- Arrays are distinct contiguous objects. Ordinary expression use converts an array to a pointer
+  to its first element when the context does not require the array itself.
+- Arrays of references, pointers to references, references to arrays, references to pointers, and
+  nested references are valid type compositions.
+- Every `&` declarator forms one distinct reference layer. RTSL has no reference collapsing or
+  separate rvalue-reference category.
+- References bind existing entities, cannot be null or reseated, and may be stored, passed, or
+  returned.
+- Pointer arithmetic is array-bounded and may produce a non-dereferenceable one-past pointer.
+- Unary `&` is the core address-of operator for objects, resource entities, and references.
+- A qualifier on a pointer variable does not propagate to the designated entity.
+- Integer-to-pointer conversion is explicit and exists only where an applicable RTSL extension
+  defines the accepted address. Pointer-to-integer conversion does not exist.
+- Pointer and reference representations are not observable.
+- Pointer types and operations are core language constructs. Supplying addresses of externally
+  bound storage is an extension capability.
 
-## Confirmed Design Decisions
+Keep virtual addresses, storage maps, provenance-based devirtualization, and target instruction
+details non-normative. RTSL IR retains abstract pointer operations. A backend may lower known
+provenance directly, resolve an unchanged pointer once, or use a virtual mapping when required.
 
-The current files are authoritative. The following summary is only a navigation aid.
 
-### Source and Lexical Model
+## Templates and Compiled Interfaces
 
-- Source is UTF-8 but uses an intentionally restricted RTSL character set.
-- The language and canonical translation-unit names are case-sensitive.
-- A reverse solidus immediately followed by a new-line forms a line continuation.
-- Line continuations are removed before comments are recognized, as in C.
-- Whitespace and comments both separate preprocessing tokens.
-- Block comments do not nest.
-- RTSL has a preprocessor.
-- RTSL has no string types or string literals.
+- Exported generic template declarations, their complete definitions, and the declarations needed
+  to select their explicit specializations are module-interface content.
+- Generic template definitions are serialized only in `.rtm` module-interface artifacts.
+- Concrete template instantiations and explicitly defined specializations are serialized in
+  `.rto` object artifacts and `.rtl` library artifacts.
+- An explicit specialization is declared and visible before that specialization is instantiated.
+- The compiler instantiates every specialization required while compiling a translation unit.
+- A linker may merge equivalent concrete instances of the same specialization.
+- The transpiler does not instantiate template specializations.
+- One specialization has one identity throughout a linked set of artifacts.
+- `.rtm` uses parameterized IR; `.rto` and `.rtl` use concrete typed SSA.
+- The compiler retains every shader-stage entry point in its `.rto` output.
+- The linker retains those entry points in `.rtl`.
+- The transpiler receives `.rtl`, an entry-point identifier, and requested shader stages. It
+  selects the matching stage entry points, resolves extensions, validates interfaces, and produces
+  backend shaders.
+- Extension queries remain ordinary Boolean IR expressions until the transpiler resolves them.
 
-### Translation Units and Modules
 
-- A translation unit is a named RTSL source string supplied to a compilation.
-- Every translation unit has a canonical name, even for inline source.
-- A module is the exported interface of a translation unit.
-- Declarations are not exported by default.
-- Export and external linkage are independent.
-- Imports use exact canonical names and require a semicolon.
-- Ordinary and exported imports may form cycles.
-- In circular re-export groups, exported structures are resolved before exported functions.
-- A module interface contains declarations, not implementations or source text.
+## RTSL IR and Artifacts
 
-### Structures and Tuples
+- `.rto` is concrete typed SSA for exactly 1 translation unit.
+- `.rtm` is a compiled interface bundle used by the compiler. It contains exported declarations
+  and parameterized template IR, and it is not a linker input.
+- Compiling source consumes the `.rtm` artifacts required by its imports and emits `.rto`. The
+  compiler emits `.rtm` when compiled interface output is requested.
+- `.rtl` is a linked library of concrete SSA. The linker consumes `.rto` and `.rtl` and may leave
+  symbols unresolved.
+- RTSL defines no program or executable artifact. Only a transpiler produces backend shaders.
+- The artifact format is a canonical little-endian stream of 32-bit words with a fixed header,
+  fixed opcode and operand tables, and exact major/minor compatibility.
+- The initial format version is `0.1.0.0`. Major and minor must match exactly. Patch and snapshot
+  differences are compatible and cannot change the binary grammar.
+- Every unknown opcode is invalid. Unassigned opcode and enumerant values remain reserved.
+- Cross-artifact symbols use canonical `_RT` link names formed from hexadecimal canonical symbol
+  keys. Do not replace them with hashes or artifact-local identities.
+- Resource records contain logical binding names and complete RTSL types. Backend binding numbers,
+  descriptor sets, registers, layouts, and target locations do not belong in RTSL IR.
+- Stage-interface and resource names required for later queries are semantic data, not debug data.
+- Source text, locations, lexical scopes, macro ancestry, local source names, and inlining ancestry
+  belong in a future debug companion format, not `.rto`, `.rtm`, or `.rtl`.
+- Constructors, destructors, operators, methods, reference access, and `emit` behavior are lowered
+  before concrete SSA is serialized.
+- Pointer and reference operations remain abstract and representation-independent in concrete IR.
+- Extension-supplied operations use ordinary unresolved canonical symbols. No extension-specific
+  opcode range or extension table belongs in an artifact.
 
-- `struct Foo;` declares a structure without defining its members.
-- `struct Foo { ... }` defines the structure.
-- Either form may be exported.
-- Structure names use the ordinary declaration and lookup system.
-- Structure templates use the same specialization system as function templates.
-- A tuple is an unnamed structure with ordered, named members.
-- Every tuple member has a name.
-- Member names, member types, and member order participate in tuple type identity.
-- A tuple has the same layout as a structure containing the same members in the same order.
-- A type alias for a tuple does not create a nominal structure type.
 
-### Declarations and Templates
+## Formatting and Verification
 
-- Type declarations are visible throughout their containing scope.
-- Structures are resolved before functions.
-- Namespace-scope functions and variables have external linkage unless declared `static`.
-- `extern` may refer to an external-linkage entity without importing or exporting it.
-- A generic template uses a leading `template<...>` clause.
-- Only an explicit specialization places arguments after the declared name.
-- An explicit specialization does not require a preceding generic declaration.
-- A matching explicit specialization and generic declaration merge regardless of order.
-- Type, compile-time value, and identifier template parameters exist.
-- Identifier arguments participate in specialization identity and use ordinary lookup rules.
-- Constraints are compile-time Boolean expressions and apply to every parameter kind.
-- The most constrained applicable generic declaration is selected.
-- In an exported template, the template clause precedes `export`.
+Keep prose at 100 characters or fewer. Direct Markdown links in the table of contents and aligned
+Markdown table rows may exceed 100 characters. Use ASCII `...`, never a Unicode ellipsis.
+Italicize every occurrence of a term defined by the specification, including its defining
+occurrence.
 
-## Immediate Next Work
+Use direct Markdown links in the table of contents. Do not replace them with reference-link
+definitions. Regenerate and validate the table after changing headings.
 
-Continue the structure-type design. Do not jump to expressions or the standard library yet.
+In `specification.md`, place 3 empty lines before and after each top-level `---` separator. Place
+2 empty lines before a subsection heading and 1 empty line after it. Keep raw Markdown readable.
 
-First determine the declaration and completeness rules:
+After editing:
 
-1. Can `struct Foo;` be repeated, and may it be followed by exactly one definition?
-2. Where may an incomplete structure type be used: pointers and references only, or elsewhere?
-3. Are structures nominal types, so that two separately declared structures with identical
-   members remain different types?
-4. Must member names be unique within a structure?
-5. Are member declarations processed in textual order, and may a member refer to a later nested
-   declaration?
-
-Then determine the member model:
-
-1. Which declarations may appear inside a structure?
-2. Do methods, constructors, operators, static members, and nested types all use ordinary lookup?
-3. What are the access-control defaults and the exact effects of `public`, `private`, and any
-   other access labels?
-
-Then address layout. Do not assume layout is unobservable merely because RTSL has no raw byte
-access. Buffer resources and the Rendering Hardware Interface expose an ABI, so offsets, alignment,
-padding, and size may still matter outside the shader. Ask whether RTSL should have:
-
-- one target-defined native structure layout;
-- a fully specified universal layout;
-- explicit layout modes for interface and resource data;
-- or a native layout plus explicit stable layouts where an external ABI requires them.
-
-Record uncertainty in `notes.md` until the user chooses. Once the structure rules are coherent,
-write the normative structure subsection before the tuple subsection, because tuple semantics
-depend on structure semantics.
-
-## Important Unresolved Areas After Structures
-
-- formal ordering of overlapping template constraints;
-- compile-time evaluation and mutation of inferred compile-time variables;
-- numeric and character literal tokenization and typing;
-- preprocessing directives;
-- qualified identifier template arguments and external resource names;
-- visibility-before-declaration rules for functions and variables;
-- template instantiation across module artifacts;
-- resource, pointer, reference, and storage semantics;
-- shader stages, interfaces, statements, expressions, and operators.
-
-Work incrementally. A short, correct subsection based on settled semantics is more useful than a
-large polished section built on assumptions.
+- validate representative object and abstract declarators;
+- confirm that no function-pointer syntax was introduced;
+- check every table-of-contents target;
+- check line lengths, trailing whitespace, Unicode ellipses, Markdown fences, and heading order;
+- search all three files for duplicated, contradictory, and stale terminology;
+- confirm compiler, module, template, stage, extension, and transpiler responsibilities agree;
+- verify that every surviving note is unresolved, provisional, future-facing, or intentionally
+  non-normative;
+- run `git diff --check` and inspect the complete documentation diff;
+- preserve unrelated working-tree changes and leave documentation changes uncommitted unless the
+  user asks otherwise.
