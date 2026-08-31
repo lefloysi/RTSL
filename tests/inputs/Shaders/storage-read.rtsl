@@ -1,0 +1,6 @@
+storage u32 counter;
+
+@stage : vertex
+fn main(u32 value) -> u32 {
+	return counter;
+}

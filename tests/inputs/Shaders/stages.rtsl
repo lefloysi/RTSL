@@ -1,0 +1,13 @@
+import "camera.rtsl";
+
+struct Point {
+	vec3 position;
+}
+
+struct Vertex : Position {};
+
+@stage : vertex
+fn vertex_main(Point point) -> Vertex;
+
+@stage : fragment
+fn fragment_main(Vertex vertex) -> vec4;

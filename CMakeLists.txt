@@ -1,10 +1,39 @@
 cmake_minimum_required(VERSION 3.28)
-project(RTSL VERSION 0.1.0 LANGUAGES C CXX)
+project(RTSL VERSION 0.1.0 LANGUAGES CXX)
 
-enable_testing()
+add_library(rtsl STATIC
+	src/AST/ASTContext.cpp
+	src/Basic/Diagnostic.cpp
+	src/Basic/IdentifierTable.cpp
+	src/Basic/SourceManager.cpp
+	src/Basic/TokenKinds.cpp
+	src/CodeGen/CodeGenerator.cpp
+	src/Frontend/CompilerInstance.cpp
+	src/IR/Builder.cpp
+	src/IR/IR.cpp
+	src/IR/Verifier.cpp
+	src/Lex/Lexer.cpp
+	src/Lex/Preprocessor.cpp
+	src/Linker/Linker.cpp
+	src/Parse/Parser.cpp
+	src/Serialization/Artifact.cpp
+	src/Sema/Sema.cpp
+)
+add_library(RTSL::rtsl ALIAS rtsl)
 
-add_subdirectory("rtsl-core")
-add_subdirectory("rtsl")
-add_subdirectory("rtslc")
-add_subdirectory("tests")
+target_compile_features(rtsl PUBLIC cxx_std_20)
+target_compile_options(rtsl PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
+target_include_directories(rtsl PUBLIC
+	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+	$<INSTALL_INTERFACE:include>
+)
+target_include_directories(rtsl PRIVATE src)
+
+add_subdirectory(tools/rtslc)
+
+option(RTSL_BUILD_TESTS "Build RTSL tests" ${PROJECT_IS_TOP_LEVEL})
+if(RTSL_BUILD_TESTS)
+	include(CTest)
+	add_subdirectory(tests)
+endif()
 
