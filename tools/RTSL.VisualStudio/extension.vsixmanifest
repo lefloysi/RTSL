@@ -1,0 +1,18 @@
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Id="RTSL.VisualStudio" Version="0.1.1" Language="en-US" Publisher="RTSL" />
+    <DisplayName>RTSL Language Support</DisplayName>
+    <Description xml:space="preserve">Compiler-backed RTSL language support.</Description>
+  </Metadata>
+  <Installation InstalledByMsi="false">
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.MefComponent" Path="RTSL.VisualStudio.dll" />
+  </Assets>
+</PackageManifest>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <CreateVsixContainer>true</CreateVsixContainer>
+    <DeployExtension>false</DeployExtension>
+    <!-- The SDK-style project computes OutputPath after VSSDK imports; make
+         packaging locations explicit for the installed VSSDK targets. -->
+    <FileManifest>$(MSBuildProjectDirectory)\obj\$(Configuration)\vsix-files.json</FileManifest>
+    <TargetVsixContainer>$(MSBuildProjectDirectory)\bin\$(Configuration)\RTSL.VisualStudio.vsix</TargetVsixContainer>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.0.32112.339" />
+    <PackageReference Include="Microsoft.VisualStudio.LanguageServer.Client" Version="17.0.5158" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Data" Version="17.1.370" />
+    <PackageReference Include="Microsoft.VisualStudio.Utilities" Version="17.0.32112.339" />
+  </ItemGroup>
+  <ItemGroup><Reference Include="System.ComponentModel.Composition" /></ItemGroup>
+  <ItemGroup>
+    <None Include="source.extension.vsixmanifest" />
+    <Content Include="..\rtsl-lsp\x64\Release\rtsl-lsp.exe"><Link>rtsl-lsp.exe</Link><IncludeInVSIXContainer>true</IncludeInVSIXContainer></Content>
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets" Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets')" />
+</Project>
