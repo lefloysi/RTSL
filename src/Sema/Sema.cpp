@@ -18,7 +18,8 @@ void Sema::installStandardLibrary(IdentifierTable& Identifiers) {
 	Types[&Identifiers.get("usize")] = Context.getBuiltinType(BuiltinTypeKind::builtin_usize);
 	Types[&Identifiers.get("f32")] = Context.getBuiltinType(BuiltinTypeKind::builtin_f32);
 	for (auto Name : {"vec2", "vec3", "vec4", "mat2", "mat3", "mat4", "triangle", "triangle_strip", "patch",
-		"triangle_tess", "quad_tess", "isoline_tess"}) {
+		"triangle_patch", "quad_patch", "isoline_patch", "tessellation", "equal", "fractional_even", "fractional_odd",
+		"cw", "ccw"}) {
 		auto& II = Identifiers.get(Name);
 		Types[&II] = Context.getNamedType(&II);
 	}
@@ -40,7 +41,7 @@ void Sema::installStandardLibrary(IdentifierTable& Identifiers) {
 	Records[PositionType] = PositionRecord;
 	IdentifierInfo* SampleName = &Identifiers.get("sample");
 	SampleIntrinsic = Context.create<FunctionDecl>(Context.getTranslationUnitDecl(), SourceLocation{}, SampleName,
-		Types[&Identifiers.get("vec4")], nullptr, 0, nullptr, 0, nullptr, 0, nullptr, false, false, false);
+		Types[&Identifiers.get("vec4")], nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, false, false, false);
 	Values[SampleName] = SampleIntrinsic;
 }
 
@@ -49,7 +50,13 @@ QualType Sema::actOnType(const ParsedType& Parsed) {
 	if (!Parsed.Name) return Result;
 	if (!Parsed.Arguments.empty()) {
 		std::vector<QualType> Arguments;
-		for (const auto& Argument : Parsed.Arguments) Arguments.push_back(actOnType(Argument));
+		std::vector<std::optional<std::uint32_t>> IntegerArguments;
+		for (const auto& Argument : Parsed.Arguments) {
+			Arguments.push_back(actOnType(Argument));
+			IntegerArguments.push_back(Argument.IntegerValue);
+		}
+		if (!Types.contains(Parsed.Name))
+			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Parsed.Location, Parsed.Location}, "unknown type name");
 		if (Parsed.Name == BufferTemplate && Arguments.size() == 2) {
 			auto First = Arguments[0].getTypePtr();
 			auto Second = Arguments[1].getTypePtr();
@@ -60,7 +67,7 @@ QualType Sema::actOnType(const ParsedType& Parsed) {
 			if (FirstVoid && SecondVoid) Diagnostics.report(DiagnosticLevel::diagnostic_error, {Parsed.Location, Parsed.Location},
 				"buffer<void, void> has neither header nor repeated storage");
 		}
-		Result = Context.getTemplateSpecializationType(Parsed.Name, Arguments);
+		Result = Context.getTemplateSpecializationType(Parsed.Name, Arguments, IntegerArguments);
 	} else if (auto Position = Types.find(Parsed.Name); Position != Types.end()) {
 		Result = Position->second;
 	} else {
@@ -71,6 +78,10 @@ QualType Sema::actOnType(const ParsedType& Parsed) {
 	if (Parsed.Reference) Result = Context.getReferenceType(Result);
 	if (Parsed.Constant) Result = QualType(Result.getTypePtr(), true);
 	return Result;
+}
+
+bool Sema::isTypeName(const IdentifierInfo* Name) const {
+	return Name != nullptr && Types.contains(const_cast<IdentifierInfo*>(Name));
 }
 
 RecordDecl* Sema::recordForType(QualType ValueType) const {
@@ -99,14 +110,14 @@ Attr* Sema::processAttributes(const ParsedAttributes& Parsed) {
 	for (const auto& Attribute : Parsed.attributes()) {
 		std::vector<AttrToken> Tokens;
 		for (const auto& ParsedToken : Attribute.Tokens) {
-			AttrToken Value;
+			AttrToken Value{};
 			Value.Kind = ParsedToken.getKind();
 			if (ParsedToken.getKind() == tok::identifier ||
 				(ParsedToken.getKind() >= tok::kw_import && ParsedToken.getKind() <= tok::kw_typename))
 				Value.Identifier = ParsedToken.getIdentifierInfo();
 			if (ParsedToken.getKind() == tok::numeric_literal || ParsedToken.getKind() == tok::string_literal) {
-				Value.LiteralData = ParsedToken.getLiteralData();
 				Value.LiteralLength = ParsedToken.getLength();
+				Value.LiteralData = ParsedToken.getLiteralData();
 			}
 			Tokens.push_back(Value);
 		}
@@ -238,7 +249,8 @@ void Sema::popTemplateParameters(const std::vector<IdentifierInfo*>& Parameters)
 
 FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS, const Declarator& D,
 	const std::vector<ParmVarDecl*>& Parameters, const std::vector<ParsedParameterContract>& ParsedContracts,
-	Expr* BaseInitializer, const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters) {
+	Expr* BaseInitializer, const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters,
+	const std::vector<ParsedType>& ParsedTypeOnlyParameters) {
 	std::vector<ParameterContract> Contracts;
 	for (const ParsedParameterContract& Parsed : ParsedContracts) {
 		if (Parsed.ParameterIndex >= Parameters.size()) {
@@ -266,10 +278,19 @@ FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS,
 			.Contract = Parsed.Contract,
 		});
 	}
+	std::vector<QualType> TypeOnlyParameters;
+	for (const ParsedType& Type : ParsedTypeOnlyParameters) TypeOnlyParameters.push_back(actOnType(Type));
+	bool GeometryEntry = false;
+	for (const ParsedAttr& Attribute : Attributes.attributes()) {
+		if (!Attribute.Name || Attribute.Name->getName() != "stage" || Attribute.Tokens.empty()) continue;
+		GeometryEntry = Attribute.Tokens.front().getIdentifierInfo() && Attribute.Tokens.front().getIdentifierInfo()->getName() == "geometry";
+	}
+	const bool GeometryEmitter = GeometryEntry && D.Type.Name && D.Type.Name->getName() == "triangle_strip";
 	auto Result = Context.create<FunctionDecl>(LocalContext, D.Location, D.Name, actOnType(D.Type),
 		Context.copyPointerArray(Parameters), static_cast<unsigned>(Parameters.size()), Context.copyArray(Contracts),
 		static_cast<unsigned>(Contracts.size()), Context.copyPointerArray(TemplateParameters),
-		static_cast<unsigned>(TemplateParameters.size()), BaseInitializer, D.Emits, DS.Internal, DS.Exported);
+		static_cast<unsigned>(TemplateParameters.size()), Context.copyArray(TypeOnlyParameters),
+		static_cast<unsigned>(TypeOnlyParameters.size()), BaseInitializer, D.Emits || GeometryEmitter, DS.Internal, DS.Exported);
 	Result->setAttrs(processAttributes(Attributes));
 	LocalContext->addDecl(Result);
 	Values[D.Name] = Result;
@@ -397,6 +418,21 @@ Expr* Sema::actOnCurrentEmitterExpr(SourceLocation Location) {
 Expr* Sema::actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation Location) {
 	if (!Base) return nullptr;
 	const Type* BaseType = Base->getType().getTypePtr();
+	if (BaseType && BaseType->getTypeClass() == TypeClass::type_reference)
+		BaseType = static_cast<const ReferenceType*>(BaseType)->getPointeeType().getTypePtr();
+	if (BaseType && BaseType->getTypeClass() == TypeClass::type_template_specialization && Member) {
+		const auto* Patch = static_cast<const TemplateSpecializationType*>(BaseType);
+		const std::string_view Name = Patch->getName()->getName();
+		if ((Name == "patch" || Name == "triangle_patch" || Name == "quad_patch" || Name == "isoline_patch" || Name == "triangle") &&
+			Patch->getArgumentCount() != 0) {
+			auto Result = Context.create<PostfixExpr>(StmtClass::expr_member, Base, Member, nullptr, 0);
+			if (Member->getName() == "current") Result->setType(Patch->arguments()[0]);
+			else if (Member->getName() == "outer" || Member->getName() == "coordinate")
+				Result->setType(Context.getBuiltinType(BuiltinTypeKind::builtin_f32));
+			else Result = nullptr;
+			if (Result) return Result;
+		}
+	}
 	if (BaseType && BaseType->getTypeClass() == TypeClass::type_named && Member) {
 		auto Name = static_cast<const NamedType*>(BaseType)->getName()->getName();
 		auto Component = Member->getName();
@@ -430,6 +466,37 @@ Expr* Sema::actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation L
 		return Result;
 	}
 	Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "structure has no such member");
+	return nullptr;
+}
+
+Expr* Sema::actOnSubscriptExpr(Expr* Base, Expr* Index, SourceLocation Location) {
+	if (!Base || !Index) return nullptr;
+	if (Base->getStmtClass() == StmtClass::expr_member) {
+		auto Member = static_cast<PostfixExpr*>(Base);
+		if (Member->getMember() && Member->getMember()->getName() == "outer") {
+			applyContextualType(Index, Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
+			auto Result = Context.create<PostfixExpr>(StmtClass::expr_subscript, Base, nullptr,
+				Context.copyPointerArray(std::vector<Expr*>{Index}), 1);
+			Result->setType(Context.getBuiltinType(BuiltinTypeKind::builtin_f32));
+			return Result;
+		}
+	}
+	const Type* BaseType = Base->getType().getTypePtr();
+	if (BaseType && BaseType->getTypeClass() == TypeClass::type_reference)
+		BaseType = static_cast<const ReferenceType*>(BaseType)->getPointeeType().getTypePtr();
+	if (BaseType && BaseType->getTypeClass() == TypeClass::type_template_specialization) {
+		const auto* Patch = static_cast<const TemplateSpecializationType*>(BaseType);
+		const std::string_view Name = Patch->getName()->getName();
+		if ((Name == "patch" || Name == "triangle_patch" || Name == "quad_patch" || Name == "isoline_patch" || Name == "triangle") &&
+			Patch->getArgumentCount() != 0) {
+			applyContextualType(Index, Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
+			auto Result = Context.create<PostfixExpr>(StmtClass::expr_subscript, Base, nullptr,
+				Context.copyPointerArray(std::vector<Expr*>{Index}), 1);
+			Result->setType(Patch->arguments()[0]);
+			return Result;
+		}
+	}
+	Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "subscript requires a patch or primitive value");
 	return nullptr;
 }
 
@@ -497,6 +564,13 @@ Expr* Sema::actOnUnaryExpr(tok::TokenKind Opcode, Expr* Operand) {
 
 Expr* Sema::actOnBinaryExpr(tok::TokenKind Opcode, Expr* Left, Expr* Right) {
 	if (!Left || !Right) return nullptr;
+	if (Opcode == tok::equal && Left->getStmtClass() == StmtClass::expr_member) {
+		auto Member = static_cast<PostfixExpr*>(Left);
+		if (Member->getMember() && Member->getMember()->getName() == "outer") {
+			Diagnostics.report(DiagnosticLevel::diagnostic_error, {}, "tessellation outer levels require an index");
+			return nullptr;
+		}
+	}
 	if (Opcode == tok::lessminus) {
 		if (Left->getStmtClass() != StmtClass::expr_emitter) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {}, "left operand of '<-' is not an emitter");

@@ -72,26 +72,22 @@ fn main(u32 x, u32 y, u32 z) {
 	REQUIRE(Configuration.workgroup_size == std::array<std::uint32_t, 3>{8, 4, 2});
 }
 
-TEST_CASE("tessellation and geometry stage attributes configure RTIR") {
+TEST_CASE("entry attributes are preserved as backend metadata") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("stages.rtsl");
 	Invocation.setInputBuffer(R"(
+
+struct Vertex {}
 @stage : tess_control
-@output_control_points : 4
+@invocations : 4
 fn control() {
 }
 @stage : tess_eval
-@tessellation_domain : isolines
-@tessellation_spacing : fractional_even
-@tessellation_winding : clockwise
-fn evaluate() {
+fn evaluate(const quad_patch<Vertex>& patch, tessellation<fractional_odd, cw>) -> Vertex {
 }
 @stage : geometry
-@geometry_input : points
-@geometry_output : line_strip
-@maximum_vertices : 16
-@geometry_invocations : 2
-fn expand() {
+fn expand(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
+    emit input[0];
 }
 )");
 	rtsl::CompilerInstance Compiler;
@@ -102,16 +98,54 @@ fn expand() {
 	REQUIRE(Result.succeeded());
 	REQUIRE(Result.Module.entry_points.size() == 3);
 	const auto& Control = std::get<rtsl::ir::TessellationControlConfiguration>(Result.Module.entry_points[0].configuration);
-	REQUIRE(Control.output_control_points == 4);
+	REQUIRE(Control.output_control_points == 1);
+	REQUIRE(Result.Module.strings.get(Result.Module.entry_points[0].attributes[1].name) == "invocations");
+	REQUIRE(Result.Module.strings.get(Result.Module.entry_points[0].attributes[1].tokens[0]) == "4");
 	const auto& Evaluation = std::get<rtsl::ir::TessellationEvaluationConfiguration>(Result.Module.entry_points[1].configuration);
-	REQUIRE(Evaluation.domain == rtsl::ir::TessellationDomain::tessellation_domain_isolines);
-	REQUIRE(Evaluation.spacing == rtsl::ir::TessellationSpacing::tessellation_spacing_fractional_even);
+	REQUIRE(Evaluation.domain == rtsl::ir::TessellationDomain::tessellation_domain_quads);
+	REQUIRE(Evaluation.spacing == rtsl::ir::TessellationSpacing::tessellation_spacing_fractional_odd);
 	REQUIRE(Evaluation.winding == rtsl::ir::Winding::winding_clockwise);
 	const auto& Geometry = std::get<rtsl::ir::GeometryConfiguration>(Result.Module.entry_points[2].configuration);
-	REQUIRE(Geometry.input == rtsl::ir::PrimitiveTopology::primitive_points);
-	REQUIRE(Geometry.output == rtsl::ir::PrimitiveTopology::primitive_line_strip);
-	REQUIRE(Geometry.maximum_vertices == 16);
-	REQUIRE(Geometry.invocations == 2);
+	REQUIRE(Geometry.input == rtsl::ir::PrimitiveTopology::primitive_triangles);
+	REQUIRE(Geometry.output == rtsl::ir::PrimitiveTopology::primitive_triangle_strip);
+	REQUIRE(Geometry.maximum_vertices == 6);
+	REQUIRE(Geometry.invocations == 1);
+}
+
+TEST_CASE("tessellation outer levels are indexed") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("outer-levels.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {}
+@stage : tess_control
+@invocations : 4
+fn main(patch<Vertex>& patch) -> Vertex {
+	patch.outer[0] = 1.0;
+	return patch.current;
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("outer-levels");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	REQUIRE(Result.succeeded());
+	REQUIRE(std::ranges::count(Result.Module.functions.front().blocks.front().instructions, rtsl::ir::Opcode::opcode_store,
+		&rtsl::ir::Instruction::opcode) == 1);
+
+	rtsl::CompilerInvocation InvalidInvocation;
+	InvalidInvocation.setInputName("scalar-outer.rtsl");
+	InvalidInvocation.setInputBuffer(R"(
+struct Vertex {}
+@stage : tess_control
+fn main(patch<Vertex>& patch) -> Vertex {
+	patch.outer = 1.0;
+	return patch.current;
+}
+)");
+	rtsl::CompilerInstance InvalidCompiler;
+	InvalidCompiler.setInvocation(std::move(InvalidInvocation));
+	REQUIRE_FALSE(InvalidCompiler.execute());
 }
 
 TEST_CASE("a compute barrier lowers from a named statement label") {
@@ -159,13 +193,14 @@ TEST_CASE("emit syntax lowers through the implicit emitter operator") {
 	Invocation.setModuleName("emit");
 	Invocation.setInputName("emit.rtsl");
 	Invocation.setInputBuffer(R"(
-fn forward(u32 value) emit -> void {
+struct Vertex {}
+fn forward(Vertex value) emit -> void {
 	emit value;
 	__return <- value;
 }
 @stage : geometry
-fn main(u32 value) -> triangle_strip<u32, 2> {
-	forward(value);
+fn main(triangle<Vertex> input) -> triangle_strip<Vertex, 2> {
+	forward(input[0]);
 }
 )");
 	rtsl::CompilerInstance Compiler;

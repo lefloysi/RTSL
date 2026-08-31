@@ -6,6 +6,6 @@ The VSIX is intentionally a transport and editor-integration layer. `rtsl-lsp` i
 
 ## Build
 
-Build `rtsl-lsp` using the repository CMake preset, then place `rtsl-lsp.exe` next to the VSIX assembly before packaging. The project references the installed Visual Studio 17 SDK packages and is intentionally named without a product-year suffix.
+Build `rtsl-lsp` in the requested configuration, then run `Package.ps1 -Configuration Release`. The script uses the installed Visual Studio 2022 VSSDK `MSBuild.exe` and its `CreateVsixContainer` target; it does not assemble an archive itself. The project references the installed Visual Studio 17 SDK packages and is intentionally named without a product-year suffix.
 
 Current compiler frontend limitation: `CompilerInstance::validateImports` validates build-provided import names but does not deserialize/import their declarations into Sema. Therefore cross-module completion, definition, and template instantiation cannot be claimed until that compiler capability is implemented; the language client will expose it automatically once the frontend query API does.

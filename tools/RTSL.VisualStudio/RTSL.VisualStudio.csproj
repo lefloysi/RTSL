@@ -1,29 +1,44 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
-    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <GeneratePkgDefFile>false</GeneratePkgDefFile>
+    <IncludePkgdefInVSIXContainer>false</IncludePkgdefInVSIXContainer>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <CreateVsixContainer>true</CreateVsixContainer>
-    <DeployExtension>false</DeployExtension>
+    <DeployExtension Condition="'$(Configuration)' == 'Debug'">true</DeployExtension>
+    <DeployExtension Condition="'$(Configuration)' != 'Debug'">false</DeployExtension>
     <!-- The SDK-style project computes OutputPath after VSSDK imports; make
          packaging locations explicit for the installed VSSDK targets. -->
     <FileManifest>$(MSBuildProjectDirectory)\obj\$(Configuration)\vsix-files.json</FileManifest>
+    <TemplateOutputDirectory>$(MSBuildProjectDirectory)\obj\$(Configuration)\</TemplateOutputDirectory>
+    <TemplateFileManifest>$(MSBuildProjectDirectory)\obj\$(Configuration)\vsix-template-files.json</TemplateFileManifest>
+    <CreateTemplateManifestsCacheFile>$(MSBuildProjectDirectory)\obj\$(Configuration)\vsix-template-manifests.cache</CreateTemplateManifestsCacheFile>
     <TargetVsixContainer>$(MSBuildProjectDirectory)\bin\$(Configuration)\RTSL.VisualStudio.vsix</TargetVsixContainer>
     <LangVersion>latest</LangVersion>
+    <StartAction>Program</StartAction>
+    <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
+    <StartArguments>/rootsuffix Exp</StartArguments>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.0.32112.339" />
     <PackageReference Include="Microsoft.VisualStudio.LanguageServer.Client" Version="17.0.5158" />
     <PackageReference Include="Microsoft.VisualStudio.Text.Data" Version="17.1.370" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.0.491" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="17.0.491" />
     <PackageReference Include="Microsoft.VisualStudio.Utilities" Version="17.0.32112.339" />
   </ItemGroup>
-  <ItemGroup><Reference Include="System.ComponentModel.Composition" /></ItemGroup>
+  <ItemGroup><Reference Include="System.ComponentModel.Composition" /><Reference Include="PresentationCore" /></ItemGroup>
   <ItemGroup>
     <None Include="source.extension.vsixmanifest" />
-    <Content Include="..\rtsl-lsp\x64\Release\rtsl-lsp.exe"><Link>rtsl-lsp.exe</Link><IncludeInVSIXContainer>true</IncludeInVSIXContainer></Content>
+    <Content Include="..\rtsl-lsp\x64\Release\rtsl-lsp.exe"><Link>rtsl-lsp.exe</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
+    <Content Include="..\rtsl-lexer\x64\Release\rtsl-lexer.dll"><Link>rtsl-lexer.dll</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets" Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets')" />
+  <Target Name="BuildRtslLexer" BeforeTargets="CreateVsixContainer">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\rtsl-lexer\rtsl-lexer.vcxproj" Targets="Build" Properties="Configuration=Release;Platform=x64" />
+  </Target>
+  <Target Name="CreateDebugVsix" AfterTargets="Build" DependsOnTargets="CreateVsixContainer" Condition="'$(Configuration)' == 'Debug'" />
 </Project>

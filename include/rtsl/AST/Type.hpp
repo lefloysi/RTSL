@@ -4,6 +4,7 @@
 #include <rtsl/Basic/IdentifierTable.hpp>
 
 #include <cstdint>
+#include <optional>
 
 namespace rtsl {
 
@@ -76,14 +77,16 @@ private:
 
 class TemplateSpecializationType final : public Type {
 public:
-	TemplateSpecializationType(IdentifierInfo* Name, const QualType* Arguments, unsigned ArgumentCount)
-		: Type(TypeClass::type_template_specialization), Name(Name), Arguments(Arguments), ArgumentCount(ArgumentCount) {}
+	TemplateSpecializationType(IdentifierInfo* Name, const QualType* Arguments, const std::optional<std::uint32_t>* IntegerArguments, unsigned ArgumentCount)
+		: Type(TypeClass::type_template_specialization), Name(Name), Arguments(Arguments), IntegerArguments(IntegerArguments), ArgumentCount(ArgumentCount) {}
 	[[nodiscard]] IdentifierInfo* getName() const { return Name; }
 	[[nodiscard]] const QualType* arguments() const { return Arguments; }
 	[[nodiscard]] unsigned getArgumentCount() const { return ArgumentCount; }
+	[[nodiscard]] std::optional<std::uint32_t> getIntegerArgument(unsigned Index) const { return Index < ArgumentCount ? IntegerArguments[Index] : std::nullopt; }
 private:
 	IdentifierInfo* Name;
 	const QualType* Arguments;
+	const std::optional<std::uint32_t>* IntegerArguments;
 	unsigned ArgumentCount;
 };
 

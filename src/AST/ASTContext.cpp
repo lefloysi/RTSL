@@ -24,9 +24,16 @@ QualType ASTContext::getTemplateParameterType(IdentifierInfo* Name) {
 }
 
 QualType ASTContext::getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments) {
-	TemplateSpecializationKey Key{.Name = Name, .Arguments = Arguments};
+	return getTemplateSpecializationType(Name, Arguments, {});
+}
+
+QualType ASTContext::getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments,
+	const std::vector<std::optional<std::uint32_t>>& IntegerArguments) {
+	std::vector<std::optional<std::uint32_t>> Values = IntegerArguments;
+	Values.resize(Arguments.size());
+	TemplateSpecializationKey Key{.Name = Name, .Arguments = Arguments, .IntegerArguments = Values};
 	auto [Position, Inserted] = TemplateSpecializationTypes.try_emplace(std::move(Key), nullptr);
-	if (Inserted) Position->second = create<TemplateSpecializationType>(Name, copyArray(Arguments), static_cast<unsigned>(Arguments.size()));
+	if (Inserted) Position->second = create<TemplateSpecializationType>(Name, copyArray(Arguments), copyArray(Values), static_cast<unsigned>(Arguments.size()));
 	return QualType(Position->second);
 }
 

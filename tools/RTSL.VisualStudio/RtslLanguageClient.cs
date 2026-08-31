@@ -6,8 +6,8 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.LanguageServer.Client;
-using Microsoft.VisualStudio.Utilities;
 using Microsoft.VisualStudio.Threading;
+using Microsoft.VisualStudio.Utilities;
 
 namespace RTSL.VisualStudio
 {
@@ -33,7 +33,9 @@ internal sealed class RtslLanguageClient : ILanguageClient
         return Task.FromResult(new Connection(process.StandardOutput.BaseStream, process.StandardInput.BaseStream));
     }
 
-    public Task OnLoadedAsync() => Task.CompletedTask;
+    public Task OnLoadedAsync() => StartAsync != null
+        ? StartAsync.InvokeAsync(this, EventArgs.Empty)
+        : Task.CompletedTask;
     public Task OnServerInitializedAsync() => Task.CompletedTask;
     public Task<InitializationFailureContext> OnServerInitializeFailedAsync(ILanguageClientInitializationInfo initializationInfo)
         => Task.FromResult(default(InitializationFailureContext));

@@ -15,6 +15,7 @@ class Sema {
 public:
 	Sema(ASTContext& Context, DiagnosticsEngine& Diagnostics, IdentifierTable& Identifiers);
 	[[nodiscard]] QualType actOnType(const ParsedType& Type);
+	bool isTypeName(const IdentifierInfo* name) const;
 	RecordDecl* actOnStartRecord(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location, bool Complete,
 		bool Internal, bool Exported, const ParsedAttributes& Attributes);
 	FieldDecl* actOnField(RecordDecl* Record, const Declarator& D, const ParsedAttributes& Attributes);
@@ -27,7 +28,8 @@ public:
 	FunctionDecl* actOnFunction(DeclContext* Context, const DeclSpec& DS, const Declarator& D,
 		const std::vector<ParmVarDecl*>& Parameters,
 		const std::vector<ParsedParameterContract>& ParameterContracts, Expr* BaseInitializer,
-		const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters);
+		const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters,
+		const std::vector<ParsedType>& TypeOnlyParameters);
 	TypeAliasDecl* actOnTypeAlias(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location,
 		const DeclSpec& DS, const ParsedType& Type, const ParsedAttributes& Attributes);
 	ImportDecl* actOnImport(DeclContext* Context, const Token& ModuleToken);
@@ -43,6 +45,7 @@ public:
 	Expr* actOnIdentifierExpr(IdentifierInfo* Name, SourceLocation Location);
 	Expr* actOnCurrentEmitterExpr(SourceLocation Location);
 	Expr* actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation Location);
+	Expr* actOnSubscriptExpr(Expr* Base, Expr* Index, SourceLocation Location);
 	Expr* actOnCallExpr(Expr* Callee, const std::vector<Expr*>& Arguments, SourceLocation Location);
 	Expr* actOnUnaryExpr(tok::TokenKind Opcode, Expr* Operand);
 	Expr* actOnBinaryExpr(tok::TokenKind Opcode, Expr* Left, Expr* Right);

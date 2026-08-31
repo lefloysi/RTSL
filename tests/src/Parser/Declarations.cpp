@@ -1,10 +1,42 @@
 #include <rtsl/Frontend/CompilerInstance.hpp>
+#include <rtsl/Frontend/ModuleInterface.hpp>
 #include <rtsl/Lex/Lexer.hpp>
+#include <rtsl/Sema/Sema.hpp>
+#include <rtsl/AST/Decl.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace {
+
+class ScopedModuleInterfaceFile {
+public:
+	ScopedModuleInterfaceFile(std::string_view Filename, std::string_view ImportPath)
+		: Path(std::filesystem::temp_directory_path() / std::string(Filename)) {
+		rtsl::ModuleInterface Interface;
+		Interface.units.push_back({.import_path = std::string(ImportPath)});
+		const auto Encoded = rtsl::ModuleInterfaceWriter{}.write(Interface);
+		if (!Encoded) throw std::runtime_error("failed to encode module interface test fixture");
+		std::ofstream Output(Path, std::ios::binary | std::ios::trunc);
+		if (!Output) throw std::runtime_error("failed to create module interface test fixture");
+		Output.write(reinterpret_cast<const char*>(Encoded.bytes.data()), static_cast<std::streamsize>(Encoded.bytes.size()));
+		if (!Output) throw std::runtime_error("failed to write module interface test fixture");
+	}
+
+	~ScopedModuleInterfaceFile() { std::error_code Error; std::filesystem::remove(Path, Error); }
+
+	[[nodiscard]] const std::filesystem::path& path() const { return Path; }
+
+private:
+	std::filesystem::path Path;
+};
+
+} // namespace
 
 TEST_CASE("lexer recognizes every defined RTSL punctuator") {
 	struct ExpectedToken {
@@ -73,6 +105,42 @@ fn main(Point point) -> Point {
 	REQUIRE(Count == 7);
 }
 
+TEST_CASE("Sema identifies registered type names") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("type-names.rtsl");
+	Invocation.setInputBuffer("struct UserType {}");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+
+	auto* Sema = Compiler.getSema();
+	REQUIRE(Sema != nullptr);
+	auto& Identifiers = Sema->getIdentifierTable();
+	REQUIRE(Sema->isTypeName(&Identifiers.get("u32")));
+	REQUIRE(Sema->isTypeName(&Identifiers.get("texture_2d")));
+	REQUIRE(Sema->isTypeName(&Identifiers.get("UserType")));
+	REQUIRE_FALSE(Sema->isTypeName(&Identifiers.get("not_a_type")));
+}
+
+TEST_CASE("tessellation evaluation parameters support a direct const patch reference and type-only settings") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("tessellation-parameter.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {}
+@stage : tess_eval
+fn main(const isoline_patch<Vertex>& curve, tessellation<equal>) -> Vertex {
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	auto* Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
+	while (Declaration && (Declaration->getKind() != rtsl::DeclKind::decl_function ||
+		static_cast<rtsl::FunctionDecl*>(Declaration)->getIdentifier()->getName() != "main")) Declaration = Declaration->getNextDeclInContext();
+	REQUIRE(Declaration != nullptr);
+	REQUIRE(static_cast<rtsl::FunctionDecl*>(Declaration)->getNumTypeOnlyParameters() == 1);
+}
+
 TEST_CASE("invalid empty buffer storage is diagnosed") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("invalid.rtsl");
@@ -83,20 +151,22 @@ TEST_CASE("invalid empty buffer storage is diagnosed") {
 }
 
 TEST_CASE("imports use build-supplied logical names without an extension rule") {
+	ScopedModuleInterfaceFile Interface{"rtsl-logical-import-test.rtslm", "std/vector"};
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("consumer.rtsl");
 	Invocation.setInputBuffer("import \"std/vector\";");
-	Invocation.addModuleInterface({.ImportPath = "std/vector", .InterfacePath = "standard.rtslm"});
+	Invocation.addModuleInterface({.ImportPath = "std/vector", .InterfacePath = Interface.path().string()});
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
 	REQUIRE(Compiler.execute());
 }
 
 TEST_CASE("library imports use a separate build-supplied namespace") {
+	ScopedModuleInterfaceFile Interface{"rtsl-library-import-test.rtslm", "std"};
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("consumer.rtsl");
 	Invocation.setInputBuffer("import <std>;");
-	Invocation.addLibraryInterface({.LibraryName = "std", .InterfacePath = "standard.rtslm"});
+	Invocation.addLibraryInterface({.LibraryName = "std", .InterfacePath = Interface.path().string()});
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
 	REQUIRE(Compiler.execute());
@@ -135,6 +205,8 @@ TEST_CASE("exported type aliases retain their linkage") {
 	Compiler.setInvocation(std::move(Invocation));
 	REQUIRE(Compiler.execute());
 	auto Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
+	while (Declaration && Declaration->getKind() != rtsl::DeclKind::decl_type_alias)
+		Declaration = Declaration->getNextDeclInContext();
 	REQUIRE(Declaration != nullptr);
 	REQUIRE(Declaration->getKind() == rtsl::DeclKind::decl_type_alias);
 	REQUIRE(static_cast<rtsl::TypeAliasDecl*>(Declaration)->isExported());
@@ -156,6 +228,40 @@ TEST_CASE("unknown types are diagnosed at their type token") {
 	REQUIRE(Location.Filename == "unknown-type.rtsl");
 	REQUIRE(Location.Line == 1);
 	REQUIRE(Location.Column == 5);
+}
+
+TEST_CASE("unknown generic type bases are diagnosed at their type token") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("unknown-generic-type.rtsl");
+	Invocation.setInputBuffer("var Missing<u32> value;");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	const auto& Diagnostics = Compiler.getDiagnostics().diagnostics();
+	REQUIRE(Diagnostics.size() == 1);
+	REQUIRE(Diagnostics.front().Message == "unknown type name");
+	const rtsl::PresumedLoc Location = Compiler.getSourceManager().getPresumedLoc(Diagnostics.front().Range.Begin);
+	REQUIRE(Location.isValid());
+	REQUIRE(Location.Filename == "unknown-generic-type.rtsl");
+	REQUIRE(Location.Line == 1);
+	REQUIRE(Location.Column == 5);
+}
+
+TEST_CASE("qualified type names are diagnosed instead of being truncated") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("qualified-type.rtsl");
+	Invocation.setInputBuffer("var vec4::Component value;");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	const auto& Diagnostics = Compiler.getDiagnostics().diagnostics();
+	REQUIRE(Diagnostics.size() == 1);
+	REQUIRE(Diagnostics.front().Message == "qualified type names are not supported");
+	const rtsl::PresumedLoc Location = Compiler.getSourceManager().getPresumedLoc(Diagnostics.front().Range.Begin);
+	REQUIRE(Location.isValid());
+	REQUIRE(Location.Filename == "qualified-type.rtsl");
+	REQUIRE(Location.Line == 1);
+	REQUIRE(Location.Column == 9);
 }
 
 TEST_CASE("function template parameters are retained and visible to their definition") {

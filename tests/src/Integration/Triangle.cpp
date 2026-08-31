@@ -34,6 +34,10 @@ TEST_CASE("triangle example compiles to a verified linked program artifact") {
 	REQUIRE(Compilation.Link.Module.strings.get(VertexType->members[0].name) == "position");
 	REQUIRE(Compilation.Link.Module.strings.get(VertexType->members[1].name) == "color");
 	const auto& FragmentEntry = Compilation.Link.Module.entry_points[1];
+	REQUIRE(FragmentEntry.attributes.size() == 1);
+	REQUIRE(Compilation.Link.Module.strings.get(FragmentEntry.attributes[0].name) == "stage");
+	REQUIRE(FragmentEntry.attributes[0].tokens.size() == 1);
+	REQUIRE(Compilation.Link.Module.strings.get(FragmentEntry.attributes[0].tokens[0]) == "fragment");
 	REQUIRE(FragmentEntry.parameter_contracts.size() == 1);
 	REQUIRE(FragmentEntry.parameter_contracts[0].parameter_index == 0);
 	REQUIRE(FragmentEntry.parameter_contracts[0].member_path.size() == 1);

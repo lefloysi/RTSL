@@ -260,6 +260,8 @@ EncodedSection writeEntries(const ir::Module& module) {
 		else if (const auto* value = std::get_if<ir::TessellationEvaluationConfiguration>(&entry.configuration)) { writer.writeEnum(value->domain); writer.writeEnum(value->spacing); writer.writeEnum(value->winding); }
 		else if (const auto* value = std::get_if<ir::GeometryConfiguration>(&entry.configuration)) { writer.writeEnum(value->input); writer.writeEnum(value->output); writer.writeU32(value->maximum_vertices); writer.writeU32(value->invocations); }
 		else if (const auto* value = std::get_if<ir::ComputeConfiguration>(&entry.configuration)) for (std::uint32_t size : value->workgroup_size) writer.writeU32(size);
+		writer.writeU32(static_cast<std::uint32_t>(entry.attributes.size()));
+		for (const ir::EntryAttribute& attribute : entry.attributes) { writer.writeId(attribute.name); writer.writeVector(attribute.tokens, writeStringId); }
 		writer.writeU32(static_cast<std::uint32_t>(entry.parameter_contracts.size()));
 		for (const ir::InterfaceContract& contract : entry.parameter_contracts) {
 			writer.writeU32(contract.parameter_index);
@@ -374,6 +376,16 @@ bool readEntries(Reader& reader, ir::Module& module) {
 		case 4: { ir::ComputeConfiguration value; for (std::uint32_t& size : value.workgroup_size) if (!reader.readU32(size)) return false; entry.configuration = value; break; }
 		default: reader.fail(ErrorCode::error_invalid_enum, "entry.configuration", "unknown stage configuration variant"); return false;
 		}
+		if (reader.versionMinor() >= 4) {
+			std::uint32_t attributes{};
+			if (!reader.readCount(attributes, "entry.attributes")) return false;
+			entry.attributes.reserve(attributes);
+			for (std::uint32_t attribute_index = 0; attribute_index < attributes; ++attribute_index) {
+				ir::EntryAttribute attribute;
+				if (!reader.readId(attribute.name) || !reader.readVector(attribute.tokens, "entry.attribute.tokens", readStringId)) return false;
+				entry.attributes.push_back(std::move(attribute));
+			}
+		}
 		std::uint32_t contracts{};
 		if (!reader.readCount(contracts, "entry.parameter_contracts")) return false;
 		entry.parameter_contracts.reserve(contracts);
@@ -421,13 +433,18 @@ bool validateStringReferences(const ir::Module& module, Error& error) {
 	if (!validStringId(module, module.name)) return invalid("module.name");
 	for (const ir::Type& type : module.types) { if (!validStringId(module, type.name)) return invalid("type.name"); for (const ir::StructMember& member : type.members) if (!validStringId(module, member.name)) return invalid("type.member.name"); }
 	for (const ir::Symbol& symbol : module.symbols) if (!validStringId(module, symbol.fully_qualified_name)) return invalid("symbol.name");
-	for (const ir::EntryPoint& entry : module.entry_points)
+	for (const ir::EntryPoint& entry : module.entry_points) {
 		if (!validStringId(module, entry.source_name)) return invalid("entry.source_name");
-		else for (const ir::InterfaceContract& contract : entry.parameter_contracts) {
+		for (const ir::EntryAttribute& attribute : entry.attributes) {
+			if (!validStringId(module, attribute.name)) return invalid("entry.attribute.name");
+			for (ir::StringId token : attribute.tokens) if (!validStringId(module, token)) return invalid("entry.attribute.token");
+		}
+		for (const ir::InterfaceContract& contract : entry.parameter_contracts) {
 			for (ir::StringId member : contract.member_path)
 				if (!validStringId(module, member)) return invalid("entry.parameter_contract.path");
 			if (!validStringId(module, contract.contract)) return invalid("entry.parameter_contract");
 		}
+	}
 	return true;
 }
 
@@ -449,7 +466,8 @@ WriteResult ArtifactWriter::write(const Artifact& artifact) const {
 			}
 		}
 		for (const ir::EntryPoint& entry : artifact.module.entry_points) {
-			counts_fit = counts_fit && count_fits(entry.parameter_contracts.size());
+			counts_fit = counts_fit && count_fits(entry.attributes.size()) && count_fits(entry.parameter_contracts.size());
+			for (const ir::EntryAttribute& attribute : entry.attributes) counts_fit = counts_fit && count_fits(attribute.tokens.size());
 			for (const ir::InterfaceContract& contract : entry.parameter_contracts)
 				counts_fit = counts_fit && count_fits(contract.member_path.size());
 		}

@@ -293,6 +293,11 @@ struct InterfaceContract {
 	StringId contract;
 };
 
+struct EntryAttribute {
+	StringId name;
+	std::vector<StringId> tokens;
+};
+
 using StageConfiguration = std::variant<std::monostate, TessellationControlConfiguration, TessellationEvaluationConfiguration, GeometryConfiguration, ComputeConfiguration>;
 
 struct EntryPoint {
@@ -301,6 +306,7 @@ struct EntryPoint {
 	StringId source_name;
 	Stage stage{Stage::stage_vertex};
 	StageConfiguration configuration{std::monostate{}};
+	std::vector<EntryAttribute> attributes;
 	std::vector<InterfaceContract> parameter_contracts;
 };
 

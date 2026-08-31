@@ -4,6 +4,8 @@
 #include <rtsl/AST/Decl.hpp>
 
 #include <vector>
+#include <optional>
+#include <cstdint>
 
 namespace rtsl {
 
@@ -11,6 +13,7 @@ struct ParsedType {
 	IdentifierInfo* Name{};
 	SourceLocation Location;
 	std::vector<ParsedType> Arguments;
+	std::optional<std::uint32_t> IntegerValue;
 	bool Pointer{};
 	bool Reference{};
 	bool Constant{};

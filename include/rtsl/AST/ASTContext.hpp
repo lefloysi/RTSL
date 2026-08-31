@@ -8,6 +8,7 @@
 #include <new>
 #include <utility>
 #include <vector>
+#include <optional>
 
 namespace rtsl {
 
@@ -38,14 +39,19 @@ public:
 	[[nodiscard]] QualType getNamedType(IdentifierInfo* Name);
 	[[nodiscard]] QualType getTemplateParameterType(IdentifierInfo* Name);
 	[[nodiscard]] QualType getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments);
+	[[nodiscard]] QualType getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments,
+		const std::vector<std::optional<std::uint32_t>>& IntegerArguments);
 	[[nodiscard]] QualType getPointerType(QualType Pointee);
 	[[nodiscard]] QualType getReferenceType(QualType Pointee);
 private:
 	struct TemplateSpecializationKey {
 		IdentifierInfo* Name{};
 		std::vector<QualType> Arguments;
+		std::vector<std::optional<std::uint32_t>> IntegerArguments;
 		[[nodiscard]] bool operator<(const TemplateSpecializationKey& Other) const {
-			return Name != Other.Name ? Name < Other.Name : Arguments < Other.Arguments;
+			if (Name != Other.Name) return Name < Other.Name;
+			if (Arguments != Other.Arguments) return Arguments < Other.Arguments;
+			return IntegerArguments < Other.IntegerArguments;
 		}
 	};
 	std::pmr::monotonic_buffer_resource Arena;

@@ -25,7 +25,11 @@ ParsedType makeType(const InterfaceType& source, IdentifierTable& identifiers) {
 		result.Reference = source.kind == InterfaceTypeKind::type_reference;
 		return result;
 	}
-	for (const InterfaceType& argument : source.arguments) result.Arguments.push_back(makeType(argument, identifiers));
+	for (const InterfaceType& argument : source.arguments) {
+		auto parsed = makeType(argument, identifiers);
+		parsed.IntegerValue = argument.integer_value;
+		result.Arguments.push_back(std::move(parsed));
+	}
 	return result;
 }
 
@@ -79,9 +83,12 @@ std::vector<std::string> ModuleInterfaceImporter::import(const ModuleInterface& 
 					Declarator parameter_decl{.Name = &identifiers.get(parameter.name), .Type = makeType(parameter.type, identifiers)};
 					parameters.push_back(sema.actOnParameter(context, parameter_decl, makeAttributes(parameter.attributes, identifiers)));
 				}
+				std::vector<ParsedType> type_only_parameters;
+				for (const InterfaceType& parameter : value.type_only_parameters)
+					type_only_parameters.push_back(makeType(parameter, identifiers));
 				DeclSpec spec;
 				Declarator declarator{.Name = &identifiers.get(value.name), .Type = makeType(value.return_type, identifiers), .Emits = value.implicit_emitter};
-				sema.actOnFunction(context, spec, declarator, parameters, {}, nullptr, makeAttributes(value.attributes, identifiers), templates);
+				sema.actOnFunction(context, spec, declarator, parameters, {}, nullptr, makeAttributes(value.attributes, identifiers), templates, type_only_parameters);
 				sema.popTemplateParameters(templates);
 			}
 		}, declaration);

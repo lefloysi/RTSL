@@ -165,6 +165,11 @@ void Linker::copyMetadata(const ir::Module& Module, const ModuleMaps& Maps) {
 		Target.symbol = Maps.Symbols.at(Entry.symbol.value());
 		Target.function = Maps.Functions.at(Entry.function.value());
 		Target.source_name = Builder.module().strings.intern(Module.strings.get(Entry.source_name));
+		for (auto& Attribute : Target.attributes) {
+			Attribute.name = Builder.module().strings.intern(Module.strings.get(Attribute.name));
+			for (auto& Token : Attribute.tokens)
+				Token = Builder.module().strings.intern(Module.strings.get(Token));
+		}
 		for (auto& Contract : Target.parameter_contracts) {
 			for (auto& Member : Contract.member_path)
 				Member = Builder.module().strings.intern(Module.strings.get(Member));

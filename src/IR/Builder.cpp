@@ -122,6 +122,7 @@ void ModuleBuilder::addEntryPoint(const EntryPoint& entry_point) {
 	result.function = entry_point.function;
 	result.source_name = entry_point.source_name;
 	result.stage = entry_point.stage;
+	result.attributes = entry_point.attributes;
 	result.parameter_contracts = entry_point.parameter_contracts;
 	switch (entry_point.configuration.index()) {
 	case 0: result.configuration.emplace<std::monostate>(); break;

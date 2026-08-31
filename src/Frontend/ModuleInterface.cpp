@@ -12,7 +12,7 @@ constexpr std::array<std::byte, 8> interface_magic{
 	std::byte{'R'}, std::byte{'T'}, std::byte{'S'}, std::byte{'L'},
 	std::byte{'M'}, std::byte{'O'}, std::byte{'D'}, std::byte{0},
 };
-constexpr std::uint16_t interface_version = 1;
+constexpr std::uint16_t interface_version = 3;
 constexpr std::uint32_t maximum_count = 1u << 24;
 
 class Writer {
@@ -68,18 +68,21 @@ private:
 bool writeType(Writer& writer, const InterfaceType& type) {
 	if (!writer.canRepresent(type.name.size()) || !writer.canRepresent(type.arguments.size())) return false;
 	writer.writeU8(static_cast<std::uint8_t>(type.kind)); writer.writeBool(type.constant); writer.writeString(type.name);
+	writer.writeBool(type.integer_value.has_value()); if (type.integer_value) writer.writeU32(*type.integer_value);
 	writer.writeU32(static_cast<std::uint32_t>(type.arguments.size()));
 	for (const InterfaceType& argument : type.arguments) if (!writeType(writer, argument)) return false;
 	return true;
 }
 
-bool readType(Reader& reader, InterfaceType& type) {
+bool readType(Reader& reader, InterfaceType& type, std::uint16_t version) {
 	std::uint8_t kind{}; if (!reader.readU8(kind) || kind > static_cast<std::uint8_t>(InterfaceTypeKind::type_reference)) { if (!reader.failed()) reader.fail(ModuleInterfaceErrorCode::error_invalid_enum, "unknown interface type kind"); return false; }
 	type.kind = static_cast<InterfaceTypeKind>(kind);
 	if (!reader.readBool(type.constant) || !reader.readString(type.name)) return false;
+	if (version >= 3) { bool has_integer{}; if (!reader.readBool(has_integer)) return false; if (has_integer) { std::uint32_t value{}; if (!reader.readU32(value)) return false; type.integer_value = value; } else type.integer_value.reset(); }
+	else type.integer_value.reset();
 	std::uint32_t count{}; if (!reader.readCount(count, "type argument count")) return false;
 	type.arguments.clear(); type.arguments.resize(count);
-	for (InterfaceType& argument : type.arguments) if (!readType(reader, argument)) return false;
+	for (InterfaceType& argument : type.arguments) if (!readType(reader, argument, version)) return false;
 	return true;
 }
 
@@ -127,9 +130,11 @@ bool writeDeclaration(Writer& writer, const InterfaceDeclaration& declaration) {
 		} else if constexpr (std::is_same_v<Value, InterfaceVariable>) {
 			if (!writeAttributes(writer, value.attributes) || !writeType(writer, value.type)) return false; writer.writeU8(static_cast<std::uint8_t>(value.storage)); writer.writeBool(value.constant);
 		} else {
-			if (!writeAttributes(writer, value.attributes) || !writeType(writer, value.return_type) || !writer.canRepresent(value.parameters.size()) || !writer.canRepresent(value.template_parameters.size()) || !writer.canRepresent(value.generic_definition.size())) return false;
+			if (!writeAttributes(writer, value.attributes) || !writeType(writer, value.return_type) || !writer.canRepresent(value.parameters.size()) || !writer.canRepresent(value.type_only_parameters.size()) || !writer.canRepresent(value.template_parameters.size()) || !writer.canRepresent(value.generic_definition.size())) return false;
 			writer.writeU32(static_cast<std::uint32_t>(value.parameters.size()));
 			for (const InterfaceParameter& parameter : value.parameters) { if (!writer.canRepresent(parameter.name.size())) return false; writer.writeString(parameter.name); if (!writeAttributes(writer, parameter.attributes) || !writeType(writer, parameter.type)) return false; }
+			writer.writeU32(static_cast<std::uint32_t>(value.type_only_parameters.size()));
+			for (const InterfaceType& parameter : value.type_only_parameters) if (!writeType(writer, parameter)) return false;
 			writer.writeU32(static_cast<std::uint32_t>(value.template_parameters.size())); for (const std::string& parameter : value.template_parameters) { if (!writer.canRepresent(parameter.size())) return false; writer.writeString(parameter); }
 			writer.writeBool(value.implicit_emitter); writer.writeBool(value.declaration); writer.writeBytes(value.generic_definition);
 		}
@@ -137,18 +142,19 @@ bool writeDeclaration(Writer& writer, const InterfaceDeclaration& declaration) {
 	}, declaration);
 }
 
-bool readDeclaration(Reader& reader, InterfaceDeclaration& declaration) {
+bool readDeclaration(Reader& reader, InterfaceDeclaration& declaration, std::uint16_t version) {
 	std::uint8_t kind{}; if (!reader.readU8(kind) || kind > 3) { if (!reader.failed()) reader.fail(ModuleInterfaceErrorCode::error_invalid_enum, "unknown interface declaration kind"); return false; }
 	if (kind == 0) {
-		InterfaceRecord value; bool has_base{}; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !reader.readBool(has_base)) return false; if (has_base) { value.base_type.emplace(); if (!readType(reader, *value.base_type)) return false; }
-		std::uint32_t fields{}; if (!reader.readCount(fields, "record field count")) return false; value.fields.resize(fields); for (InterfaceField& field : value.fields) if (!reader.readString(field.name) || !readAttributes(reader, field.attributes) || !readType(reader, field.type)) return false; declaration = std::move(value);
+		InterfaceRecord value; bool has_base{}; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !reader.readBool(has_base)) return false; if (has_base) { value.base_type.emplace(); if (!readType(reader, *value.base_type, version)) return false; }
+		std::uint32_t fields{}; if (!reader.readCount(fields, "record field count")) return false; value.fields.resize(fields); for (InterfaceField& field : value.fields) if (!reader.readString(field.name) || !readAttributes(reader, field.attributes) || !readType(reader, field.type, version)) return false; declaration = std::move(value);
 	} else if (kind == 1) {
-		InterfaceTypeAlias value; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.type)) return false; declaration = std::move(value);
+		InterfaceTypeAlias value; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.type, version)) return false; declaration = std::move(value);
 	} else if (kind == 2) {
-		InterfaceVariable value; std::uint8_t storage{}; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.type) || !reader.readU8(storage) || storage > static_cast<std::uint8_t>(InterfaceStorageClass::storage_storage) || !reader.readBool(value.constant)) { if (!reader.failed()) reader.fail(ModuleInterfaceErrorCode::error_invalid_enum, "unknown interface storage class"); return false; } value.storage = static_cast<InterfaceStorageClass>(storage); declaration = std::move(value);
+		InterfaceVariable value; std::uint8_t storage{}; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.type, version) || !reader.readU8(storage) || storage > static_cast<std::uint8_t>(InterfaceStorageClass::storage_storage) || !reader.readBool(value.constant)) { if (!reader.failed()) reader.fail(ModuleInterfaceErrorCode::error_invalid_enum, "unknown interface storage class"); return false; } value.storage = static_cast<InterfaceStorageClass>(storage); declaration = std::move(value);
 	} else {
-		InterfaceFunction value; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.return_type)) return false;
-		std::uint32_t parameters{}; if (!reader.readCount(parameters, "function parameter count")) return false; value.parameters.resize(parameters); for (InterfaceParameter& parameter : value.parameters) if (!reader.readString(parameter.name) || !readAttributes(reader, parameter.attributes) || !readType(reader, parameter.type)) return false;
+		InterfaceFunction value; if (!reader.readString(value.name) || !readAttributes(reader, value.attributes) || !readType(reader, value.return_type, version)) return false;
+		std::uint32_t parameters{}; if (!reader.readCount(parameters, "function parameter count")) return false; value.parameters.resize(parameters); for (InterfaceParameter& parameter : value.parameters) if (!reader.readString(parameter.name) || !readAttributes(reader, parameter.attributes) || !readType(reader, parameter.type, version)) return false;
+		if (version >= 2) { std::uint32_t type_only_parameters{}; if (!reader.readCount(type_only_parameters, "function type-only parameter count")) return false; value.type_only_parameters.resize(type_only_parameters); for (InterfaceType& parameter : value.type_only_parameters) if (!readType(reader, parameter, version)) return false; }
 		std::uint32_t templates{}; if (!reader.readCount(templates, "function template parameter count")) return false; value.template_parameters.resize(templates); for (std::string& parameter : value.template_parameters) if (!reader.readString(parameter)) return false;
 		if (!reader.readBool(value.implicit_emitter) || !reader.readBool(value.declaration) || !reader.readBytes(value.generic_definition)) return false; declaration = std::move(value);
 	}
@@ -174,13 +180,13 @@ ModuleInterfaceWriteResult ModuleInterfaceWriter::write(const ModuleInterface& i
 ModuleInterfaceReadResult ModuleInterfaceReader::read(std::span<const std::byte> bytes) const {
 	Reader reader(bytes);
 	for (std::byte expected : interface_magic) { std::uint8_t value{}; if (!reader.readU8(value)) return {.error = reader.getError()}; if (value != std::to_integer<std::uint8_t>(expected)) return {.error = ModuleInterfaceError{.code = ModuleInterfaceErrorCode::error_invalid_magic, .message = "invalid module interface magic"}}; }
-	std::uint16_t version{}; if (!reader.readU16(version)) return {.error = reader.getError()}; if (version != interface_version) return {.error = ModuleInterfaceError{.code = ModuleInterfaceErrorCode::error_unsupported_version, .message = "unsupported module interface version"}};
+	std::uint16_t version{}; if (!reader.readU16(version)) return {.error = reader.getError()}; if (version == 0 || version > interface_version) return {.error = ModuleInterfaceError{.code = ModuleInterfaceErrorCode::error_unsupported_version, .message = "unsupported module interface version"}};
 	ModuleInterface result; bool has_library{}; if (!reader.readBool(has_library)) return {.error = reader.getError()}; if (has_library) { result.library_name.emplace(); if (!reader.readString(*result.library_name)) return {.error = reader.getError()}; }
 	std::uint32_t units{}; if (!reader.readCount(units, "interface unit count")) return {.error = reader.getError()}; result.units.resize(units);
 	for (InterfaceUnit& unit : result.units) {
 		if (!reader.readString(unit.import_path)) return {.error = reader.getError()}; std::uint32_t imports{}; if (!reader.readCount(imports, "import count")) return {.error = reader.getError()}; unit.imports.resize(imports);
 		for (InterfaceImport& import : unit.imports) { std::uint8_t kind{}; if (!reader.readU8(kind) || kind > static_cast<std::uint8_t>(InterfaceImportKind::import_library) || !reader.readString(import.name)) { if (!reader.failed()) reader.fail(ModuleInterfaceErrorCode::error_invalid_enum, "unknown import kind"); return {.error = reader.getError()}; } import.kind = static_cast<InterfaceImportKind>(kind); }
-		std::uint32_t declarations{}; if (!reader.readCount(declarations, "declaration count")) return {.error = reader.getError()}; unit.declarations.resize(declarations); for (InterfaceDeclaration& declaration : unit.declarations) if (!readDeclaration(reader, declaration)) return {.error = reader.getError()};
+		std::uint32_t declarations{}; if (!reader.readCount(declarations, "declaration count")) return {.error = reader.getError()}; unit.declarations.resize(declarations); for (InterfaceDeclaration& declaration : unit.declarations) if (!readDeclaration(reader, declaration, version)) return {.error = reader.getError()};
 	}
 	if (!reader.finished()) return {.error = ModuleInterfaceError{.code = ModuleInterfaceErrorCode::error_trailing_data, .message = "module interface contains trailing data"}};
 	return {.interface = std::move(result)};

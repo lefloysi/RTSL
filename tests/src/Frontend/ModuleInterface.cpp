@@ -13,6 +13,11 @@ TEST_CASE("module interfaces preserve exact import names and aggregate units") {
 	vector.kind = rtsl::InterfaceTypeKind::type_template_specialization;
 	vector.name = "vec4";
 	vector.arguments.push_back(scalar);
+	rtsl::InterfaceType primitive;
+	primitive.kind = rtsl::InterfaceTypeKind::type_template_specialization;
+	primitive.name = "triangle_strip";
+	primitive.arguments = {{.kind = rtsl::InterfaceTypeKind::type_named, .name = "Vertex"},
+		{.kind = rtsl::InterfaceTypeKind::type_usize, .integer_value = 6}};
 
 	rtsl::ModuleInterface interface;
 	interface.library_name = "std";
@@ -24,7 +29,8 @@ TEST_CASE("module interfaces preserve exact import names and aggregate units") {
 		{
 			.import_path = "math/vector",
 			.imports = {{.kind = rtsl::InterfaceImportKind::import_file, .name = "math/scalar"}},
-			.declarations = {rtsl::InterfaceTypeAlias{.name = "Color", .attributes = {location}, .type = vector}},
+			.declarations = {rtsl::InterfaceTypeAlias{.name = "Color", .attributes = {location}, .type = vector},
+				rtsl::InterfaceTypeAlias{.name = "Output", .type = primitive}},
 		},
 		{
 			.import_path = "graphics/curve.rtsl",
@@ -32,6 +38,7 @@ TEST_CASE("module interfaces preserve exact import names and aggregate units") {
 			.declarations = {rtsl::InterfaceFunction{
 				.name = "evaluate", .return_type = vector,
 				.parameters = {{.name = "t", .type = scalar}},
+				.type_only_parameters = {{.kind = rtsl::InterfaceTypeKind::type_template_specialization, .name = "tessellation", .arguments = {{.kind = rtsl::InterfaceTypeKind::type_named, .name = "equal"}}}},
 				.template_parameters = {"T"}, .declaration = true}},
 		},
 	};
@@ -47,10 +54,15 @@ TEST_CASE("module interfaces preserve exact import names and aggregate units") {
 	REQUIRE(decoded.interface->units[0].imports[0].name == "math/scalar");
 	REQUIRE(decoded.interface->units[1].imports[0].kind == rtsl::InterfaceImportKind::import_library);
 	REQUIRE(decoded.interface->units[1].imports[0].name == "std");
+	const auto& function = std::get<rtsl::InterfaceFunction>(decoded.interface->units[1].declarations[0]);
+	REQUIRE(function.type_only_parameters.size() == 1);
+	REQUIRE(function.type_only_parameters[0].name == "tessellation");
 	const auto& alias = std::get<rtsl::InterfaceTypeAlias>(decoded.interface->units[0].declarations[0]);
 	REQUIRE(alias.attributes.size() == 1);
 	REQUIRE(alias.attributes[0].name == "location");
 	REQUIRE(alias.attributes[0].tokens[0].spelling == "0");
+	const auto& output = std::get<rtsl::InterfaceTypeAlias>(decoded.interface->units[0].declarations[1]);
+	REQUIRE(output.type.arguments[1].integer_value == 6);
 }
 
 TEST_CASE("module interface reader rejects trailing data") {

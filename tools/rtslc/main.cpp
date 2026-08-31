@@ -1,6 +1,5 @@
 #include <rtsl/Frontend/CompilerInstance.hpp>
 #include <rtsl/Serialization/Artifact.hpp>
-#include <rtsl/Serialization/DebugArtifact.hpp>
 
 #include <CLI/CLI.hpp>
 
@@ -10,57 +9,15 @@
 #include <iterator>
 #include <string>
 
-namespace {
-
-rtsl::debug::Artifact makeDebugArtifact(const rtsl::CompilerInstance& compiler,
-	const std::string& compilation_identity) {
-	rtsl::debug::Artifact artifact;
-	artifact.compilation_identity = compilation_identity;
-	artifact.compiler_identity = "rtslc";
-	artifact.target_identity = "rtir";
-	const rtsl::SourceManager& sources = compiler.getSourceManager();
-	for (std::size_t index = 1; index <= sources.getFileCount(); ++index) {
-		const rtsl::FileID file = static_cast<rtsl::FileID>(index);
-		const std::string_view text = sources.getBuffer(file);
-		rtsl::debug::SourceFile source;
-		source.logical_name = sources.getName(file);
-		source.text = text;
-		source.line_starts.push_back(0);
-		for (std::uint32_t offset = 0; offset < text.size(); ++offset)
-			if (text[offset] == '\n' && offset + 1 < text.size()) source.line_starts.push_back(offset + 1);
-		artifact.source_files.push_back(std::move(source));
-	}
-	return artifact;
-}
-
-bool writeDebugArtifact(const std::string& path, const rtsl::debug::Artifact& artifact) {
-	const rtsl::debug::WriteResult encoded = rtsl::debug::ArtifactWriter{}.write(artifact);
-	if (!encoded) {
-		std::cerr << path << ": failed to encode debug artifact: " << encoded.error->message << '\n';
-		return false;
-	}
-	std::ofstream output(path, std::ios::binary);
-	output.write(reinterpret_cast<const char*>(encoded.bytes.data()), static_cast<std::streamsize>(encoded.bytes.size()));
-	if (!output) {
-		std::cerr << path << ": failed to write debug artifact\n";
-		return false;
-	}
-	return true;
-}
-
-} // namespace
-
 int main(int ArgumentCount, char** Arguments) {
 	CLI::App Application{"RTSL compiler frontend"};
 	std::string InputPath;
 	std::string ModuleName;
 	std::string OutputPath;
-	std::string DebugOutputPath;
 	bool EmitProgram{};
 	Application.add_option("input", InputPath, "RTSL source file")->required()->check(CLI::ExistingFile);
 	Application.add_option("-m,--module", ModuleName, "Module name");
 	Application.add_option("-o,--output", OutputPath, "Output artifact path");
-	Application.add_option("--debug-output", DebugOutputPath, "Output .rtsld debug artifact path");
 	Application.add_flag("--emit-program", EmitProgram, "Compile and link a program artifact");
 	CLI11_PARSE(Application, ArgumentCount, Arguments);
 
@@ -72,8 +29,8 @@ int main(int ArgumentCount, char** Arguments) {
 	Invocation.setModuleName(std::move(ModuleName));
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
-	if (!OutputPath.empty() || !DebugOutputPath.empty()) EmitProgram = true;
-	if (EmitProgram && OutputPath.empty() && DebugOutputPath.empty()) {
+	if (!OutputPath.empty()) EmitProgram = true;
+	if (EmitProgram && OutputPath.empty()) {
 		std::cerr << "rtslc: --emit-program requires -o/--output\n";
 		return 1;
 	}
@@ -120,8 +77,6 @@ int main(int ArgumentCount, char** Arguments) {
 					}
 				}
 			}
-			if (Success && !DebugOutputPath.empty())
-				Success = writeDebugArtifact(DebugOutputPath, makeDebugArtifact(Compiler, InputPath));
 		}
 	}
 	return Success ? 0 : 1;

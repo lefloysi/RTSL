@@ -21,6 +21,7 @@ Artifact makeArtifact() {
 		.function = function,
 		.stage = rtsl::ir::Stage::stage_compute,
 		.configuration = rtsl::ir::ComputeConfiguration{.workgroup_size = {8, 4, 1}},
+		.attributes = {{.name = builder.module().strings.intern("invocations"), .tokens = {builder.module().strings.intern("4")}}},
 	});
 	return Artifact{
 		.kind = ArtifactKind::artifact_program,
@@ -46,6 +47,8 @@ TEST_CASE("RTIR artifacts round trip deterministically") {
 	REQUIRE(read.artifact->module.strings.get(read.artifact->module.name) == "serialization-test");
 	REQUIRE(read.artifact->module.functions[0].implicit_emitter);
 	REQUIRE(read.artifact->module.symbols[0].exported);
+	REQUIRE(read.artifact->module.strings.get(read.artifact->module.entry_points[0].attributes[0].name) == "invocations");
+	REQUIRE(read.artifact->module.strings.get(read.artifact->module.entry_points[0].attributes[0].tokens[0]) == "4");
 
 	const rtsl::WriteResult second = rtsl::ArtifactWriter{}.write(*read.artifact);
 	REQUIRE(second);

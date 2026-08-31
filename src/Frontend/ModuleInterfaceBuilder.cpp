@@ -33,8 +33,11 @@ InterfaceType ModuleInterfaceBuilder::buildType(QualType type) const {
 		const auto* specialization = static_cast<const TemplateSpecializationType*>(source);
 		result.kind = InterfaceTypeKind::type_template_specialization;
 		result.name = specialization->getName()->getName();
-		for (unsigned index = 0; index < specialization->getArgumentCount(); ++index)
-			result.arguments.push_back(buildType(specialization->arguments()[index]));
+		for (unsigned index = 0; index < specialization->getArgumentCount(); ++index) {
+			auto argument = buildType(specialization->arguments()[index]);
+			argument.integer_value = specialization->getIntegerArgument(index);
+			result.arguments.push_back(std::move(argument));
+		}
 		break;
 	}
 	case TypeClass::type_pointer:
@@ -123,6 +126,8 @@ ModuleInterfaceBuildResult ModuleInterfaceBuilder::buildUnit(std::string_view im
 				const ParmVarDecl* parameter = function->parameters()[index];
 				exported.parameters.push_back({.name = std::string(parameter->getIdentifier()->getName()), .attributes = buildAttributes(parameter->getAttrs()), .type = buildType(parameter->getType())});
 			}
+			for (unsigned index = 0; index < function->getNumTypeOnlyParameters(); ++index)
+				exported.type_only_parameters.push_back(buildType(function->typeOnlyParameters()[index]));
 			for (unsigned index = 0; index < function->getNumTemplateParameters(); ++index)
 				exported.template_parameters.push_back(std::string(function->templateParameters()[index]->getName()));
 			result.unit.declarations.emplace_back(std::move(exported));

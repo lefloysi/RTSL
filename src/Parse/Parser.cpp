@@ -203,6 +203,7 @@ void Parser::parseDeclSpec(DeclSpec& DS) {
 
 ParsedType Parser::parseType() {
 	ParsedType Result;
+	Result.Constant = consumeIf(tok::kw_const);
 	if (Tok.isNot(tok::identifier)) return Result;
 	Result.Location = Tok.getLocation();
 	Result.Name = Tok.getIdentifierInfo();
@@ -213,6 +214,11 @@ ParsedType Parser::parseType() {
 				ParsedType Value;
 				Value.Location = Tok.getLocation();
 				Value.Name = &PP.getIdentifierTable().get("usize");
+				std::uint32_t IntegerValue{};
+				auto [Position, Error] = std::from_chars(Tok.getLiteralData(), Tok.getLiteralData() + Tok.getLength(), IntegerValue);
+				if (Error != std::errc{} || Position != Tok.getLiteralData() + Tok.getLength())
+					Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected an unsigned integer template argument");
+				else Value.IntegerValue = IntegerValue;
 				Result.Arguments.push_back(Value);
 				consumeToken();
 			} else {
@@ -223,6 +229,8 @@ ParsedType Parser::parseType() {
 		expectAndConsume(tok::greater, "expected '>' after template arguments");
 	}
 	while (Tok.is(tok::coloncolon)) {
+		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
+			"qualified type names are not supported");
 		consumeToken();
 		if (Tok.is(tok::identifier)) consumeToken();
 		else break;
@@ -313,6 +321,7 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 	else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected function name");
 	expectAndConsume(tok::l_paren, "expected '(' after function name");
 	std::vector<ParmVarDecl*> Parameters;
+	std::vector<ParsedType> TypeOnlyParameters;
 	std::vector<ParsedParameterContract> ParameterContracts;
 	while (Tok.isNot(tok::r_paren) && Tok.isNot(tok::eof)) {
 		auto ParameterAttributes = parseAttributes();
@@ -321,6 +330,11 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
 				"expected parameter declaration");
 			break;
+		}
+		if (Tok.isNot(tok::identifier) && Type.Name && Type.Name->getName() == "tessellation") {
+			TypeOnlyParameters.push_back(std::move(Type));
+			if (!consumeIf(tok::comma)) break;
+			continue;
 		}
 		auto ParameterDeclarator = parseDeclarator(Type);
 		if (!ParameterDeclarator.Name) break;
@@ -356,7 +370,7 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 		Actions.actOnFinishFunctionSignature();
 	}
 	auto Function = Actions.actOnFunction(Context, DS, D, Parameters, ParameterContracts, BaseInitializer, Attributes,
-		TemplateParameters);
+		TemplateParameters, TypeOnlyParameters);
 	if (consumeIf(tok::semi)) return;
 	if (Tok.is(tok::l_brace)) {
 		Actions.actOnStartFunctionBody(Function);
@@ -545,10 +559,9 @@ Expr* Parser::parsePrimaryExpression() {
 			continue;
 		}
 		if (consumeIf(tok::l_square)) {
-			std::vector<Expr*> Arguments{parseExpression()};
+			Expr* Index = parseExpression();
 			expectAndConsume(tok::r_square, "expected ']' after index");
-			Result = Context.create<PostfixExpr>(StmtClass::expr_subscript, Result, nullptr,
-				Context.copyPointerArray(Arguments), 1);
+			Result = Actions.actOnSubscriptExpr(Result, Index, Tok.getLocation());
 			continue;
 		}
 		if (consumeIf(tok::l_paren)) {

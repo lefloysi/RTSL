@@ -157,10 +157,10 @@ public:
 	FunctionDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, QualType ReturnType,
 		ParmVarDecl** Parameters, unsigned ParameterCount, const ParameterContract* ParameterContracts,
 		unsigned ParameterContractCount, IdentifierInfo* const* TemplateParameters, unsigned TemplateParameterCount,
-		Expr* BaseInitializer, bool ImplicitEmitter, bool Internal, bool Exported)
+		const QualType* TypeOnlyParameters, unsigned TypeOnlyParameterCount, Expr* BaseInitializer, bool ImplicitEmitter, bool Internal, bool Exported)
 		: ValueDecl(DeclKind::decl_function, Context, Location, Name, ReturnType), Parameters(Parameters),
 		  ParameterCount(ParameterCount), ParameterContracts(ParameterContracts), ParameterContractCount(ParameterContractCount),
-		  TemplateParameters(TemplateParameters), TemplateParameterCount(TemplateParameterCount), BaseInitializer(BaseInitializer),
+		  TemplateParameters(TemplateParameters), TemplateParameterCount(TemplateParameterCount), TypeOnlyParameters(TypeOnlyParameters), TypeOnlyParameterCount(TypeOnlyParameterCount), BaseInitializer(BaseInitializer),
 		  ImplicitEmitter(ImplicitEmitter), Internal(Internal), Exported(Exported) {}
 	void setBody(CompoundStmt* Value) { Body = Value; }
 	[[nodiscard]] CompoundStmt* getBody() const { return Body; }
@@ -172,6 +172,8 @@ public:
 	[[nodiscard]] IdentifierInfo* const* templateParameters() const { return TemplateParameters; }
 	[[nodiscard]] unsigned getNumTemplateParameters() const { return TemplateParameterCount; }
 	[[nodiscard]] bool isFunctionTemplate() const { return TemplateParameterCount != 0; }
+	[[nodiscard]] const QualType* typeOnlyParameters() const { return TypeOnlyParameters; }
+	[[nodiscard]] unsigned getNumTypeOnlyParameters() const { return TypeOnlyParameterCount; }
 	[[nodiscard]] bool hasImplicitEmitter() const { return ImplicitEmitter; }
 	[[nodiscard]] bool hasInternalLinkage() const { return Internal; }
 	[[nodiscard]] bool isExported() const { return Exported; }
@@ -182,6 +184,8 @@ private:
 	unsigned ParameterContractCount;
 	IdentifierInfo* const* TemplateParameters;
 	unsigned TemplateParameterCount;
+	const QualType* TypeOnlyParameters;
+	unsigned TypeOnlyParameterCount;
 	CompoundStmt* Body{};
 	Expr* BaseInitializer{};
 	bool ImplicitEmitter;

@@ -504,6 +504,13 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 				return Value;
 			}
 		}
+		if (Binary->getOpcode() == tok::equal &&
+			(Binary->getLeft()->getStmtClass() == StmtClass::expr_member || Binary->getLeft()->getStmtClass() == StmtClass::expr_subscript)) {
+			ir::ValueId Operands[] = {lowerExpression(Binary->getLeft()), lowerExpression(Binary->getRight())};
+			if (!Operands[0] || !Operands[1]) return {};
+			Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_store, {}, Operands);
+			return Operands[1];
+		}
 		ir::ValueId Operands[] = {lowerExpression(Binary->getLeft()), lowerExpression(Binary->getRight())};
 		if (!Operands[0] || !Operands[1]) return {};
 		auto Opcode = binaryOpcode(Binary->getOpcode());
@@ -574,11 +581,18 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 	case StmtClass::expr_member:
 	case StmtClass::expr_subscript: {
 		auto Access = static_cast<PostfixExpr*>(Expression);
-		std::vector<ir::ValueId> Operands{lowerExpression(Access->getBase())};
+		Expr* Base = Access->getBase();
+		const PostfixExpr* Outer = nullptr;
+		if (Access->getStmtClass() == StmtClass::expr_subscript && Base && Base->getStmtClass() == StmtClass::expr_member) {
+			auto Member = static_cast<PostfixExpr*>(Base);
+			if (Member->getMember() && Member->getMember()->getName() == "outer") Outer = Member;
+		}
+		std::vector<ir::ValueId> Operands{lowerExpression(Outer ? Outer->getBase() : Base)};
 		if (Access->getArgumentCount()) Operands.push_back(lowerExpression(Access->arguments()[0]));
 		for (ir::ValueId Operand : Operands) if (!Operand) return {};
 		std::vector<std::uint32_t> Immediates;
-		if (Access->getMember()) Immediates.push_back(Builder.module().strings.intern(Access->getMember()->getName()).value());
+		if (Outer) Immediates.push_back(Builder.module().strings.intern("outer").value());
+		else if (Access->getMember()) Immediates.push_back(Builder.module().strings.intern(Access->getMember()->getName()).value());
 		auto Type = lowerType(Expression->getType());
 		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_access, Type, Operands, Immediates);
 		ValueTypes[Value.value()] = Type;
@@ -635,11 +649,11 @@ ir::TypeId CodeGenerator::lowerUnqualifiedType(const Type* ASTType) {
 	case TypeClass::type_template_specialization: {
 		auto Specialization = static_cast<const TemplateSpecializationType*>(ASTType);
 		auto Name = Specialization->getName()->getName();
-		Type.kind = Name == "patch" ? ir::TypeKind::type_patch :
+		Type.kind = (Name == "patch" || Name == "triangle_patch" || Name == "quad_patch" || Name == "isoline_patch") ? ir::TypeKind::type_patch :
 			(Name == "triangle" || Name == "triangle_strip") ? ir::TypeKind::type_primitive : ir::TypeKind::type_structure;
 		Type.name = Builder.module().strings.intern(Name);
 		if (Specialization->getArgumentCount()) Type.element_type = lowerType(Specialization->arguments()[0]);
-		Type.element_count = Specialization->getArgumentCount() > 1 ? 1 : 0;
+		Type.element_count = Specialization->getIntegerArgument(1).value_or(0);
 		break;
 	}
 	case TypeClass::type_pointer:
@@ -734,58 +748,76 @@ bool CodeGenerator::lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID
 	Entry.source_name = Builder.module().strings.intern(Function->getIdentifier()->getName());
 	Entry.stage = ir::Stage::stage_vertex;
 	Entry.configuration = std::monostate{};
+	for (Attr* attribute = Function->getAttrs(); attribute; attribute = attribute->getNextAttr()) {
+		ir::EntryAttribute lowered{.name = Builder.module().strings.intern(attribute->getName()->getName())};
+		for (unsigned index = 0; index < attribute->getTokenCount(); ++index) {
+			const AttrToken& token = attribute->tokens()[index];
+			if (token.Identifier) lowered.tokens.push_back(Builder.module().strings.intern(token.Identifier->getName()));
+			else if (token.Kind == tok::numeric_literal || token.Kind == tok::string_literal)
+				lowered.tokens.push_back(Builder.module().strings.intern({token.LiteralData, token.LiteralLength}));
+			else if (tok::isPunctuator(token.Kind)) lowered.tokens.push_back(Builder.module().strings.intern(tok::getPunctuatorSpelling(token.Kind)));
+			else lowered.tokens.push_back(Builder.module().strings.intern(tok::getTokenName(token.Kind)));
+		}
+		Entry.attributes.push_back(std::move(lowered));
+	}
 	if (Name == "vertex") {
 		Entry.stage = ir::Stage::stage_vertex;
 		Entry.configuration.emplace<std::monostate>();
 	}
 	else if (Name == "tess_control") {
 		Entry.stage = ir::Stage::stage_tessellation_control;
-		ir::TessellationControlConfiguration Configuration{.output_control_points = 1};
-		if (auto Values = numericAttribute(findAttribute(Function, "output_control_points")); !Values.empty())
-			Configuration.output_control_points = Values.front();
-		Entry.configuration = Configuration;
+		Entry.configuration = ir::TessellationControlConfiguration{.output_control_points = 1};
 	} else if (Name == "tess_eval") {
 		Entry.stage = ir::Stage::stage_tessellation_evaluation;
 		ir::TessellationEvaluationConfiguration Configuration;
-		if (auto Domain = identifierAttribute(findAttribute(Function, "tessellation_domain"))) {
-			if (*Domain == "triangles") Configuration.domain = ir::TessellationDomain::tessellation_domain_triangles;
-			else if (*Domain == "quads") Configuration.domain = ir::TessellationDomain::tessellation_domain_quads;
-			else if (*Domain == "isolines") Configuration.domain = ir::TessellationDomain::tessellation_domain_isolines;
-			else { diagnose("unknown tessellation domain"); return false; }
+		if (Function->getNumParams() != 0) {
+			const Type* ParameterType = Function->parameters()[0]->getType().getTypePtr();
+			if (ParameterType && ParameterType->getTypeClass() == TypeClass::type_reference)
+				ParameterType = static_cast<const ReferenceType*>(ParameterType)->getPointeeType().getTypePtr();
+			if (ParameterType && ParameterType->getTypeClass() == TypeClass::type_template_specialization) {
+				auto PatchName = static_cast<const TemplateSpecializationType*>(ParameterType)->getName()->getName();
+				if (PatchName == "quad_patch") Configuration.domain = ir::TessellationDomain::tessellation_domain_quads;
+				else if (PatchName == "isoline_patch") Configuration.domain = ir::TessellationDomain::tessellation_domain_isolines;
+			}
 		}
-		if (auto Spacing = identifierAttribute(findAttribute(Function, "tessellation_spacing"))) {
-			if (*Spacing == "equal") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_equal;
-			else if (*Spacing == "fractional_even") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_even;
-			else if (*Spacing == "fractional_odd") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_odd;
-			else { diagnose("unknown tessellation spacing"); return false; }
-		}
-		if (auto Winding = identifierAttribute(findAttribute(Function, "tessellation_winding"))) {
-			if (*Winding == "clockwise") Configuration.winding = ir::Winding::winding_clockwise;
-			else if (*Winding == "counter_clockwise") Configuration.winding = ir::Winding::winding_counter_clockwise;
-			else { diagnose("unknown tessellation winding"); return false; }
+		for (unsigned Index = 0; Index < Function->getNumTypeOnlyParameters(); ++Index) {
+			const Type* TypeOnly = Function->typeOnlyParameters()[Index].getTypePtr();
+			if (!TypeOnly || TypeOnly->getTypeClass() != TypeClass::type_template_specialization) continue;
+			const auto* Settings = static_cast<const TemplateSpecializationType*>(TypeOnly);
+			if (Settings->getName()->getName() != "tessellation") continue;
+			for (unsigned ArgumentIndex = 0; ArgumentIndex < Settings->getArgumentCount(); ++ArgumentIndex) {
+				const Type* Argument = Settings->arguments()[ArgumentIndex].getTypePtr();
+				if (!Argument || Argument->getTypeClass() != TypeClass::type_named) continue;
+				auto Setting = static_cast<const NamedType*>(Argument)->getName()->getName();
+				if (Setting == "fractional_even") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_even;
+				else if (Setting == "fractional_odd") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_odd;
+				else if (Setting == "cw") Configuration.winding = ir::Winding::winding_clockwise;
+				else if (Setting == "ccw") Configuration.winding = ir::Winding::winding_counter_clockwise;
+			}
 		}
 		Entry.configuration = Configuration;
 	} else if (Name == "geometry") {
 		Entry.stage = ir::Stage::stage_geometry;
-		ir::GeometryConfiguration Configuration{.maximum_vertices = 1};
-		if (auto Input = identifierAttribute(findAttribute(Function, "geometry_input"))) {
-			if (*Input == "points") Configuration.input = ir::PrimitiveTopology::primitive_points;
-			else if (*Input == "lines") Configuration.input = ir::PrimitiveTopology::primitive_lines;
-			else if (*Input == "lines_adjacency") Configuration.input = ir::PrimitiveTopology::primitive_lines_adjacency;
-			else if (*Input == "triangles") Configuration.input = ir::PrimitiveTopology::primitive_triangles;
-			else if (*Input == "triangles_adjacency") Configuration.input = ir::PrimitiveTopology::primitive_triangles_adjacency;
-			else { diagnose("unknown geometry input topology"); return false; }
+		if (Function->getNumParams() != 1) { diagnose("geometry entry function requires one primitive input parameter"); return false; }
+		const Type* InputType = Function->parameters()[0]->getType().getTypePtr();
+		if (InputType && InputType->getTypeClass() == TypeClass::type_reference)
+			InputType = static_cast<const ReferenceType*>(InputType)->getPointeeType().getTypePtr();
+		const Type* OutputType = Function->getType().getTypePtr();
+		if (!InputType || InputType->getTypeClass() != TypeClass::type_template_specialization ||
+			!OutputType || OutputType->getTypeClass() != TypeClass::type_template_specialization) {
+			diagnose("geometry entry function requires primitive input and output types"); return false;
 		}
-		if (auto Output = identifierAttribute(findAttribute(Function, "geometry_output"))) {
-			if (*Output == "points") Configuration.output = ir::PrimitiveTopology::primitive_points;
-			else if (*Output == "line_strip") Configuration.output = ir::PrimitiveTopology::primitive_line_strip;
-			else if (*Output == "triangle_strip") Configuration.output = ir::PrimitiveTopology::primitive_triangle_strip;
-			else { diagnose("unknown geometry output topology"); return false; }
-		}
-		if (auto Values = numericAttribute(findAttribute(Function, "maximum_vertices")); !Values.empty())
-			Configuration.maximum_vertices = Values.front();
-		if (auto Values = numericAttribute(findAttribute(Function, "geometry_invocations")); !Values.empty())
-			Configuration.invocations = Values.front();
+		const auto* Input = static_cast<const TemplateSpecializationType*>(InputType);
+		const auto* Output = static_cast<const TemplateSpecializationType*>(OutputType);
+		if (Input->getName()->getName() != "triangle") { diagnose("unsupported geometry input primitive"); return false; }
+		if (Output->getName()->getName() != "triangle_strip") { diagnose("unsupported geometry output primitive"); return false; }
+		const auto MaximumVertices = Output->getIntegerArgument(1);
+		if (!MaximumVertices || *MaximumVertices == 0) { diagnose("geometry output primitive requires a non-zero vertex limit"); return false; }
+		ir::GeometryConfiguration Configuration{
+			.input = ir::PrimitiveTopology::primitive_triangles,
+			.output = ir::PrimitiveTopology::primitive_triangle_strip,
+			.maximum_vertices = *MaximumVertices,
+		};
 		Entry.configuration = Configuration;
 	} else if (Name == "fragment") {
 		Entry.stage = ir::Stage::stage_fragment;

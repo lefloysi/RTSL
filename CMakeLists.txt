@@ -20,7 +20,6 @@ add_library(rtsl STATIC
 	src/Linker/Linker.cpp
 	src/Parse/Parser.cpp
 	src/Serialization/Artifact.cpp
-	src/Serialization/DebugArtifact.cpp
 	src/Sema/Sema.cpp
 )
 add_library(RTSL::rtsl ALIAS rtsl)
@@ -38,6 +37,7 @@ if(RTSL_BUILD_CLI)
 	add_subdirectory(tools/rtslc)
 endif()
 add_subdirectory(tools/rtsl-lsp)
+add_subdirectory(tools/rtsl-lexer)
 
 option(RTSL_BUILD_TESTS "Build RTSL tests" ${PROJECT_IS_TOP_LEVEL})
 if(RTSL_BUILD_TESTS)

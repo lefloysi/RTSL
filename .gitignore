@@ -44,3 +44,14 @@ obj/
 *.exe
 *.out
 *.pdb
+
+# ============================================================================
+# Visual Studio RTSL extension build output
+# ============================================================================
+/tools/RTSL.VisualStudio/bin/
+/tools/RTSL.VisualStudio/obj/
+/tools/RTSL.VisualStudio/x64/
+/tools/rtsl-lsp/x64/
+/tools/rtsl-lsp/rtsl-lsp/
+/tools/rtsl-lexer/x64/
+/tools/rtsl-lexer/rtsl-lexer/

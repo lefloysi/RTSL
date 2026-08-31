@@ -50,6 +50,7 @@ struct InterfaceType {
 	bool constant{};
 	std::string name;
 	std::vector<InterfaceType> arguments;
+	std::optional<std::uint32_t> integer_value;
 };
 
 struct InterfaceField {
@@ -96,6 +97,7 @@ struct InterfaceFunction {
 	std::vector<InterfaceAttribute> attributes;
 	InterfaceType return_type;
 	std::vector<InterfaceParameter> parameters;
+	std::vector<InterfaceType> type_only_parameters;
 	std::vector<std::string> template_parameters;
 	bool implicit_emitter{};
 	bool declaration{};
