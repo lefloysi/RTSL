@@ -218,7 +218,7 @@ EncodedSection writeTypes(const ir::Module& module) {
 
 EncodedSection writeSymbols(const ir::Module& module) {
 	Writer writer; writer.writeU32(static_cast<std::uint32_t>(module.symbols.size()));
-	for (const ir::Symbol& symbol : module.symbols) { writer.writeId(symbol.id); writer.writeId(symbol.fully_qualified_name); }
+	for (const ir::Symbol& symbol : module.symbols) { writer.writeId(symbol.id); writer.writeId(symbol.fully_qualified_name); writer.writeBool(symbol.exported); }
 	return {SectionKind::section_symbols, std::move(writer.bytes)};
 }
 
@@ -321,7 +321,12 @@ bool readTypes(Reader& reader, ir::Module& module) {
 
 bool readSymbols(Reader& reader, ir::Module& module) {
 	std::uint32_t count{}; if (!reader.readCount(count, "symbols")) return false; module.symbols.reserve(count);
-	for (std::uint32_t index = 0; index < count; ++index) { ir::Symbol symbol; if (!reader.readId(symbol.id) || !reader.readId(symbol.fully_qualified_name)) return false; module.symbols.push_back(symbol); }
+	for (std::uint32_t index = 0; index < count; ++index) {
+		ir::Symbol symbol;
+		if (!reader.readId(symbol.id) || !reader.readId(symbol.fully_qualified_name) ||
+			(reader.versionMinor() >= 3 && !reader.readBool(symbol.exported))) return false;
+		module.symbols.push_back(symbol);
+	}
 	return reader.finish("symbols");
 }
 

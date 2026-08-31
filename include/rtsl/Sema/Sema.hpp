@@ -29,8 +29,9 @@ public:
 		const std::vector<ParsedParameterContract>& ParameterContracts, Expr* BaseInitializer,
 		const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters);
 	TypeAliasDecl* actOnTypeAlias(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location,
-		const ParsedType& Type, const ParsedAttributes& Attributes);
+		const DeclSpec& DS, const ParsedType& Type, const ParsedAttributes& Attributes);
 	ImportDecl* actOnImport(DeclContext* Context, const Token& ModuleToken);
+	ImportDecl* actOnLibraryImport(DeclContext* Context, const Token& LibraryToken);
 	void actOnFinishFunctionBody(FunctionDecl* Function, CompoundStmt* Body);
 	void actOnStartFunctionBody(FunctionDecl* Function);
 	void actOnStartFunctionSignature(const std::vector<ParmVarDecl*>& Parameters);
@@ -48,6 +49,7 @@ public:
 	Attr* processAttributes(const ParsedAttributes& Attributes);
 
 	[[nodiscard]] ASTContext& getASTContext() { return Context; }
+	[[nodiscard]] IdentifierTable& getIdentifierTable() { return Identifiers; }
 
 private:
 	void installStandardLibrary(IdentifierTable& Identifiers);
@@ -59,6 +61,7 @@ private:
 	[[nodiscard]] FieldDecl* lookupField(RecordDecl* Record, IdentifierInfo* Name) const;
 	ASTContext& Context;
 	DiagnosticsEngine& Diagnostics;
+	IdentifierTable& Identifiers;
 	std::unordered_map<IdentifierInfo*, QualType> Types;
 	std::unordered_map<IdentifierInfo*, ValueDecl*> Values;
 	std::unordered_map<IdentifierInfo*, RecordDecl*> Records;

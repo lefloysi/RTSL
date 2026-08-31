@@ -35,6 +35,8 @@ public:
 	[[nodiscard]] const Type* getTypePtr() const { return reinterpret_cast<const Type*>(Value & ~std::uintptr_t{1}); }
 	[[nodiscard]] bool isConstQualified() const { return (Value & 1) != 0; }
 	[[nodiscard]] explicit operator bool() const { return getTypePtr() != nullptr; }
+	[[nodiscard]] friend bool operator==(QualType Left, QualType Right) { return Left.Value == Right.Value; }
+	[[nodiscard]] friend bool operator<(QualType Left, QualType Right) { return Left.Value < Right.Value; }
 private:
 	std::uintptr_t Value{};
 };

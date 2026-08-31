@@ -4,6 +4,7 @@
 #include <rtsl/AST/Decl.hpp>
 
 #include <memory_resource>
+#include <map>
 #include <new>
 #include <utility>
 #include <vector>
@@ -40,9 +41,21 @@ public:
 	[[nodiscard]] QualType getPointerType(QualType Pointee);
 	[[nodiscard]] QualType getReferenceType(QualType Pointee);
 private:
+	struct TemplateSpecializationKey {
+		IdentifierInfo* Name{};
+		std::vector<QualType> Arguments;
+		[[nodiscard]] bool operator<(const TemplateSpecializationKey& Other) const {
+			return Name != Other.Name ? Name < Other.Name : Arguments < Other.Arguments;
+		}
+	};
 	std::pmr::monotonic_buffer_resource Arena;
 	TranslationUnitDecl* TranslationUnit;
 	BuiltinType* Builtins[6]{};
+	std::map<IdentifierInfo*, NamedType*> NamedTypes;
+	std::map<IdentifierInfo*, TemplateParameterType*> TemplateParameterTypes;
+	std::map<QualType, PointerType*> PointerTypes;
+	std::map<QualType, ReferenceType*> ReferenceTypes;
+	std::map<TemplateSpecializationKey, TemplateSpecializationType*> TemplateSpecializationTypes;
 };
 
 }

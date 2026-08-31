@@ -33,6 +33,7 @@ private:
 class Decl {
 public:
 	[[nodiscard]] DeclKind getKind() const { return Kind; }
+	[[nodiscard]] SourceLocation getLocation() const { return Location; }
 	[[nodiscard]] Decl* getNextDeclInContext() const { return NextDecl; }
 	[[nodiscard]] DeclContext* getDeclContext() const { return Context; }
 	[[nodiscard]] Attr* getAttrs() const { return Attributes; }
@@ -119,21 +120,29 @@ private:
 
 class TypeAliasDecl final : public NamedDecl {
 public:
-	TypeAliasDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, QualType Type)
-		: NamedDecl(DeclKind::decl_type_alias, Context, Location, Name), AliasedType(Type) {}
+	TypeAliasDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, QualType Type,
+		bool Internal, bool Exported)
+		: NamedDecl(DeclKind::decl_type_alias, Context, Location, Name), AliasedType(Type), Internal(Internal), Exported(Exported) {}
 	[[nodiscard]] QualType getAliasedType() const { return AliasedType; }
+	[[nodiscard]] bool hasInternalLinkage() const { return Internal; }
+	[[nodiscard]] bool isExported() const { return Exported; }
 private:
 	QualType AliasedType;
+	bool Internal;
+	bool Exported;
 };
 
 class ImportDecl final : public Decl {
 public:
-	ImportDecl(DeclContext* Context, SourceLocation Location, const char* ModuleData, unsigned ModuleLength)
-		: Decl(DeclKind::decl_import, Context, Location), ModuleData(ModuleData), ModuleLength(ModuleLength) {}
+	enum class Kind : std::uint8_t { import_file, import_library };
+	ImportDecl(DeclContext* Context, SourceLocation Location, const char* ModuleData, unsigned ModuleLength, Kind ImportKind)
+		: Decl(DeclKind::decl_import, Context, Location), ModuleData(ModuleData), ModuleLength(ModuleLength), ImportKind(ImportKind) {}
 	[[nodiscard]] std::string_view getModuleName() const { return {ModuleData, ModuleLength}; }
+	[[nodiscard]] Kind getImportKind() const { return ImportKind; }
 private:
 	const char* ModuleData;
 	unsigned ModuleLength;
+	Kind ImportKind;
 };
 
 struct ParameterContract {

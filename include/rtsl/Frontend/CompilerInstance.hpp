@@ -39,6 +39,7 @@ public:
 	[[nodiscard]] Sema* getSema() const { return Actions.get(); }
 	[[nodiscard]] Parser* getParser() const { return SyntaxParser.get(); }
 private:
+	void validateImports();
 	CompilerInvocation Invocation;
 	DiagnosticsEngine Diagnostics;
 	SourceManager Sources;

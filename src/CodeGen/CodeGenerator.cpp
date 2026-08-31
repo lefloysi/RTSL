@@ -226,7 +226,7 @@ bool CodeGenerator::appendConstructorFields(RecordDecl* Record, std::vector<ir::
 }
 
 void CodeGenerator::lowerGlobal(VarDecl* Variable) {
-	auto Symbol = Builder.addSymbol(qualifiedName(Variable));
+	auto Symbol = Builder.addSymbol(qualifiedName(Variable), Variable->isExported());
 	auto IRType = lowerType(Variable->getType());
 	GlobalSymbols[Variable] = Symbol;
 	if (Variable->getStorageClass() == StorageClass::storage_uniform) {
@@ -257,7 +257,7 @@ void CodeGenerator::lowerGlobal(VarDecl* Variable) {
 }
 
 void CodeGenerator::lowerFunctionDeclaration(FunctionDecl* Function) {
-	auto Symbol = Builder.addSymbol(qualifiedName(Function));
+	auto Symbol = Builder.addSymbol(qualifiedName(Function), Function->isExported());
 	std::vector<ir::TypeId> ParameterTypes;
 	std::vector<ir::SymbolId> ParameterSymbols;
 	for (unsigned Index = 0; Index < Function->getNumParams(); ++Index) {
@@ -740,13 +740,53 @@ bool CodeGenerator::lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID
 	}
 	else if (Name == "tess_control") {
 		Entry.stage = ir::Stage::stage_tessellation_control;
-		Entry.configuration = ir::TessellationControlConfiguration{.output_control_points = 1};
+		ir::TessellationControlConfiguration Configuration{.output_control_points = 1};
+		if (auto Values = numericAttribute(findAttribute(Function, "output_control_points")); !Values.empty())
+			Configuration.output_control_points = Values.front();
+		Entry.configuration = Configuration;
 	} else if (Name == "tess_eval") {
 		Entry.stage = ir::Stage::stage_tessellation_evaluation;
-		Entry.configuration = ir::TessellationEvaluationConfiguration{};
+		ir::TessellationEvaluationConfiguration Configuration;
+		if (auto Domain = identifierAttribute(findAttribute(Function, "tessellation_domain"))) {
+			if (*Domain == "triangles") Configuration.domain = ir::TessellationDomain::tessellation_domain_triangles;
+			else if (*Domain == "quads") Configuration.domain = ir::TessellationDomain::tessellation_domain_quads;
+			else if (*Domain == "isolines") Configuration.domain = ir::TessellationDomain::tessellation_domain_isolines;
+			else { diagnose("unknown tessellation domain"); return false; }
+		}
+		if (auto Spacing = identifierAttribute(findAttribute(Function, "tessellation_spacing"))) {
+			if (*Spacing == "equal") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_equal;
+			else if (*Spacing == "fractional_even") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_even;
+			else if (*Spacing == "fractional_odd") Configuration.spacing = ir::TessellationSpacing::tessellation_spacing_fractional_odd;
+			else { diagnose("unknown tessellation spacing"); return false; }
+		}
+		if (auto Winding = identifierAttribute(findAttribute(Function, "tessellation_winding"))) {
+			if (*Winding == "clockwise") Configuration.winding = ir::Winding::winding_clockwise;
+			else if (*Winding == "counter_clockwise") Configuration.winding = ir::Winding::winding_counter_clockwise;
+			else { diagnose("unknown tessellation winding"); return false; }
+		}
+		Entry.configuration = Configuration;
 	} else if (Name == "geometry") {
 		Entry.stage = ir::Stage::stage_geometry;
-		Entry.configuration = ir::GeometryConfiguration{.maximum_vertices = 1};
+		ir::GeometryConfiguration Configuration{.maximum_vertices = 1};
+		if (auto Input = identifierAttribute(findAttribute(Function, "geometry_input"))) {
+			if (*Input == "points") Configuration.input = ir::PrimitiveTopology::primitive_points;
+			else if (*Input == "lines") Configuration.input = ir::PrimitiveTopology::primitive_lines;
+			else if (*Input == "lines_adjacency") Configuration.input = ir::PrimitiveTopology::primitive_lines_adjacency;
+			else if (*Input == "triangles") Configuration.input = ir::PrimitiveTopology::primitive_triangles;
+			else if (*Input == "triangles_adjacency") Configuration.input = ir::PrimitiveTopology::primitive_triangles_adjacency;
+			else { diagnose("unknown geometry input topology"); return false; }
+		}
+		if (auto Output = identifierAttribute(findAttribute(Function, "geometry_output"))) {
+			if (*Output == "points") Configuration.output = ir::PrimitiveTopology::primitive_points;
+			else if (*Output == "line_strip") Configuration.output = ir::PrimitiveTopology::primitive_line_strip;
+			else if (*Output == "triangle_strip") Configuration.output = ir::PrimitiveTopology::primitive_triangle_strip;
+			else { diagnose("unknown geometry output topology"); return false; }
+		}
+		if (auto Values = numericAttribute(findAttribute(Function, "maximum_vertices")); !Values.empty())
+			Configuration.maximum_vertices = Values.front();
+		if (auto Values = numericAttribute(findAttribute(Function, "geometry_invocations")); !Values.empty())
+			Configuration.invocations = Values.front();
+		Entry.configuration = Configuration;
 	} else if (Name == "fragment") {
 		Entry.stage = ir::Stage::stage_fragment;
 		Entry.configuration.emplace<std::monostate>();
@@ -783,6 +823,13 @@ std::vector<std::uint32_t> CodeGenerator::numericAttribute(Attr* Attribute) cons
 		Result.push_back(Value);
 	}
 	return Result;
+}
+
+std::optional<std::string_view> CodeGenerator::identifierAttribute(Attr* Attribute) const {
+	if (!Attribute) return std::nullopt;
+	for (unsigned Index = 0; Index < Attribute->getTokenCount(); ++Index)
+		if (Attribute->tokens()[Index].Identifier) return Attribute->tokens()[Index].Identifier->getName();
+	return std::nullopt;
 }
 
 ir::Opcode CodeGenerator::binaryOpcode(tok::TokenKind Kind) const {

@@ -102,7 +102,11 @@ void Parser::parseExternalDeclaration(ParsedAttributes& Attributes) {
 	case tok::kw_import:
 		consumeToken();
 		if (Tok.is(tok::string_literal)) { Actions.actOnImport(Context, Tok); consumeToken(); }
-		else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected module string");
+		else if (consumeIf(tok::less)) {
+			if (Tok.is(tok::identifier)) { Actions.actOnLibraryImport(Context, Tok); consumeToken(); }
+			else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected library name after '<'");
+			expectAndConsume(tok::greater, "expected '>' after library name");
+		} else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected import path or library name");
 		expectAndConsume(tok::semi, "expected ';' after import");
 		return;
 	case tok::kw_struct:
@@ -116,7 +120,7 @@ void Parser::parseExternalDeclaration(ParsedAttributes& Attributes) {
 		parseFunctionTemplate(Context, DS, Attributes);
 		return;
 	case tok::kw_using:
-		parseTypeAlias(Context, Attributes);
+		parseTypeAlias(Context, DS, Attributes);
 		return;
 	default: {
 		parseDeclSpec(DS);
@@ -168,7 +172,7 @@ void Parser::parseFunctionTemplate(DeclContext* Context, DeclSpec& DS, ParsedAtt
 	Actions.popTemplateParameters(Parameters);
 }
 
-void Parser::parseTypeAlias(DeclContext* Context, ParsedAttributes& Attributes) {
+void Parser::parseTypeAlias(DeclContext* Context, const DeclSpec& DS, ParsedAttributes& Attributes) {
 	SourceLocation Location = Tok.getLocation();
 	consumeToken();
 	IdentifierInfo* Name{};
@@ -176,7 +180,7 @@ void Parser::parseTypeAlias(DeclContext* Context, ParsedAttributes& Attributes) 
 	else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected alias name");
 	expectAndConsume(tok::equal, "expected '=' in type alias");
 	auto Type = parseType();
-	Actions.actOnTypeAlias(Context, Name, Location, Type, Attributes);
+	Actions.actOnTypeAlias(Context, Name, Location, DS, Type, Attributes);
 	expectAndConsume(tok::semi, "expected ';' after type alias");
 }
 
@@ -431,7 +435,6 @@ Stmt* Parser::parseStatement() {
 		IdentifierInfo* Name = Tok.getIdentifierInfo();
 		consumeToken();
 		consumeToken();
-		expectAndConsume(tok::semi, "expected ';' after barrier label");
 		return Context.create<BarrierStmt>(Name);
 	}
 	if (Tok.is(tok::identifier) || Tok.is(tok::numeric_literal) || Tok.is(tok::l_paren) ||

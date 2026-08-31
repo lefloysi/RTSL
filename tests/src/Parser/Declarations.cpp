@@ -82,6 +82,65 @@ TEST_CASE("invalid empty buffer storage is diagnosed") {
 	REQUIRE_FALSE(Compiler.execute());
 }
 
+TEST_CASE("imports use build-supplied logical names without an extension rule") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("consumer.rtsl");
+	Invocation.setInputBuffer("import \"std/vector\";");
+	Invocation.addModuleInterface({.ImportPath = "std/vector", .InterfacePath = "standard.rtslm"});
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+}
+
+TEST_CASE("library imports use a separate build-supplied namespace") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("consumer.rtsl");
+	Invocation.setInputBuffer("import <std>;");
+	Invocation.addLibraryInterface({.LibraryName = "std", .InterfacePath = "standard.rtslm"});
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+}
+
+TEST_CASE("imports not supplied by the build are diagnosed") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("consumer.rtsl");
+	Invocation.setInputBuffer("import \"missing/module\";");
+	Invocation.addModuleInterface({.ImportPath = "std/vector", .InterfacePath = "standard.rtslm"});
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	REQUIRE(Compiler.getDiagnostics().diagnostics().front().Message ==
+		"import does not name a translation unit or module interface supplied by the build");
+}
+
+TEST_CASE("duplicate build import paths are diagnosed") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("consumer.rtsl");
+	Invocation.setInputBuffer("import \"std/vector\";");
+	Invocation.addTranslationUnit({.ImportPath = "std/vector", .InputName = "first.rtsl", .InputBuffer = {}});
+	Invocation.addModuleInterface({.ImportPath = "std/vector", .InterfacePath = "second.rtslm"});
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	REQUIRE(Compiler.getDiagnostics().diagnostics().back().Message ==
+		"build supplies more than one translation unit or module interface for the same import path");
+}
+
+TEST_CASE("exported type aliases retain their linkage") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("export-alias.rtsl");
+	Invocation.setInputBuffer("export using VertexIndex = u32;");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	auto Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
+	REQUIRE(Declaration != nullptr);
+	REQUIRE(Declaration->getKind() == rtsl::DeclKind::decl_type_alias);
+	REQUIRE(static_cast<rtsl::TypeAliasDecl*>(Declaration)->isExported());
+	REQUIRE_FALSE(static_cast<rtsl::TypeAliasDecl*>(Declaration)->hasInternalLinkage());
+}
+
 TEST_CASE("unknown types are diagnosed at their type token") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("unknown-type.rtsl");

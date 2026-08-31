@@ -71,7 +71,7 @@ void Linker::copyTypes(const ir::Module& Module, ModuleMaps& Maps) {
 
 void Linker::copySymbols(const ir::Module& Module, ModuleMaps& Maps) {
 	for (const auto& Symbol : Module.symbols)
-		Maps.Symbols[Symbol.id.value()] = Builder.addSymbol(Module.strings.get(Symbol.fully_qualified_name));
+		Maps.Symbols[Symbol.id.value()] = Builder.addSymbol(Module.strings.get(Symbol.fully_qualified_name), Symbol.exported);
 }
 
 void Linker::declareFunctions(const ir::Module& Module, ModuleMaps& Maps) {

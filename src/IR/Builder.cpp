@@ -14,9 +14,10 @@ Module ModuleBuilder::takeModule() noexcept {
 	return std::move(module_value);
 }
 
-SymbolId ModuleBuilder::addSymbol(std::string_view fully_qualified_name) {
-	for (const Symbol& symbol : module_value.symbols) {
+SymbolId ModuleBuilder::addSymbol(std::string_view fully_qualified_name, bool exported) {
+	for (Symbol& symbol : module_value.symbols) {
 		if (module_value.strings.get(symbol.fully_qualified_name) == fully_qualified_name) {
+			symbol.exported = symbol.exported || exported;
 			return symbol.id;
 		}
 	}
@@ -25,7 +26,7 @@ SymbolId ModuleBuilder::addSymbol(std::string_view fully_qualified_name) {
 		throw std::length_error("symbol string table capacity exceeded");
 	}
 	const SymbolId id{next_symbol++};
-	module_value.symbols.push_back(Symbol{.id = id, .fully_qualified_name = spelling});
+	module_value.symbols.push_back(Symbol{.id = id, .fully_qualified_name = spelling, .exported = exported});
 	return id;
 }
 

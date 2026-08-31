@@ -24,7 +24,7 @@ private:
 	ParsedType parseType();
 	Declarator parseDeclarator(ParsedType Type);
 	void parseRecord(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes);
-	void parseTypeAlias(DeclContext* Context, ParsedAttributes& Attributes);
+	void parseTypeAlias(DeclContext* Context, const DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseVariable(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes,
 		const std::vector<IdentifierInfo*>& TemplateParameters = {});

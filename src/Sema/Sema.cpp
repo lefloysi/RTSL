@@ -6,7 +6,7 @@
 namespace rtsl {
 
 Sema::Sema(ASTContext& Context, DiagnosticsEngine& Diagnostics, IdentifierTable& Identifiers)
-	: Context(Context), Diagnostics(Diagnostics) {
+	: Context(Context), Diagnostics(Diagnostics), Identifiers(Identifiers) {
 	installStandardLibrary(Identifiers);
 }
 
@@ -280,9 +280,9 @@ FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS,
 }
 
 TypeAliasDecl* Sema::actOnTypeAlias(DeclContext* DeclContext, IdentifierInfo* Name, SourceLocation Location,
-	const ParsedType& Type, const ParsedAttributes& Attributes) {
+	const DeclSpec& DS, const ParsedType& Type, const ParsedAttributes& Attributes) {
 	auto AliasedType = actOnType(Type);
-	auto Result = Context.create<TypeAliasDecl>(DeclContext, Location, Name, AliasedType);
+	auto Result = Context.create<TypeAliasDecl>(DeclContext, Location, Name, AliasedType, DS.Internal, DS.Exported);
 	Result->setAttrs(processAttributes(Attributes));
 	DeclContext->addDecl(Result);
 	Types[Name] = AliasedType;
@@ -293,7 +293,15 @@ ImportDecl* Sema::actOnImport(DeclContext* DeclContext, const Token& ModuleToken
 	auto Data = ModuleToken.getLiteralData();
 	unsigned Length = ModuleToken.getLength();
 	if (Length >= 2) { ++Data; Length -= 2; }
-	auto Result = Context.create<ImportDecl>(DeclContext, ModuleToken.getLocation(), Data, Length);
+	auto Result = Context.create<ImportDecl>(DeclContext, ModuleToken.getLocation(), Data, Length, ImportDecl::Kind::import_file);
+	DeclContext->addDecl(Result);
+	return Result;
+}
+
+ImportDecl* Sema::actOnLibraryImport(DeclContext* DeclContext, const Token& LibraryToken) {
+	auto Name = LibraryToken.getIdentifierInfo()->getName();
+	auto Result = Context.create<ImportDecl>(DeclContext, LibraryToken.getLocation(), Name.data(),
+		static_cast<unsigned>(Name.size()), ImportDecl::Kind::import_library);
 	DeclContext->addDecl(Result);
 	return Result;
 }

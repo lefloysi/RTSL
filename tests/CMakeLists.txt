@@ -2,11 +2,14 @@ find_package(Catch2 CONFIG REQUIRED)
 include(Catch)
 
 add_executable(rtsl-tests
+	src/AST/CanonicalTypes.cpp
+	src/Frontend/ModuleInterface.cpp
 	src/Integration/Linker.cpp
 	src/Integration/Triangle.cpp
 	src/IR/CodeGen.cpp
 	src/IR/Ownership.cpp
 	src/IR/Serialization.cpp
+	src/Serialization/DebugArtifact.cpp
 	src/Parser/Declarations.cpp
 )
 target_link_libraries(rtsl-tests PRIVATE RTSL::rtsl Catch2::Catch2WithMain)

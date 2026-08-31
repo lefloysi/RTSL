@@ -3,6 +3,8 @@
 
 #include <rtsl/AST/ASTContext.hpp>
 #include <rtsl/IR/Builder.hpp>
+
+#include <optional>
 #include <rtsl/IR/Verifier.hpp>
 
 #include <string>
@@ -61,6 +63,7 @@ private:
 	[[nodiscard]] Attr* findAttribute(const Decl* Declaration, std::string_view Name) const;
 	[[nodiscard]] bool lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID, ir::SymbolId Symbol);
 	[[nodiscard]] std::vector<std::uint32_t> numericAttribute(Attr* Attribute) const;
+	[[nodiscard]] std::optional<std::string_view> identifierAttribute(Attr* Attribute) const;
 	[[nodiscard]] ir::Opcode binaryOpcode(tok::TokenKind Kind) const;
 	void diagnose(std::string_view Message);
 

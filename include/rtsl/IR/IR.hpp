@@ -112,6 +112,7 @@ struct Type {
 struct Symbol {
 	SymbolId id;
 	StringId fully_qualified_name;
+	bool exported{};
 };
 
 enum class Opcode : std::uint16_t {

@@ -12,23 +12,34 @@ QualType ASTContext::getBuiltinType(BuiltinTypeKind Kind) const {
 }
 
 QualType ASTContext::getNamedType(IdentifierInfo* Name) {
-	return QualType(create<NamedType>(Name));
+	auto [Position, Inserted] = NamedTypes.try_emplace(Name, nullptr);
+	if (Inserted) Position->second = create<NamedType>(Name);
+	return QualType(Position->second);
 }
 
 QualType ASTContext::getTemplateParameterType(IdentifierInfo* Name) {
-	return QualType(create<TemplateParameterType>(Name));
+	auto [Position, Inserted] = TemplateParameterTypes.try_emplace(Name, nullptr);
+	if (Inserted) Position->second = create<TemplateParameterType>(Name);
+	return QualType(Position->second);
 }
 
 QualType ASTContext::getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments) {
-	return QualType(create<TemplateSpecializationType>(Name, copyArray(Arguments), static_cast<unsigned>(Arguments.size())));
+	TemplateSpecializationKey Key{.Name = Name, .Arguments = Arguments};
+	auto [Position, Inserted] = TemplateSpecializationTypes.try_emplace(std::move(Key), nullptr);
+	if (Inserted) Position->second = create<TemplateSpecializationType>(Name, copyArray(Arguments), static_cast<unsigned>(Arguments.size()));
+	return QualType(Position->second);
 }
 
 QualType ASTContext::getPointerType(QualType Pointee) {
-	return QualType(create<PointerType>(Pointee));
+	auto [Position, Inserted] = PointerTypes.try_emplace(Pointee, nullptr);
+	if (Inserted) Position->second = create<PointerType>(Pointee);
+	return QualType(Position->second);
 }
 
 QualType ASTContext::getReferenceType(QualType Pointee) {
-	return QualType(create<ReferenceType>(Pointee));
+	auto [Position, Inserted] = ReferenceTypes.try_emplace(Pointee, nullptr);
+	if (Inserted) Position->second = create<ReferenceType>(Pointee);
+	return QualType(Position->second);
 }
 
 void DeclContext::addDecl(Decl* Declaration) {

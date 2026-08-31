@@ -10,7 +10,7 @@ Artifact makeArtifact() {
 	rtsl::ir::Type void_type;
 	void_type.kind = rtsl::ir::TypeKind::type_void;
 	const rtsl::ir::TypeId void_id = builder.internType(void_type);
-	const rtsl::ir::SymbolId symbol = builder.addSymbol("serialization-test::main");
+	const rtsl::ir::SymbolId symbol = builder.addSymbol("serialization-test::main", true);
 	const rtsl::ir::FunctionId function = builder.addFunction(symbol, void_id, {}, {}, false, true);
 	const rtsl::ir::BlockId block = builder.addBlock(function);
 	rtsl::ir::Terminator terminator;
@@ -45,6 +45,7 @@ TEST_CASE("RTIR artifacts round trip deterministically") {
 	REQUIRE(read.artifact->kind == rtsl::ArtifactKind::artifact_program);
 	REQUIRE(read.artifact->module.strings.get(read.artifact->module.name) == "serialization-test");
 	REQUIRE(read.artifact->module.functions[0].implicit_emitter);
+	REQUIRE(read.artifact->module.symbols[0].exported);
 
 	const rtsl::WriteResult second = rtsl::ArtifactWriter{}.write(*read.artifact);
 	REQUIRE(second);

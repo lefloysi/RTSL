@@ -9,6 +9,9 @@ add_library(rtsl STATIC
 	src/Basic/TokenKinds.cpp
 	src/CodeGen/CodeGenerator.cpp
 	src/Frontend/CompilerInstance.cpp
+	src/Frontend/ModuleInterface.cpp
+	src/Frontend/ModuleInterfaceBuilder.cpp
+	src/Frontend/ModuleInterfaceImporter.cpp
 	src/IR/Builder.cpp
 	src/IR/IR.cpp
 	src/IR/Verifier.cpp
@@ -17,6 +20,7 @@ add_library(rtsl STATIC
 	src/Linker/Linker.cpp
 	src/Parse/Parser.cpp
 	src/Serialization/Artifact.cpp
+	src/Serialization/DebugArtifact.cpp
 	src/Sema/Sema.cpp
 )
 add_library(RTSL::rtsl ALIAS rtsl)
@@ -29,7 +33,11 @@ target_include_directories(rtsl PUBLIC
 )
 target_include_directories(rtsl PRIVATE src)
 
-add_subdirectory(tools/rtslc)
+option(RTSL_BUILD_CLI "Build the rtslc command-line driver" ${PROJECT_IS_TOP_LEVEL})
+if(RTSL_BUILD_CLI)
+	add_subdirectory(tools/rtslc)
+endif()
+add_subdirectory(tools/rtsl-lsp)
 
 option(RTSL_BUILD_TESTS "Build RTSL tests" ${PROJECT_IS_TOP_LEVEL})
 if(RTSL_BUILD_TESTS)

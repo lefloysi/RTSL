@@ -22,6 +22,7 @@ public:
 	FileID createFileID(std::string_view Name, std::string_view Buffer);
 	[[nodiscard]] std::string_view getBuffer(FileID File) const;
 	[[nodiscard]] std::string_view getName(FileID File) const;
+	[[nodiscard]] std::size_t getFileCount() const noexcept { return Files.size(); }
 	[[nodiscard]] SourceLocation getLocation(FileID File, std::uint32_t Offset) const;
 	[[nodiscard]] PresumedLoc getPresumedLoc(SourceLocation Location) const;
 

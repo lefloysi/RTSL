@@ -72,13 +72,56 @@ fn main(u32 x, u32 y, u32 z) {
 	REQUIRE(Configuration.workgroup_size == std::array<std::uint32_t, 3>{8, 4, 2});
 }
 
+TEST_CASE("tessellation and geometry stage attributes configure RTIR") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("stages.rtsl");
+	Invocation.setInputBuffer(R"(
+@stage : tess_control
+@output_control_points : 4
+fn control() {
+}
+@stage : tess_eval
+@tessellation_domain : isolines
+@tessellation_spacing : fractional_even
+@tessellation_winding : clockwise
+fn evaluate() {
+}
+@stage : geometry
+@geometry_input : points
+@geometry_output : line_strip
+@maximum_vertices : 16
+@geometry_invocations : 2
+fn expand() {
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("stages");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	REQUIRE(Result.succeeded());
+	REQUIRE(Result.Module.entry_points.size() == 3);
+	const auto& Control = std::get<rtsl::ir::TessellationControlConfiguration>(Result.Module.entry_points[0].configuration);
+	REQUIRE(Control.output_control_points == 4);
+	const auto& Evaluation = std::get<rtsl::ir::TessellationEvaluationConfiguration>(Result.Module.entry_points[1].configuration);
+	REQUIRE(Evaluation.domain == rtsl::ir::TessellationDomain::tessellation_domain_isolines);
+	REQUIRE(Evaluation.spacing == rtsl::ir::TessellationSpacing::tessellation_spacing_fractional_even);
+	REQUIRE(Evaluation.winding == rtsl::ir::Winding::winding_clockwise);
+	const auto& Geometry = std::get<rtsl::ir::GeometryConfiguration>(Result.Module.entry_points[2].configuration);
+	REQUIRE(Geometry.input == rtsl::ir::PrimitiveTopology::primitive_points);
+	REQUIRE(Geometry.output == rtsl::ir::PrimitiveTopology::primitive_line_strip);
+	REQUIRE(Geometry.maximum_vertices == 16);
+	REQUIRE(Geometry.invocations == 2);
+}
+
 TEST_CASE("a compute barrier lowers from a named statement label") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("barrier.rtsl");
 	Invocation.setInputBuffer(R"(
 @stage : compute
 fn main() {
-	ready:;
+	ready:
+	var u32 value = 0;
 }
 )");
 	rtsl::CompilerInstance Compiler;
@@ -97,7 +140,7 @@ TEST_CASE("a barrier is rejected outside compute and tessellation control") {
 	Invocation.setInputBuffer(R"(
 @stage : fragment
 fn main() -> f32 {
-	ready:;
+	ready:
 	return 1.0;
 }
 )");

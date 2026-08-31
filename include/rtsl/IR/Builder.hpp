@@ -16,7 +16,7 @@ public:
 	[[nodiscard]] const Module& module() const noexcept { return module_value; }
 	[[nodiscard]] Module takeModule() noexcept;
 
-	[[nodiscard]] SymbolId addSymbol(std::string_view fully_qualified_name);
+	[[nodiscard]] SymbolId addSymbol(std::string_view fully_qualified_name, bool exported = false);
 	[[nodiscard]] TypeId internType(Type type);
 	[[nodiscard]] FunctionId addFunction(SymbolId symbol, TypeId return_type, std::span<const TypeId> parameter_types,
 		std::span<const SymbolId> parameter_symbols = {}, bool declaration = false);

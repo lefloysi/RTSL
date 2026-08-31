@@ -85,6 +85,24 @@ TEST_CASE("linker diagnoses a missing function definition") {
 	REQUIRE(Result.Diagnostics[0].Code == rtsl::LinkDiagnosticCode::link_missing_definition);
 }
 
+TEST_CASE("linker preserves exported symbols") {
+	rtsl::ir::ModuleBuilder Builder("library");
+	rtsl::ir::Type VoidType;
+	VoidType.kind = rtsl::ir::TypeKind::type_void;
+	auto Void = Builder.internType(VoidType);
+	auto Symbol = Builder.addSymbol("library::exported", true);
+	auto Function = Builder.addFunction(Symbol, Void, {});
+	auto Block = Builder.addBlock(Function);
+	Builder.setTerminator(Function, Block, {.kind = rtsl::ir::TerminatorKind::terminator_return});
+	auto Module = Builder.takeModule();
+
+	rtsl::Linker Linker;
+	auto Result = Linker.link("program", std::span(&Module, 1));
+	REQUIRE(Result.succeeded());
+	REQUIRE(Result.Module.symbols.size() == 1);
+	REQUIRE(Result.Module.symbols[0].exported);
+}
+
 TEST_CASE("linker rejects incompatible adjacent stage interfaces") {
 	auto Vertex = rtsl::tests::makeSingleEntryModule("vertex", "vertex::main", rtsl::ir::Stage::stage_vertex, false);
 	auto Fragment = rtsl::tests::makeSingleEntryModule("fragment", "fragment::main", rtsl::ir::Stage::stage_fragment, true);
