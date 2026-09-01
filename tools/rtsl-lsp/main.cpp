@@ -116,10 +116,11 @@ std::vector<SemanticSpan> classifyTokens(const std::string& name, const std::str
   else if (previous == at) classification = decorator;
   else if ((previous == kw_import ||
    (previous == less && index > 1 && tokens[index - 2].kind == kw_import)) && token.kind == identifier) classification = name_space;
-  else if (previous == kw_fn && token.kind == identifier) classification = function;
+  else if (previous == coloncolon && token.kind == identifier) classification = function;
   else if (token.kind == identifier && sema && compilerIdentifiers &&
    sema->isTypeName(&compilerIdentifiers->get(token.spelling))) classification = type;
   else if (knownTypes.contains(token.spelling)) classification = type;
+  else if (previous == kw_fn && token.kind == identifier) classification = function;
   else if (token.kind == identifier && index + 1 < tokens.size() && tokens[index + 1].kind == l_paren) classification = function;
   if ((previous == kw_struct || previous == kw_using || previous == kw_typename) && token.kind == identifier) {
    knownTypes.insert(token.spelling); classification = type;

@@ -4,6 +4,46 @@
 #include <string>
 
 namespace rtsl {
+namespace {
+
+void rebindDeclarationReferences(Expr* Expression, const std::unordered_map<ValueDecl*, ValueDecl*>& Rebindings) {
+	if (!Expression) return;
+	switch (Expression->getStmtClass()) {
+	case StmtClass::expr_decl_ref: {
+		auto Reference = static_cast<DeclRefExpr*>(Expression);
+		if (auto Position = Rebindings.find(Reference->getDecl()); Position != Rebindings.end()) Reference->setDecl(Position->second);
+		return;
+	}
+	case StmtClass::expr_unary:
+		rebindDeclarationReferences(static_cast<UnaryExpr*>(Expression)->getOperand(), Rebindings);
+		return;
+	case StmtClass::expr_binary: {
+		auto Binary = static_cast<BinaryExpr*>(Expression);
+		rebindDeclarationReferences(Binary->getLeft(), Rebindings);
+		rebindDeclarationReferences(Binary->getRight(), Rebindings);
+		return;
+	}
+	case StmtClass::expr_member:
+	case StmtClass::expr_subscript:
+	case StmtClass::expr_call: {
+		auto Postfix = static_cast<PostfixExpr*>(Expression);
+		rebindDeclarationReferences(Postfix->getBase(), Rebindings);
+		for (unsigned Index = 0; Index < Postfix->getArgumentCount(); ++Index)
+			rebindDeclarationReferences(Postfix->arguments()[Index], Rebindings);
+		return;
+	}
+	case StmtClass::expr_construct: {
+		auto Construct = static_cast<ConstructExpr*>(Expression);
+		for (unsigned Index = 0; Index < Construct->getArgumentCount(); ++Index)
+			rebindDeclarationReferences(Construct->arguments()[Index], Rebindings);
+		return;
+	}
+	default:
+		return;
+	}
+}
+
+} // namespace
 
 Sema::Sema(ASTContext& Context, DiagnosticsEngine& Diagnostics, IdentifierTable& Identifiers)
 	: Context(Context), Diagnostics(Diagnostics), Identifiers(Identifiers) {
@@ -32,7 +72,7 @@ void Sema::installStandardLibrary(IdentifierTable& Identifiers) {
 	ReturnEmitter = &Identifiers.get("__return");
 	Types[PositionType] = Context.getNamedType(PositionType);
 	auto PositionRecord = Context.create<RecordDecl>(Context.getTranslationUnitDecl(), SourceLocation{}, PositionType,
-		true, false, false);
+		true, false, false, QualType{}, true);
 	auto PositionMember = &Identifiers.get("position");
 	auto PositionField = Context.create<FieldDecl>(PositionRecord, SourceLocation{}, PositionMember,
 		Types[&Identifiers.get("vec4")]);
@@ -251,6 +291,16 @@ FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS,
 	const std::vector<ParmVarDecl*>& Parameters, const std::vector<ParsedParameterContract>& ParsedContracts,
 	Expr* BaseInitializer, const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters,
 	const std::vector<ParsedType>& ParsedTypeOnlyParameters) {
+	DeclContext* FunctionContext = LocalContext;
+	if (D.EnclosingName) {
+		auto Enclosing = Records.find(D.EnclosingName);
+		if (Enclosing == Records.end()) {
+			Diagnostics.report(DiagnosticLevel::diagnostic_error, {D.EnclosingLocation, D.EnclosingLocation},
+				"qualified function owner does not name a declared record");
+			return nullptr;
+		}
+		FunctionContext = Enclosing->second;
+	}
 	std::vector<ParameterContract> Contracts;
 	for (const ParsedParameterContract& Parsed : ParsedContracts) {
 		if (Parsed.ParameterIndex >= Parameters.size()) {
@@ -286,16 +336,51 @@ FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS,
 		GeometryEntry = Attribute.Tokens.front().getIdentifierInfo() && Attribute.Tokens.front().getIdentifierInfo()->getName() == "geometry";
 	}
 	const bool GeometryEmitter = GeometryEntry && D.Type.Name && D.Type.Name->getName() == "triangle_strip";
-	auto Result = Context.create<FunctionDecl>(LocalContext, D.Location, D.Name, actOnType(D.Type),
+	const QualType ReturnType = actOnType(D.Type);
+	if (D.EnclosingName) {
+		for (Decl* Declaration = FunctionContext->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext()) {
+			if (Declaration->getKind() != DeclKind::decl_function) continue;
+			auto* Existing = static_cast<FunctionDecl*>(Declaration);
+			if (Existing->getIdentifier() != D.Name) continue;
+			bool Matches = Existing->getType().getTypePtr() == ReturnType.getTypePtr() &&
+				Existing->getNumParams() == Parameters.size() &&
+				Existing->getNumTypeOnlyParameters() == TypeOnlyParameters.size() &&
+				Existing->getNumTemplateParameters() == TemplateParameters.size();
+			for (unsigned Index = 0; Matches && Index < Existing->getNumParams(); ++Index)
+				Matches = Existing->parameters()[Index]->getIdentifier() == Parameters[Index]->getIdentifier() &&
+					Existing->parameters()[Index]->getType().getTypePtr() == Parameters[Index]->getType().getTypePtr();
+			for (unsigned Index = 0; Matches && Index < Existing->getNumTypeOnlyParameters(); ++Index)
+				Matches = Existing->typeOnlyParameters()[Index].getTypePtr() == TypeOnlyParameters[Index].getTypePtr();
+			if (!Matches) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {D.Location, D.Location},
+					"out-of-line function definition does not match its declaration");
+				return nullptr;
+			}
+			if (Existing->getBody()) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {D.Location, D.Location}, "redefinition of function");
+				return nullptr;
+			}
+			std::unordered_map<ValueDecl*, ValueDecl*> Rebindings;
+			for (unsigned Index = 0; Index < Existing->getNumParams(); ++Index)
+				Rebindings.emplace(Parameters[Index], Existing->parameters()[Index]);
+			rebindDeclarationReferences(BaseInitializer, Rebindings);
+			Existing->setBaseInitializer(BaseInitializer);
+			return Existing;
+		}
+		Diagnostics.report(DiagnosticLevel::diagnostic_error, {D.Location, D.Location},
+			"out-of-line function definition does not name a declared member");
+		return nullptr;
+	}
+	auto Result = Context.create<FunctionDecl>(FunctionContext, D.Location, D.Name, ReturnType,
 		Context.copyPointerArray(Parameters), static_cast<unsigned>(Parameters.size()), Context.copyArray(Contracts),
 		static_cast<unsigned>(Contracts.size()), Context.copyPointerArray(TemplateParameters),
 		static_cast<unsigned>(TemplateParameters.size()), Context.copyArray(TypeOnlyParameters),
 		static_cast<unsigned>(TypeOnlyParameters.size()), BaseInitializer, D.Emits || GeometryEmitter, DS.Internal, DS.Exported);
 	Result->setAttrs(processAttributes(Attributes));
-	LocalContext->addDecl(Result);
+	FunctionContext->addDecl(Result);
 	Values[D.Name] = Result;
 	for (const auto& [Name, Record] : Records)
-		if (static_cast<DeclContext*>(Record) == LocalContext && Name == D.Name) Constructors[D.Name] = Result;
+		if (static_cast<DeclContext*>(Record) == FunctionContext && Name == D.Name) Constructors[D.Name] = Result;
 	for (auto Parameter : Parameters) Result->addDecl(Parameter);
 	return Result;
 }

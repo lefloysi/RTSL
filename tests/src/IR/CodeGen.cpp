@@ -230,10 +230,11 @@ struct Point {
 };
 struct Vertex : Position {
 	vec4 color;
-	fn Vertex(Point point) : Position(point.position) {
-		color = point.color;
-	}
+	fn Vertex(Point point);
 };
+fn Vertex::Vertex(Point point) : Position(point.position) {
+	color = point.color;
+}
 @stage : vertex
 fn main(Point point) -> Vertex {
 	return Vertex(point);

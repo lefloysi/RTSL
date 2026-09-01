@@ -37,6 +37,8 @@ public:
 
 class Declarator {
 public:
+	IdentifierInfo* EnclosingName{};
+	SourceLocation EnclosingLocation;
 	IdentifierInfo* Name{};
 	SourceLocation Location;
 	ParsedType Type;

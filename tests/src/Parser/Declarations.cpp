@@ -141,6 +141,92 @@ fn main(const isoline_patch<Vertex>& curve, tessellation<equal>) -> Vertex {
 	REQUIRE(static_cast<rtsl::FunctionDecl*>(Declaration)->getNumTypeOnlyParameters() == 1);
 }
 
+TEST_CASE("out-of-line constructors are parsed in their enclosing record") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("out-of-line-constructor.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {
+	fn Vertex();
+}
+fn Vertex::Vertex() {
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	REQUIRE_FALSE(Compiler.getDiagnostics().hasErrorOccurred());
+
+	auto* Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
+	while (Declaration && (Declaration->getKind() != rtsl::DeclKind::decl_record ||
+		static_cast<rtsl::RecordDecl*>(Declaration)->getIdentifier()->getName() != "Vertex"))
+		Declaration = Declaration->getNextDeclInContext();
+	REQUIRE(Declaration != nullptr);
+	auto* Vertex = static_cast<rtsl::RecordDecl*>(Declaration);
+	auto* Constructor = Vertex->declsBegin();
+	REQUIRE(Constructor != nullptr);
+	REQUIRE(Constructor->getKind() == rtsl::DeclKind::decl_function);
+	auto* Function = static_cast<rtsl::FunctionDecl*>(Constructor);
+	REQUIRE(Function->getIdentifier() == Vertex->getIdentifier());
+	REQUIRE(Function->getDeclContext() == Vertex);
+	REQUIRE(Function->getBody() != nullptr);
+	REQUIRE(Function->getType().getTypePtr()->getTypeClass() == rtsl::TypeClass::type_named);
+	REQUIRE(static_cast<const rtsl::NamedType*>(Function->getType().getTypePtr())->getName() == Vertex->getIdentifier());
+}
+
+TEST_CASE("out-of-line constructors resolve calls through the record constructor") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("out-of-line-constructor-call.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {
+	fn Vertex(f32 value);
+}
+fn Vertex::Vertex(f32 value) {
+}
+fn make() -> Vertex {
+	return Vertex(1.0);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	REQUIRE_FALSE(Compiler.getDiagnostics().hasErrorOccurred());
+}
+
+TEST_CASE("unknown qualified function owners are diagnosed semantically") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("unknown-qualified-function-owner.rtsl");
+	Invocation.setInputBuffer("fn Missing::function() {}");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	const auto& Diagnostics = Compiler.getDiagnostics().diagnostics();
+	REQUIRE(Diagnostics.size() == 1);
+	REQUIRE(Diagnostics.front().Message == "qualified function owner does not name a declared record");
+}
+
+TEST_CASE("out-of-line functions require a declared record member") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("undeclared-out-of-line-member.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Point {
+	vec4 position;
+	vec4 color;
+}
+struct Vertex : Position {
+	vec4 color;
+}
+fn Vertex::Vertex(Point point) : Position(point.position) {
+	color = point.color;
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+	const auto& Diagnostics = Compiler.getDiagnostics().diagnostics();
+	REQUIRE(Diagnostics.size() == 1);
+	REQUIRE(Diagnostics.front().Message == "out-of-line function definition does not name a declared member");
+}
+
 TEST_CASE("invalid empty buffer storage is diagnosed") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("invalid.rtsl");

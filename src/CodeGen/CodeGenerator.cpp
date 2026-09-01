@@ -99,6 +99,8 @@ void CodeGenerator::appendRecordMembers(ir::Type& Type, RecordDecl* Record) {
 		if (Declaration->getKind() != DeclKind::decl_field) continue;
 		auto Field = static_cast<FieldDecl*>(Declaration);
 		Type.members.push_back({Builder.module().strings.intern(Field->getIdentifier()->getName()), lowerType(Field->getType()), {}, {}});
+		if (Record->isBuiltinPosition()) Type.builtin_members.push_back({ir::Builtin::builtin_position,
+			{static_cast<std::uint32_t>(Type.members.size() - 1)}});
 	}
 }
 

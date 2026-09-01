@@ -60,6 +60,7 @@ class DeclRefExpr final : public Expr {
 public:
 	explicit DeclRefExpr(ValueDecl* Declaration) : Expr(StmtClass::expr_decl_ref), Declaration(Declaration) {}
 	[[nodiscard]] ValueDecl* getDecl() const { return Declaration; }
+	void setDecl(ValueDecl* Value) { Declaration = Value; }
 private:
 	ValueDecl* Declaration;
 };

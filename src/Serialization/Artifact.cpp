@@ -211,6 +211,10 @@ EncodedSection writeTypes(const ir::Module& module) {
 			writer.writeId(member.name); writer.writeId(member.type);
 			writer.writeOptional(member.offset, writeU32Value); writer.writeOptional(member.alignment, writeU32Value);
 		}
+		writer.writeU32(static_cast<std::uint32_t>(type.builtin_members.size()));
+		for (const ir::BuiltinMember& member : type.builtin_members) {
+			writer.writeEnum(member.builtin); writer.writeVector(member.member_path, writeU32Value);
+		}
 		writer.writeId(type.name);
 	}
 	return {SectionKind::section_types, std::move(writer.bytes)};
@@ -316,6 +320,16 @@ bool readTypes(Reader& reader, ir::Module& module) {
 		if (!reader.readId(type.id) || !reader.readEnum(type.kind, ir::TypeKind::type_primitive, "type.kind") || !reader.readU32(type.bit_width) || !reader.readId(type.element_type) || !reader.readU32(type.element_count) || !reader.readEnum(type.address_space, ir::AddressSpace::address_space_resource, "type.address_space") || !reader.readVector(type.parameter_types, "type.parameters", readTypeId)) return false;
 		std::uint32_t members{}; if (!reader.readCount(members, "type.members")) return false; type.members.reserve(members);
 		for (std::uint32_t member_index = 0; member_index < members; ++member_index) { ir::StructMember member; if (!reader.readId(member.name) || !reader.readId(member.type) || !reader.readOptional(member.offset, readU32Value) || !reader.readOptional(member.alignment, readU32Value)) return false; type.members.push_back(std::move(member)); }
+		if (reader.versionMinor() >= 5) {
+			std::uint32_t builtin_members{}; if (!reader.readCount(builtin_members, "type.builtin_members")) return false;
+			type.builtin_members.reserve(builtin_members);
+			for (std::uint32_t builtin_index = 0; builtin_index < builtin_members; ++builtin_index) {
+				ir::BuiltinMember member;
+				if (!reader.readEnum(member.builtin, ir::Builtin::builtin_position, "type.builtin_member.builtin") ||
+					!reader.readVector(member.member_path, "type.builtin_member.path", readU32Value)) return false;
+				type.builtin_members.push_back(std::move(member));
+			}
+		}
 		if (!reader.readId(type.name)) return false; module.types.push_back(std::move(type));
 	}
 	return reader.finish("types");

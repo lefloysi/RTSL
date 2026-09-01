@@ -30,6 +30,11 @@ VerificationResult verify(const Module& module) {
 		require_type(type.element_type, "element type");
 		for (TypeId parameter : type.parameter_types) require_type(parameter, "parameter type");
 		for (const StructMember& member : type.members) require_type(member.type, "member type");
+		for (const BuiltinMember& member : type.builtin_members) {
+			if (type.kind != TypeKind::type_structure || member.member_path.empty() || member.member_path.front() >= type.members.size())
+				result.add(VerificationCode::verification_invalid_metadata, std::format("type {}", type.id.value()),
+					"builtin member path does not identify a structure member");
+		}
 	}
 
 	for (const Symbol& symbol : module.symbols) {

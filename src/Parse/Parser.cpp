@@ -317,7 +317,16 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 	consumeToken();
 	Declarator D;
 	D.Location = Location;
-	if (Tok.is(tok::identifier)) { D.Name = Tok.getIdentifierInfo(); consumeToken(); }
+	if (Tok.is(tok::identifier)) {
+		auto* FirstName = Tok.getIdentifierInfo();
+		D.EnclosingLocation = Tok.getLocation();
+		consumeToken();
+		if (consumeIf(tok::coloncolon)) {
+			D.EnclosingName = FirstName;
+			if (Tok.is(tok::identifier)) { D.Name = Tok.getIdentifierInfo(); consumeToken(); }
+			else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected function name after '::'");
+		} else D.Name = FirstName;
+	}
 	else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected function name");
 	expectAndConsume(tok::l_paren, "expected '(' after function name");
 	std::vector<ParmVarDecl*> Parameters;
@@ -354,15 +363,17 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 	}
 	D.Emits = consumeIf(tok::kw_emit);
 	if (consumeIf(tok::arrow)) D.Type = parseType();
-	else if (Context != Actions.getASTContext().getTranslationUnitDecl() &&
-		static_cast<RecordDecl*>(Context)->getIdentifier() == D.Name)
-		D.Type.Name = static_cast<RecordDecl*>(Context)->getIdentifier();
+	else if ((Context != Actions.getASTContext().getTranslationUnitDecl() &&
+		static_cast<RecordDecl*>(Context)->getIdentifier() == D.Name) ||
+		(D.EnclosingName && D.EnclosingName == D.Name))
+		D.Type.Name = D.EnclosingName ? D.EnclosingName : static_cast<RecordDecl*>(Context)->getIdentifier();
 	else D.Type.Name = &PP.getIdentifierTable().get("void");
 	Expr* BaseInitializer{};
 	if (consumeIf(tok::colon)) {
 		Actions.actOnStartFunctionSignature(Parameters);
-		if (Context == Actions.getASTContext().getTranslationUnitDecl() ||
-			static_cast<RecordDecl*>(Context)->getIdentifier() != D.Name) {
+		if ((Context == Actions.getASTContext().getTranslationUnitDecl() ||
+			static_cast<RecordDecl*>(Context)->getIdentifier() != D.Name) &&
+			(!D.EnclosingName || D.EnclosingName != D.Name)) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
 				"a base initializer is only valid on a structure constructor");
 		}
@@ -371,6 +382,12 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 	}
 	auto Function = Actions.actOnFunction(Context, DS, D, Parameters, ParameterContracts, BaseInitializer, Attributes,
 		TemplateParameters, TypeOnlyParameters);
+	if (!Function) {
+		if (consumeIf(tok::semi)) return;
+		if (Tok.is(tok::l_brace)) skipBalanced(tok::l_brace, tok::r_brace);
+		else synchronizeDeclaration();
+		return;
+	}
 	if (consumeIf(tok::semi)) return;
 	if (Tok.is(tok::l_brace)) {
 		Actions.actOnStartFunctionBody(Function);

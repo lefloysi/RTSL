@@ -103,19 +103,21 @@ public:
 class RecordDecl final : public NamedDecl, public DeclContext {
 public:
 	RecordDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, bool Complete, bool Internal, bool Exported,
-		QualType BaseType = {})
+		QualType BaseType = {}, bool BuiltinPosition = false)
 		: NamedDecl(DeclKind::decl_record, Context, Location, Name), BaseType(BaseType), Complete(Complete),
-		  Internal(Internal), Exported(Exported) {}
+		  Internal(Internal), Exported(Exported), BuiltinPosition(BuiltinPosition) {}
 	[[nodiscard]] bool isCompleteDefinition() const { return Complete; }
 	[[nodiscard]] bool hasInternalLinkage() const { return Internal; }
 	[[nodiscard]] bool isExported() const { return Exported; }
 	[[nodiscard]] QualType getBaseType() const { return BaseType; }
+	[[nodiscard]] bool isBuiltinPosition() const { return BuiltinPosition; }
 	void setBaseType(QualType Value) { BaseType = Value; }
 private:
 	QualType BaseType;
 	bool Complete;
 	bool Internal;
 	bool Exported;
+	bool BuiltinPosition;
 };
 
 class TypeAliasDecl final : public NamedDecl {
@@ -163,6 +165,7 @@ public:
 		  TemplateParameters(TemplateParameters), TemplateParameterCount(TemplateParameterCount), TypeOnlyParameters(TypeOnlyParameters), TypeOnlyParameterCount(TypeOnlyParameterCount), BaseInitializer(BaseInitializer),
 		  ImplicitEmitter(ImplicitEmitter), Internal(Internal), Exported(Exported) {}
 	void setBody(CompoundStmt* Value) { Body = Value; }
+	void setBaseInitializer(Expr* Value) { BaseInitializer = Value; }
 	[[nodiscard]] CompoundStmt* getBody() const { return Body; }
 	[[nodiscard]] Expr* getBaseInitializer() const { return BaseInitializer; }
 	[[nodiscard]] ParmVarDecl* const* parameters() const { return Parameters; }

@@ -33,6 +33,11 @@ TEST_CASE("triangle example compiles to a verified linked program artifact") {
 	REQUIRE(VertexType->members.size() == 2);
 	REQUIRE(Compilation.Link.Module.strings.get(VertexType->members[0].name) == "position");
 	REQUIRE(Compilation.Link.Module.strings.get(VertexType->members[1].name) == "color");
+	REQUIRE(VertexType->builtin_members.size() == 1);
+	REQUIRE(VertexType->builtin_members[0].builtin == rtsl::ir::Builtin::builtin_position);
+	REQUIRE(VertexType->builtin_members[0].member_path == std::vector<std::uint32_t>{0});
+	for (const auto& Type : Compilation.Link.Module.types)
+		if (Compilation.Link.Module.strings.get(Type.name) == "Point") REQUIRE(Type.builtin_members.empty());
 	const auto& FragmentEntry = Compilation.Link.Module.entry_points[1];
 	REQUIRE(FragmentEntry.attributes.size() == 1);
 	REQUIRE(Compilation.Link.Module.strings.get(FragmentEntry.attributes[0].name) == "stage");
@@ -88,4 +93,7 @@ TEST_CASE("triangle example compiles to a verified linked program artifact") {
 	REQUIRE(Decoded);
 	REQUIRE(Decoded.artifact->kind == rtsl::ArtifactKind::artifact_program);
 	REQUIRE(Decoded.artifact->module.entry_points[1].parameter_contracts.size() == 1);
+	const auto* DecodedVertex = Decoded.artifact->module.findType(VertexType->id);
+	REQUIRE(DecodedVertex != nullptr);
+	REQUIRE(DecodedVertex->builtin_members == VertexType->builtin_members);
 }

@@ -95,6 +95,17 @@ struct StructMember {
 	[[nodiscard]] friend bool operator==(const StructMember&, const StructMember&) = default;
 };
 
+enum class Builtin : std::uint8_t {
+	builtin_position,
+};
+
+struct BuiltinMember {
+	Builtin builtin{Builtin::builtin_position};
+	std::vector<std::uint32_t> member_path;
+
+	[[nodiscard]] friend bool operator==(const BuiltinMember&, const BuiltinMember&) = default;
+};
+
 struct Type {
 	TypeId id;
 	TypeKind kind{TypeKind::type_void};
@@ -104,6 +115,7 @@ struct Type {
 	AddressSpace address_space{AddressSpace::address_space_function};
 	std::vector<TypeId> parameter_types;
 	std::vector<StructMember> members;
+	std::vector<BuiltinMember> builtin_members;
 	StringId name;
 
 	[[nodiscard]] bool structurallyEquals(const Type& other) const;

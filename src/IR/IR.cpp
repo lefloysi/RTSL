@@ -65,7 +65,7 @@ std::span<const std::byte> StringTable::bytes() const noexcept {
 }
 
 bool Type::structurallyEquals(const Type& other) const {
-	return kind == other.kind && bit_width == other.bit_width && element_type == other.element_type && element_count == other.element_count && address_space == other.address_space && parameter_types == other.parameter_types && members == other.members && name == other.name;
+	return kind == other.kind && bit_width == other.bit_width && element_type == other.element_type && element_count == other.element_count && address_space == other.address_space && parameter_types == other.parameter_types && members == other.members && builtin_members == other.builtin_members && name == other.name;
 }
 
 const Type* Module::findType(TypeId id) const noexcept {
