@@ -40,7 +40,7 @@ public:
 	[[nodiscard]] QualType getTemplateParameterType(IdentifierInfo* Name);
 	[[nodiscard]] QualType getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments);
 	[[nodiscard]] QualType getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments,
-		const std::vector<std::optional<std::uint32_t>>& IntegerArguments);
+		const std::vector<std::optional<std::uint32_t>>& IntegerArguments, const std::vector<IdentifierInfo*>& IntegerParameters = {});
 	[[nodiscard]] QualType getPointerType(QualType Pointee);
 	[[nodiscard]] QualType getReferenceType(QualType Pointee);
 private:
@@ -48,10 +48,12 @@ private:
 		IdentifierInfo* Name{};
 		std::vector<QualType> Arguments;
 		std::vector<std::optional<std::uint32_t>> IntegerArguments;
+		std::vector<IdentifierInfo*> IntegerParameters;
 		[[nodiscard]] bool operator<(const TemplateSpecializationKey& Other) const {
 			if (Name != Other.Name) return Name < Other.Name;
 			if (Arguments != Other.Arguments) return Arguments < Other.Arguments;
-			return IntegerArguments < Other.IntegerArguments;
+			if (IntegerArguments != Other.IntegerArguments) return IntegerArguments < Other.IntegerArguments;
+			return IntegerParameters < Other.IntegerParameters;
 		}
 	};
 	std::pmr::monotonic_buffer_resource Arena;

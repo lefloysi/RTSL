@@ -81,6 +81,7 @@ KEYWORD(return, KEYALL)
 KEYWORD(emit, KEYALL)
 KEYWORD(template, KEYALL)
 KEYWORD(typename, KEYALL)
+KEYWORD(operator, KEYALL)
 
 #undef KEYWORD
 #undef PUNCTUATOR

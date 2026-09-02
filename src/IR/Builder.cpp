@@ -47,7 +47,7 @@ FunctionId ModuleBuilder::addFunction(SymbolId symbol, TypeId return_type, std::
 }
 
 FunctionId ModuleBuilder::addFunction(SymbolId symbol, TypeId return_type, std::span<const TypeId> parameter_types,
-	std::span<const SymbolId> parameter_symbols, bool declaration, bool implicit_emitter) {
+	std::span<const SymbolId> parameter_symbols, bool declaration, bool implicit_emitter, bool implicit) {
 	if (!parameter_symbols.empty() && parameter_symbols.size() != parameter_types.size()) {
 		throw std::invalid_argument("parameter symbol count does not match parameter type count");
 	}
@@ -57,6 +57,7 @@ FunctionId ModuleBuilder::addFunction(SymbolId symbol, TypeId return_type, std::
 	function.return_type = return_type;
 	function.declaration = declaration;
 	function.implicit_emitter = implicit_emitter;
+	function.implicit = implicit;
 	for (std::size_t index = 0; index < parameter_types.size(); ++index) {
 		function.parameters.push_back(Parameter{
 			.value = nextValue(),

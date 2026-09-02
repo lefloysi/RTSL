@@ -80,13 +80,13 @@ public:
 class Reader {
 public:
 	Reader(std::span<const std::byte> bytes, std::size_t base, Error& error,
-		std::uint16_t version_minor = artifact_version_minor)
-		: bytes(bytes), base(base), error(error), version_minor(version_minor) {}
+		std::uint8_t version_patch = artifact_version_patch)
+		: bytes(bytes), base(base), error(error), version_patch(version_patch) {}
 
 	[[nodiscard]] bool failed() const noexcept { return has_error; }
 	[[nodiscard]] std::size_t remaining() const noexcept { return position <= bytes.size() ? bytes.size() - position : 0; }
 	[[nodiscard]] std::size_t absoluteOffset() const noexcept { return base + position; }
-	[[nodiscard]] std::uint16_t versionMinor() const noexcept { return version_minor; }
+	[[nodiscard]] std::uint8_t versionPatch() const noexcept { return version_patch; }
 	void fail(ErrorCode code, std::string context, std::string message) {
 		if (has_error) return;
 		has_error = true;
@@ -168,7 +168,7 @@ private:
 	std::size_t base{};
 	std::size_t position{};
 	Error& error;
-	std::uint16_t version_minor{};
+	std::uint8_t version_patch{};
 	bool has_error{};
 };
 
@@ -236,7 +236,7 @@ void writeTerminator(Writer& writer, const ir::Terminator& terminator) {
 EncodedSection writeFunctions(const ir::Module& module) {
 	Writer writer; writer.writeU32(static_cast<std::uint32_t>(module.functions.size()));
 	for (const ir::Function& function : module.functions) {
-		writer.writeId(function.id); writer.writeId(function.symbol); writer.writeId(function.return_type); writer.writeBool(function.declaration); writer.writeBool(function.implicit_emitter);
+		writer.writeId(function.id); writer.writeId(function.symbol); writer.writeId(function.return_type); writer.writeBool(function.declaration); writer.writeBool(function.implicit_emitter); writer.writeBool(function.implicit);
 		writer.writeU32(static_cast<std::uint32_t>(function.parameters.size()));
 		for (const ir::Parameter& parameter : function.parameters) { writer.writeId(parameter.value); writer.writeId(parameter.type); writer.writeId(parameter.symbol); }
 		writer.writeU32(static_cast<std::uint32_t>(function.blocks.size()));
@@ -320,7 +320,7 @@ bool readTypes(Reader& reader, ir::Module& module) {
 		if (!reader.readId(type.id) || !reader.readEnum(type.kind, ir::TypeKind::type_primitive, "type.kind") || !reader.readU32(type.bit_width) || !reader.readId(type.element_type) || !reader.readU32(type.element_count) || !reader.readEnum(type.address_space, ir::AddressSpace::address_space_resource, "type.address_space") || !reader.readVector(type.parameter_types, "type.parameters", readTypeId)) return false;
 		std::uint32_t members{}; if (!reader.readCount(members, "type.members")) return false; type.members.reserve(members);
 		for (std::uint32_t member_index = 0; member_index < members; ++member_index) { ir::StructMember member; if (!reader.readId(member.name) || !reader.readId(member.type) || !reader.readOptional(member.offset, readU32Value) || !reader.readOptional(member.alignment, readU32Value)) return false; type.members.push_back(std::move(member)); }
-		if (reader.versionMinor() >= 5) {
+		if (reader.versionPatch() >= 5) {
 			std::uint32_t builtin_members{}; if (!reader.readCount(builtin_members, "type.builtin_members")) return false;
 			type.builtin_members.reserve(builtin_members);
 			for (std::uint32_t builtin_index = 0; builtin_index < builtin_members; ++builtin_index) {
@@ -340,7 +340,7 @@ bool readSymbols(Reader& reader, ir::Module& module) {
 	for (std::uint32_t index = 0; index < count; ++index) {
 		ir::Symbol symbol;
 		if (!reader.readId(symbol.id) || !reader.readId(symbol.fully_qualified_name) ||
-			(reader.versionMinor() >= 3 && !reader.readBool(symbol.exported))) return false;
+			(reader.versionPatch() >= 3 && !reader.readBool(symbol.exported))) return false;
 		module.symbols.push_back(symbol);
 	}
 	return reader.finish("symbols");
@@ -359,7 +359,8 @@ bool readFunctions(Reader& reader, ir::Module& module) {
 		ir::Function function;
 		if (!reader.readId(function.id) || !reader.readId(function.symbol) || !reader.readId(function.return_type) ||
 			!reader.readBool(function.declaration) ||
-			(reader.versionMinor() >= 2 && !reader.readBool(function.implicit_emitter))) return false;
+			(reader.versionPatch() >= 2 && !reader.readBool(function.implicit_emitter)) ||
+			(reader.versionPatch() >= 6 && !reader.readBool(function.implicit))) return false;
 		std::uint32_t parameters{}; if (!reader.readCount(parameters, "function.parameters")) return false; function.parameters.reserve(parameters);
 		for (std::uint32_t parameter_index = 0; parameter_index < parameters; ++parameter_index) { ir::Parameter parameter; if (!reader.readId(parameter.value) || !reader.readId(parameter.type) || !reader.readId(parameter.symbol)) return false; function.parameters.push_back(parameter); }
 		std::uint32_t blocks{}; if (!reader.readCount(blocks, "function.blocks")) return false; function.blocks.reserve(blocks);
@@ -390,7 +391,7 @@ bool readEntries(Reader& reader, ir::Module& module) {
 		case 4: { ir::ComputeConfiguration value; for (std::uint32_t& size : value.workgroup_size) if (!reader.readU32(size)) return false; entry.configuration = value; break; }
 		default: reader.fail(ErrorCode::error_invalid_enum, "entry.configuration", "unknown stage configuration variant"); return false;
 		}
-		if (reader.versionMinor() >= 4) {
+		if (reader.versionPatch() >= 4) {
 			std::uint32_t attributes{};
 			if (!reader.readCount(attributes, "entry.attributes")) return false;
 			entry.attributes.reserve(attributes);
@@ -492,7 +493,7 @@ WriteResult ArtifactWriter::write(const Artifact& artifact) const {
 		Error string_error;
 		if (!validateStringReferences(artifact.module, string_error)) return {.error = std::move(string_error)};
 		std::vector<EncodedSection> sections = writeSections(artifact.module);
-		Writer writer; writer.writeBytes(magic); writer.writeU16(artifact_version_major); writer.writeU16(artifact_version_minor); writer.writeU32(endian_marker); writer.writeU8(static_cast<std::uint8_t>(artifact.kind)); writer.writeU8(0); writer.writeU8(0); writer.writeU8(0); writer.writeU32(static_cast<std::uint32_t>(sections.size()));
+		Writer writer; writer.writeBytes(magic); writer.writeU16(artifact_version_major); writer.writeU16(artifact_version_minor); writer.writeU32(endian_marker); writer.writeU8(static_cast<std::uint8_t>(artifact.kind)); writer.writeU8(artifact_version_patch); writer.writeU8(0); writer.writeU8(0); writer.writeU32(static_cast<std::uint32_t>(sections.size()));
 		std::uint64_t offset = header_size + directory_entry_size * sections.size();
 		for (const EncodedSection& section : sections) { writer.writeEnum(section.kind); writer.writeU32(0); writer.writeU64(offset); writer.writeU64(section.bytes.size()); offset += section.bytes.size(); }
 		for (const EncodedSection& section : sections) writer.writeBytes(section.bytes);
@@ -507,19 +508,19 @@ ReadResult ArtifactReader::read(std::span<const std::byte> bytes) const {
 		Error error; Reader reader(bytes, 0, error);
 		std::span<const std::byte> encoded_magic; if (!reader.readSpan(magic.size(), encoded_magic)) return {.error = std::move(error)};
 		if (!std::ranges::equal(encoded_magic, magic)) return {.error = Error{.code = ErrorCode::error_invalid_magic, .context = "header.magic", .message = "artifact magic does not identify RTIR"}};
-		std::uint16_t major{}, minor{}; std::uint32_t endian{}; std::uint8_t kind{}, reserved_0{}, reserved_1{}, reserved_2{}; std::uint32_t section_count{};
-		if (!reader.readU16(major) || !reader.readU16(minor) || !reader.readU32(endian) || !reader.readU8(kind) || !reader.readU8(reserved_0) || !reader.readU8(reserved_1) || !reader.readU8(reserved_2) || !reader.readCount(section_count, "directory")) return {.error = std::move(error)};
-		if (major != artifact_version_major || minor > artifact_version_minor) return {.error = Error{.code = ErrorCode::error_unsupported_version, .offset = 8, .context = "header.version", .message = "artifact version is not supported"}};
+		std::uint16_t major{}, minor{}; std::uint32_t endian{}; std::uint8_t kind{}, patch{}, reserved_1{}, reserved_2{}; std::uint32_t section_count{};
+		if (!reader.readU16(major) || !reader.readU16(minor) || !reader.readU32(endian) || !reader.readU8(kind) || !reader.readU8(patch) || !reader.readU8(reserved_1) || !reader.readU8(reserved_2) || !reader.readCount(section_count, "directory")) return {.error = std::move(error)};
+		if (major != artifact_version_major || minor != artifact_version_minor || patch > artifact_version_patch) return {.error = Error{.code = ErrorCode::error_unsupported_version, .offset = 8, .context = "header.version", .message = "artifact version is not supported"}};
 		if (endian != endian_marker) return {.error = Error{.code = ErrorCode::error_wrong_endian_marker, .offset = 12, .context = "header.endian", .message = "artifact endian marker is invalid"}};
 		if (kind > static_cast<std::uint8_t>(ArtifactKind::artifact_program)) return {.error = Error{.code = ErrorCode::error_invalid_enum, .offset = 16, .context = "header.kind", .message = "artifact kind is invalid"}};
-		if (reserved_0 != 0 || reserved_1 != 0 || reserved_2 != 0) return {.error = Error{.code = ErrorCode::error_invalid_directory, .offset = 17, .context = "header.reserved", .message = "reserved header bytes must be zero"}};
+		if (reserved_1 != 0 || reserved_2 != 0) return {.error = Error{.code = ErrorCode::error_invalid_directory, .offset = 18, .context = "header.reserved", .message = "reserved header bytes must be zero"}};
 		if (section_count != 9 || header_size + static_cast<std::uint64_t>(section_count) * directory_entry_size > bytes.size()) return {.error = Error{.code = ErrorCode::error_invalid_directory, .offset = 20, .context = "directory", .message = "artifact must contain the complete RTIR section set"}};
 		std::vector<DirectoryEntry> entries; entries.reserve(section_count);
 		for (std::uint32_t index = 0; index < section_count; ++index) { std::uint32_t raw_kind{}, reserved{}; DirectoryEntry entry; if (!reader.readU32(raw_kind) || !reader.readU32(reserved) || !reader.readU64(entry.offset) || !reader.readU64(entry.size)) return {.error = std::move(error)}; if (raw_kind < 1 || raw_kind > 9 || reserved != 0) return {.error = Error{.code = ErrorCode::error_invalid_directory, .offset = reader.absoluteOffset() - directory_entry_size, .context = "directory.kind", .message = "section kind or reserved field is invalid"}}; entry.kind = static_cast<SectionKind>(raw_kind); if (findSection(entries, entry.kind)) return {.error = Error{.code = ErrorCode::error_duplicate_section, .context = "directory", .message = "section kind appears more than once"}}; if (entry.offset < header_size + section_count * directory_entry_size || entry.offset > bytes.size() || entry.size > bytes.size() - entry.offset) return {.error = Error{.code = ErrorCode::error_invalid_directory, .context = "directory.range", .message = "section range lies outside the artifact"}}; entries.push_back(entry); }
 		std::vector<DirectoryEntry> ordered = entries; std::ranges::sort(ordered, {}, &DirectoryEntry::offset);
 		for (std::size_t index = 1; index < ordered.size(); ++index) if (ordered[index - 1].offset + ordered[index - 1].size > ordered[index].offset) return {.error = Error{.code = ErrorCode::error_invalid_directory, .context = "directory.overlap", .message = "section ranges overlap"}};
 		Artifact artifact; artifact.kind = static_cast<ArtifactKind>(kind);
-		const auto read_section = [&](SectionKind section_kind, auto decode) { const DirectoryEntry* entry = findSection(entries, section_kind); if (!entry) { error = Error{.code = ErrorCode::error_missing_section, .context = "directory", .message = "required section is missing"}; return false; } Reader section_reader(bytes.subspan(static_cast<std::size_t>(entry->offset), static_cast<std::size_t>(entry->size)), static_cast<std::size_t>(entry->offset), error, minor); return decode(section_reader, artifact.module); };
+		const auto read_section = [&](SectionKind section_kind, auto decode) { const DirectoryEntry* entry = findSection(entries, section_kind); if (!entry) { error = Error{.code = ErrorCode::error_missing_section, .context = "directory", .message = "required section is missing"}; return false; } Reader section_reader(bytes.subspan(static_cast<std::size_t>(entry->offset), static_cast<std::size_t>(entry->size)), static_cast<std::size_t>(entry->offset), error, patch); return decode(section_reader, artifact.module); };
 		if (!read_section(SectionKind::section_strings, readStrings) || !read_section(SectionKind::section_module, readModule) || !read_section(SectionKind::section_types, readTypes) || !read_section(SectionKind::section_symbols, readSymbols) || !read_section(SectionKind::section_functions, readFunctions) || !read_section(SectionKind::section_entries, readEntries) || !read_section(SectionKind::section_resources, readResources) || !read_section(SectionKind::section_uniforms, readUniforms) || !read_section(SectionKind::section_storage, readStorage)) return {.error = std::move(error)};
 		if (!validateStringReferences(artifact.module, error)) return {.error = std::move(error)};
 		const ir::VerificationResult verification = ir::verify(artifact.module);

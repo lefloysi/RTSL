@@ -109,6 +109,10 @@ VerificationResult verify(const Module& module) {
 							}
 						}
 						valid = valid && components == constructed_type->element_count;
+					} else if (valid && constructed_type->kind == TypeKind::type_primitive) {
+						valid = instruction.operands.size() <= constructed_type->element_count;
+						for (ValueId operand : instruction.operands)
+							valid = valid && values.at(operand.value()) == constructed_type->element_type;
 					} else if (valid) {
 						valid = false;
 					}
@@ -123,11 +127,13 @@ VerificationResult verify(const Module& module) {
 				} else if (instruction.callee) {
 					result.add(VerificationCode::verification_invalid_instruction, function_context, "non-call instruction has a call target");
 				}
-				if (instruction.opcode == Opcode::opcode_emit) {
-					if (instruction.operands.size() != 1 || instruction.result || instruction.type)
-						result.add(VerificationCode::verification_invalid_instruction, function_context, "emit requires one operand and has no result");
-					if (!function.implicit_emitter && !entry_emitters.contains(function.id.value()))
-						result.add(VerificationCode::verification_invalid_instruction, function_context, "emit requires an implicit emitter");
+				if (instruction.opcode == Opcode::opcode_insert) {
+					const Type* object_type = module.findType(instruction.type);
+					const bool valid = instruction.result && object_type && object_type->kind == TypeKind::type_primitive &&
+						instruction.operands.size() == 2 && values.at(instruction.operands[0].value()) == instruction.type &&
+						values.at(instruction.operands[1].value()) == object_type->element_type;
+					if (!valid) result.add(VerificationCode::verification_type_mismatch, function_context,
+						"insert operands do not match the aggregate object");
 				}
 			}
 		}

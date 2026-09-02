@@ -7,8 +7,7 @@ struct Vertex : Position {
 };
 
 @stage : tess_control
-@invocations : 4
-fn main(patch<ControlPoint>& curve) -> ControlPoint {
+fn main<4>(patch<ControlPoint>& curve) -> ControlPoint {
 	curve.outer[0] = 1.0;
 	curve.outer[1] = 64.0;
 	return curve.current;

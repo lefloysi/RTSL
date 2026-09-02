@@ -10,7 +10,7 @@ LinkResult Linker::link(std::string_view ProgramName, std::span<const ir::Module
 	Diagnostics.clear();
 	FunctionsBySymbol.clear();
 	SelectedDefinitions.clear();
-	EntriesByStage.clear();
+	EntriesBySourceName.clear();
 	std::vector<ModuleMaps> Maps(Modules.size());
 	for (std::size_t Index = 0; Index < Modules.size(); ++Index) copyTypes(Modules[Index], Maps[Index]);
 	for (std::size_t Index = 0; Index < Modules.size(); ++Index) copySymbols(Modules[Index], Maps[Index]);
@@ -26,30 +26,32 @@ LinkResult Linker::link(std::string_view ProgramName, std::span<const ir::Module
 }
 
 void Linker::synthesizeIdentityVertexStage() {
-	if (EntriesByStage.contains(static_cast<std::uint32_t>(ir::Stage::stage_vertex))) return;
-	auto Control = EntriesByStage.find(static_cast<std::uint32_t>(ir::Stage::stage_tessellation_control));
-	if (Control == EntriesByStage.end()) return;
-	const ir::TypeId InterfaceType = interfaceInput(Control->second);
-	if (!InterfaceType) {
-		diagnose(LinkDiagnosticCode::link_identity_vertex_unavailable, {},
-			"cannot synthesize a vertex stage without a tessellation-control input interface");
-		return;
+	for (auto& [SourceName, EntriesByStage] : EntriesBySourceName) {
+		if (EntriesByStage.contains(static_cast<std::uint32_t>(ir::Stage::stage_vertex))) continue;
+		auto Control = EntriesByStage.find(static_cast<std::uint32_t>(ir::Stage::stage_tessellation_control));
+		if (Control == EntriesByStage.end()) continue;
+		const ir::TypeId InterfaceType = interfaceInput(Control->second);
+		if (!InterfaceType) {
+			diagnose(LinkDiagnosticCode::link_identity_vertex_unavailable, SourceName,
+				"cannot synthesize a vertex stage without a tessellation-control input interface");
+			continue;
+		}
+		const auto Symbol = Builder.addSymbol("__rtsl_identity_vertex@" + SourceName);
+		const std::array Parameters{InterfaceType};
+		const auto Function = Builder.addFunction(Symbol, InterfaceType, Parameters);
+		const auto Block = Builder.addBlock(Function);
+		const auto Input = Builder.module().findFunction(Function)->parameters.front().value;
+		ir::Terminator Return{.kind = ir::TerminatorKind::terminator_return_value};
+		Return.operands.push_back(Input);
+		Builder.setTerminator(Function, Block, std::move(Return));
+		ir::EntryPoint Entry{};
+		Entry.symbol = Symbol;
+		Entry.function = Function;
+		Entry.source_name = Builder.module().strings.intern(SourceName);
+		Entry.stage = ir::Stage::stage_vertex;
+		EntriesByStage.emplace(static_cast<std::uint32_t>(Entry.stage), Entry);
+		Builder.addEntryPoint(Entry);
 	}
-	const auto Symbol = Builder.addSymbol("__rtsl_identity_vertex");
-	const std::array Parameters{InterfaceType};
-	const auto Function = Builder.addFunction(Symbol, InterfaceType, Parameters);
-	const auto Block = Builder.addBlock(Function);
-	const auto Input = Builder.module().findFunction(Function)->parameters.front().value;
-	ir::Terminator Return{.kind = ir::TerminatorKind::terminator_return_value};
-	Return.operands.push_back(Input);
-	Builder.setTerminator(Function, Block, std::move(Return));
-	ir::EntryPoint Entry{};
-	Entry.symbol = Symbol;
-	Entry.function = Function;
-	Entry.source_name = Builder.module().strings.intern("__rtsl_identity_vertex");
-	Entry.stage = ir::Stage::stage_vertex;
-	EntriesByStage.emplace(static_cast<std::uint32_t>(Entry.stage), Entry);
-	Builder.addEntryPoint(Entry);
 }
 
 void Linker::copyTypes(const ir::Module& Module, ModuleMaps& Maps) {
@@ -88,7 +90,7 @@ void Linker::declareFunctions(const ir::Module& Module, ModuleMaps& Maps) {
 		auto Existing = FunctionsBySymbol.find(Symbol.value());
 		if (Existing == FunctionsBySymbol.end()) {
 			auto Function = Builder.addFunction(Symbol, Maps.Types[Source.return_type.value()], ParameterTypes,
-				ParameterSymbols, Source.declaration, Source.implicit_emitter);
+				ParameterSymbols, Source.declaration, Source.implicit_emitter, Source.implicit);
 			FunctionsBySymbol.emplace(Symbol.value(), Function);
 			Maps.Functions[Source.id.value()] = Function;
 			if (!Source.declaration) SelectedDefinitions.insert(&Source);
@@ -175,9 +177,10 @@ void Linker::copyMetadata(const ir::Module& Module, const ModuleMaps& Maps) {
 				Member = Builder.module().strings.intern(Module.strings.get(Member));
 			Contract.contract = Builder.module().strings.intern(Module.strings.get(Contract.contract));
 		}
+		auto& EntriesByStage = EntriesBySourceName[std::string(Builder.module().strings.get(Target.source_name))];
 		auto Key = static_cast<std::uint32_t>(Target.stage);
 		if (EntriesByStage.contains(Key)) {
-			diagnose(LinkDiagnosticCode::link_duplicate_stage, {}, "program contains multiple entries for one stage");
+			diagnose(LinkDiagnosticCode::link_duplicate_stage, Builder.module().strings.get(Target.source_name), "program contains multiple entries for one stage");
 			continue;
 		}
 		EntriesByStage.emplace(Key, Target);
@@ -213,6 +216,7 @@ void Linker::validateDefinitions() {
 		if (!Function.declaration) continue;
 		auto Symbol = Builder.module().findSymbol(Function.symbol);
 		auto Name = Builder.module().strings.get(Symbol->fully_qualified_name);
+		if (Function.implicit) continue;
 		diagnose(LinkDiagnosticCode::link_missing_definition, Name, "function declaration has no linked definition");
 	}
 }
@@ -220,13 +224,15 @@ void Linker::validateDefinitions() {
 void Linker::validateStageInterfaces() {
 	constexpr std::array Stages = {ir::Stage::stage_vertex, ir::Stage::stage_tessellation_control,
 		ir::Stage::stage_tessellation_evaluation, ir::Stage::stage_geometry, ir::Stage::stage_fragment};
-	const ir::EntryPoint* Previous{};
-	for (auto Stage : Stages) {
-		auto Position = EntriesByStage.find(static_cast<std::uint32_t>(Stage));
-		if (Position == EntriesByStage.end()) continue;
-		if (Previous && interfaceOutput(*Previous) != interfaceInput(Position->second))
-			diagnose(LinkDiagnosticCode::link_incompatible_stage_interface, {}, "adjacent shader stage interfaces are incompatible");
-		Previous = &Position->second;
+	for (const auto& [SourceName, EntriesByStage] : EntriesBySourceName) {
+		const ir::EntryPoint* Previous{};
+		for (auto Stage : Stages) {
+			auto Position = EntriesByStage.find(static_cast<std::uint32_t>(Stage));
+			if (Position == EntriesByStage.end()) continue;
+			if (Previous && interfaceOutput(*Previous) != interfaceInput(Position->second))
+				diagnose(LinkDiagnosticCode::link_incompatible_stage_interface, SourceName, "adjacent shader stage interfaces are incompatible");
+			Previous = &Position->second;
+		}
 	}
 }
 

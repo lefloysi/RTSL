@@ -64,7 +64,8 @@ private:
 	std::vector<LinkDiagnostic> Diagnostics;
 	std::unordered_map<std::uint32_t, ir::FunctionId> FunctionsBySymbol;
 	std::unordered_set<const ir::Function*> SelectedDefinitions;
-	std::unordered_map<std::uint32_t, ir::EntryPoint> EntriesByStage;
+	using EntryStages = std::unordered_map<std::uint32_t, ir::EntryPoint>;
+	std::unordered_map<std::string, EntryStages> EntriesBySourceName;
 };
 
 }

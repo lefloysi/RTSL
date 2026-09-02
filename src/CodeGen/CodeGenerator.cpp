@@ -1,5 +1,4 @@
 #include <rtsl/CodeGen/CodeGenerator.hpp>
-
 #include <bit>
 #include <charconv>
 
@@ -49,8 +48,15 @@ void CodeGenerator::declareFunctions(TranslationUnitDecl* TranslationUnit) {
 
 void CodeGenerator::declareRecordFunctions(RecordDecl* Record) {
 	for (auto Declaration = Record->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
-		if (Declaration->getKind() == DeclKind::decl_function && !static_cast<FunctionDecl*>(Declaration)->isFunctionTemplate())
-			lowerFunctionDeclaration(static_cast<FunctionDecl*>(Declaration));
+		if (Declaration->getKind() == DeclKind::decl_function) {
+			auto* Function = static_cast<FunctionDecl*>(Declaration);
+			if (!Function->isFunctionTemplate() && !hasUnresolvedTemplateParameter(Function->getType())) {
+				bool UnresolvedParameter{};
+				for (unsigned Index = 0; Index < Function->getNumParams(); ++Index)
+					UnresolvedParameter = UnresolvedParameter || hasUnresolvedTemplateParameter(Function->parameters()[Index]->getType());
+				if (!UnresolvedParameter) lowerFunctionDeclaration(Function);
+			}
+		}
 }
 
 void CodeGenerator::defineFunctions(TranslationUnitDecl* TranslationUnit) {
@@ -63,8 +69,10 @@ void CodeGenerator::defineFunctions(TranslationUnitDecl* TranslationUnit) {
 
 void CodeGenerator::defineRecordFunctions(RecordDecl* Record) {
 	for (auto Declaration = Record->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
-		if (Declaration->getKind() == DeclKind::decl_function && !static_cast<FunctionDecl*>(Declaration)->isFunctionTemplate() && static_cast<FunctionDecl*>(Declaration)->getBody())
-			lowerFunctionBody(static_cast<FunctionDecl*>(Declaration));
+		if (Declaration->getKind() == DeclKind::decl_function) {
+			auto* Function = static_cast<FunctionDecl*>(Declaration);
+			if (!Function->isFunctionTemplate() && Functions.contains(Function) && Function->getBody()) lowerFunctionBody(Function);
+		}
 }
 
 void CodeGenerator::defineStages(TranslationUnitDecl* TranslationUnit) {
@@ -81,6 +89,7 @@ void CodeGenerator::defineRecordStages(RecordDecl* Record) {
 	for (auto Declaration = Record->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext()) {
 		if (Declaration->getKind() != DeclKind::decl_function || static_cast<FunctionDecl*>(Declaration)->isFunctionTemplate()) continue;
 		auto Function = static_cast<FunctionDecl*>(Declaration);
+		if (!Functions.contains(Function)) continue;
 		(void)lowerStage(Function, Functions[Function], Builder.module().findFunction(Functions[Function])->symbol);
 	}
 }
@@ -137,25 +146,6 @@ bool CodeGenerator::lowerRecordConstruction(ConstructExpr* Construct, RecordDecl
 		auto Field = static_cast<FieldDecl*>(Declaration);
 		const ir::TypeId FieldType = lowerType(Field->getType());
 		ir::ValueId Value = lowerExpression(Argument);
-		if (Record->getIdentifier()->getName() == "Position" && Field->getIdentifier()->getName() == "position" &&
-			Construct->getArgumentCount() == 1 && Value) {
-			auto ArgumentType = ValueTypes[Value.value()];
-			auto TargetType = lowerType(Field->getType());
-			auto ArgumentIRType = Builder.module().findType(ArgumentType);
-			auto TargetIRType = Builder.module().findType(TargetType);
-			if (ArgumentIRType && TargetIRType && ArgumentIRType->kind == ir::TypeKind::type_vector &&
-				ArgumentIRType->element_count == 3 && TargetIRType->kind == ir::TypeKind::type_vector &&
-				TargetIRType->element_count == 4 && ArgumentIRType->element_type == TargetIRType->element_type) {
-				float One = 1.0f;
-				std::uint32_t Word = std::bit_cast<std::uint32_t>(One);
-					auto Scalar = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_constant_floating,
-						TargetIRType->element_type, std::span<const ir::ValueId>{}, std::span<const std::uint32_t>(&Word, 1));
-				ValueTypes[Scalar.value()] = TargetIRType->element_type;
-				ir::ValueId Components[] = {Value, Scalar};
-				Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_construct, TargetType, Components);
-				ValueTypes[Value.value()] = TargetType;
-			}
-		}
 		if (!Value || ValueTypes[Value.value()] != FieldType) {
 			diagnose("record construction argument type does not match its field");
 			return false;
@@ -228,6 +218,7 @@ bool CodeGenerator::appendConstructorFields(RecordDecl* Record, std::vector<ir::
 }
 
 void CodeGenerator::lowerGlobal(VarDecl* Variable) {
+	if (Variable->isConstant()) return;
 	auto Symbol = Builder.addSymbol(qualifiedName(Variable), Variable->isExported());
 	auto IRType = lowerType(Variable->getType());
 	GlobalSymbols[Variable] = Symbol;
@@ -259,7 +250,11 @@ void CodeGenerator::lowerGlobal(VarDecl* Variable) {
 }
 
 void CodeGenerator::lowerFunctionDeclaration(FunctionDecl* Function) {
-	auto Symbol = Builder.addSymbol(qualifiedName(Function), Function->isExported());
+	std::string SymbolName = qualifiedName(Function);
+	if (auto Stage = findAttribute(Function, "stage")) {
+		if (auto Name = identifierAttribute(Stage)) SymbolName += "@" + std::string(*Name);
+	}
+	auto Symbol = Builder.addSymbol(SymbolName, Function->isExported());
 	std::vector<ir::TypeId> ParameterTypes;
 	std::vector<ir::SymbolId> ParameterSymbols;
 	for (unsigned Index = 0; Index < Function->getNumParams(); ++Index) {
@@ -268,7 +263,7 @@ void CodeGenerator::lowerFunctionDeclaration(FunctionDecl* Function) {
 		ParameterSymbols.push_back(Builder.addSymbol(qualifiedName(Function) + "::" + std::string(Parameter->getIdentifier()->getName())));
 	}
 	auto FunctionID = Builder.addFunction(Symbol, lowerType(Function->getType()), ParameterTypes, ParameterSymbols,
-		Function->getBody() == nullptr, Function->hasImplicitEmitter());
+		Function->getBody() == nullptr, Function->hasImplicitEmitter(), Function->isImplicit());
 	Functions[Function] = FunctionID;
 	auto IRFunction = Builder.module().findFunction(FunctionID);
 	for (unsigned Index = 0; Index < Function->getNumParams(); ++Index) {
@@ -281,13 +276,17 @@ void CodeGenerator::lowerFunctionBody(FunctionDecl* Function) {
 	CurrentFunction = Functions[Function];
 	CurrentASTFunction = Function;
 	CurrentBlock = Builder.addBlock(CurrentFunction);
+	CurrentReturnObject = {};
+	CurrentImplicitObject = {};
 	Values.clear();
 	auto IRFunction = Builder.module().findFunction(CurrentFunction);
 	for (unsigned Index = 0; Index < Function->getNumParams(); ++Index) {
 		auto Value = IRFunction->parameters[Index].value;
 		Values[Function->parameters()[Index]] = Value;
+		if (Function->getTemplatePattern()) Values[Function->getTemplatePattern()->parameters()[Index]] = Value;
 		ValueTypes[Value.value()] = IRFunction->parameters[Index].type;
 	}
+	if (Function->hasImplicitObject()) CurrentImplicitObject = IRFunction->parameters[0].value;
 	BarrierIndex = 0;
 	ConditionalDepth = 0;
 	CurrentConstructor = constructorRecord(Function);
@@ -311,9 +310,15 @@ void CodeGenerator::lowerFunctionBody(FunctionDecl* Function) {
 		ir::Terminator Terminator{.kind = ir::TerminatorKind::terminator_return_value};
 		Terminator.operands.push_back(Result);
 		Builder.setTerminator(CurrentFunction, CurrentBlock, std::move(Terminator));
-	} else if (!Block->terminator) Builder.setTerminator(CurrentFunction, CurrentBlock,
-		{.kind = ir::TerminatorKind::terminator_return});
+	} else if (!Block->terminator) {
+		if (CurrentReturnObject) {
+			ir::Terminator Terminator{.kind = ir::TerminatorKind::terminator_return_value};
+			Terminator.operands.push_back(CurrentReturnObject);
+			Builder.setTerminator(CurrentFunction, CurrentBlock, std::move(Terminator));
+		} else Builder.setTerminator(CurrentFunction, CurrentBlock, {.kind = ir::TerminatorKind::terminator_return});
+	}
 	CurrentConstructor = nullptr;
+	CurrentReturnObject = {};
 }
 
 void CodeGenerator::lowerStatement(Stmt* Statement) {
@@ -437,11 +442,35 @@ void CodeGenerator::lowerIfStatement(IfStmt* Statement) {
 ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 	if (!Expression) return {};
 	switch (Expression->getStmtClass()) {
+	case StmtClass::expr_emitter: {
+		if (CurrentReturnObject) return CurrentReturnObject;
+		auto Type = lowerType(Expression->getType());
+		CurrentReturnObject = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_construct, Type);
+		ValueTypes[CurrentReturnObject.value()] = Type;
+		return CurrentReturnObject;
+	}
 	case StmtClass::expr_decl_ref: {
 		auto Declaration = static_cast<DeclRefExpr*>(Expression)->getDecl();
+		if (Declaration->getKind() == DeclKind::decl_field && CurrentImplicitObject) {
+			auto* Field = static_cast<FieldDecl*>(Declaration);
+			auto Type = lowerType(Field->getType());
+			std::uint32_t Name = Builder.module().strings.intern(Field->getIdentifier()->getName()).value();
+			auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_access, Type,
+				std::span(&CurrentImplicitObject, 1), std::span(&Name, 1));
+			ValueTypes[Value.value()] = Type;
+			return Value;
+		}
 		if (auto Position = Values.find(Declaration); Position != Values.end()) {
 			if (!Position->second) diagnose("use of an uninitialized local variable");
 			return Position->second;
+		}
+		if (Declaration->getKind() == DeclKind::decl_variable && static_cast<VarDecl*>(Declaration)->isConstant()) {
+			auto* Variable = static_cast<VarDecl*>(Declaration);
+			if (Variable->getInit()) return lowerExpression(Variable->getInit());
+			auto Type = lowerType(Variable->getType());
+			auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_construct, Type);
+			ValueTypes[Value.value()] = Type;
+			return Value;
 		}
 		auto Symbol = GlobalSymbols.find(Declaration);
 		if (Symbol == GlobalSymbols.end()) { diagnose("unlowered declaration reference"); return {}; }
@@ -488,11 +517,6 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 	}
 	case StmtClass::expr_binary: {
 		auto Binary = static_cast<BinaryExpr*>(Expression);
-		if (Binary->getOpcode() == tok::lessminus) {
-			auto Value = lowerExpression(Binary->getRight());
-			(void)Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_emit, {}, std::span(&Value, 1));
-			return {};
-		}
 		if (Binary->getOpcode() == tok::equal && Binary->getLeft()->getStmtClass() == StmtClass::expr_decl_ref) {
 			auto Declaration = static_cast<DeclRefExpr*>(Binary->getLeft())->getDecl();
 			if (Declaration->getKind() == DeclKind::decl_field && CurrentConstructor) {
@@ -578,6 +602,8 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 		auto Type = lowerType(Function->getType());
 		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_call, Type, Arguments, {}, Functions.at(Function));
 		ValueTypes[Value.value()] = Type;
+		if (Call->getArgumentCount() != 0 && Call->arguments()[0]->getStmtClass() == StmtClass::expr_emitter)
+			CurrentReturnObject = Value;
 		return Value;
 	}
 	case StmtClass::expr_member:
@@ -600,9 +626,6 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 		ValueTypes[Value.value()] = Type;
 		return Value;
 	}
-	case StmtClass::expr_emitter:
-		diagnose("an emitter can only be used as the left operand of '<-'");
-		return {};
 	default:
 		diagnose("expression kind is not implemented by RTIR lowering");
 		return {};
@@ -612,6 +635,27 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 ir::TypeId CodeGenerator::lowerType(QualType Type) {
 	if (!Type) return {};
 	return lowerUnqualifiedType(Type.getTypePtr());
+}
+
+bool CodeGenerator::hasUnresolvedTemplateParameter(QualType ValueType) const {
+	const Type* Value = ValueType.getTypePtr();
+	if (!Value) return false;
+	switch (Value->getTypeClass()) {
+	case TypeClass::type_template_parameter:
+		return true;
+	case TypeClass::type_pointer:
+		return hasUnresolvedTemplateParameter(static_cast<const PointerType*>(Value)->getPointeeType());
+	case TypeClass::type_reference:
+		return hasUnresolvedTemplateParameter(static_cast<const ReferenceType*>(Value)->getPointeeType());
+	case TypeClass::type_template_specialization: {
+		auto* Specialization = static_cast<const TemplateSpecializationType*>(Value);
+		for (unsigned Index = 0; Index < Specialization->getArgumentCount(); ++Index)
+			if (Specialization->getIntegerParameter(Index) || hasUnresolvedTemplateParameter(Specialization->arguments()[Index])) return true;
+		return false;
+	}
+	default:
+		return false;
+	}
 }
 
 ir::TypeId CodeGenerator::lowerUnqualifiedType(const Type* ASTType) {
@@ -634,6 +678,7 @@ ir::TypeId CodeGenerator::lowerUnqualifiedType(const Type* ASTType) {
 		auto Named = static_cast<const NamedType*>(ASTType);
 		if (auto Position = NamedTypes.find(Named->getName()); Position != NamedTypes.end()) return Position->second;
 		auto Name = Named->getName()->getName();
+		if (Name.starts_with("__")) Name.remove_prefix(2);
 		if (Name == "vec2" || Name == "vec3" || Name == "vec4") {
 			Type.kind = ir::TypeKind::type_vector;
 			Type.element_count = static_cast<std::uint32_t>(Name.back() - '0');
@@ -655,7 +700,7 @@ ir::TypeId CodeGenerator::lowerUnqualifiedType(const Type* ASTType) {
 			(Name == "triangle" || Name == "triangle_strip") ? ir::TypeKind::type_primitive : ir::TypeKind::type_structure;
 		Type.name = Builder.module().strings.intern(Name);
 		if (Specialization->getArgumentCount()) Type.element_type = lowerType(Specialization->arguments()[0]);
-		Type.element_count = Specialization->getIntegerArgument(1).value_or(0);
+		Type.element_count = Name == "triangle" ? 3 : Specialization->getIntegerArgument(1).value_or(0);
 		break;
 	}
 	case TypeClass::type_pointer:
@@ -694,6 +739,13 @@ std::string CodeGenerator::qualifiedName(const NamedDecl* Declaration) const {
 			Result += typeName(Function->parameters()[Index]->getType());
 		}
 		Result += ")";
+		for (unsigned Index = 0; Index < Function->getNumTemplateArguments(); ++Index) {
+			if (Index == 0) Result += "<";
+			else Result += ",";
+			if (Function->templateArguments()[Index].IntegerValue) Result += std::to_string(*Function->templateArguments()[Index].IntegerValue);
+			else Result += typeName(Function->templateArguments()[Index].Type);
+		}
+		if (Function->getNumTemplateArguments()) Result += ">";
 	}
 	return Result;
 }
@@ -768,7 +820,12 @@ bool CodeGenerator::lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID
 	}
 	else if (Name == "tess_control") {
 		Entry.stage = ir::Stage::stage_tessellation_control;
-		Entry.configuration = ir::TessellationControlConfiguration{.output_control_points = 1};
+		if (Function->getNumTemplateArguments() != 1 || !Function->templateArguments()[0].IntegerValue ||
+			*Function->templateArguments()[0].IntegerValue == 0) {
+			diagnose("tessellation control entry function requires one non-zero invocation count template argument");
+			return false;
+		}
+		Entry.configuration = ir::TessellationControlConfiguration{.output_control_points = *Function->templateArguments()[0].IntegerValue};
 	} else if (Name == "tess_eval") {
 		Entry.stage = ir::Stage::stage_tessellation_evaluation;
 		ir::TessellationEvaluationConfiguration Configuration;
@@ -827,9 +884,16 @@ bool CodeGenerator::lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID
 	}
 	else if (Name == "compute") {
 		Entry.stage = ir::Stage::stage_compute;
+		if (Function->getNumTemplateArguments() != 3) {
+			diagnose("compute entry function requires three workgroup-size template arguments");
+			return false;
+		}
 		ir::ComputeConfiguration Configuration;
-		auto Values = numericAttribute(findAttribute(Function, "workgroup_size"));
-		for (unsigned Index = 0; Index < Values.size() && Index < 3; ++Index) Configuration.workgroup_size[Index] = Values[Index];
+		for (unsigned Index = 0; Index < 3; ++Index) {
+			auto Value = Function->templateArguments()[Index].IntegerValue;
+			if (!Value || *Value == 0) { diagnose("compute workgroup-size template arguments must be non-zero integers"); return false; }
+			Configuration.workgroup_size[Index] = *Value;
+		}
 		Entry.configuration = Configuration;
 	} else return false;
 	for (unsigned Index = 0; Index < Function->getNumParameterContracts(); ++Index) {

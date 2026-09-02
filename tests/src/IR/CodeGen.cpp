@@ -5,6 +5,18 @@
 
 #include <algorithm>
 
+namespace {
+
+const rtsl::ir::Function& stageFunction(const rtsl::ir::Module& Module, rtsl::ir::Stage Stage) {
+	auto Entry = std::ranges::find_if(Module.entry_points, [Stage](const rtsl::ir::EntryPoint& Value) { return Value.stage == Stage; });
+	REQUIRE(Entry != Module.entry_points.end());
+	auto* Function = Module.findFunction(Entry->function);
+	REQUIRE(Function != nullptr);
+	return *Function;
+}
+
+} // namespace
+
 TEST_CASE("semantic AST lowers to verified RTIR") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setModuleName("shader");
@@ -48,7 +60,7 @@ fn main(u32 value) -> u32 {
 	auto Compilation = Compiler.compileToLinkedRTIR();
 	REQUIRE(Compilation.succeeded());
 	REQUIRE(Compilation.Link.Module.storage_objects.size() == 1);
-	const auto& Function = Compilation.Link.Module.functions[0];
+	const auto& Function = stageFunction(Compilation.Link.Module, rtsl::ir::Stage::stage_vertex);
 	REQUIRE(std::ranges::any_of(Function.blocks[0].instructions,
 		[](const rtsl::ir::Instruction& instruction) { return instruction.opcode == rtsl::ir::Opcode::opcode_resource_load; }));
 }
@@ -58,8 +70,7 @@ TEST_CASE("compute workgroup size is preserved in backend-neutral metadata") {
 	Invocation.setInputName("compute.rtsl");
 	Invocation.setInputBuffer(R"(
 @stage : compute
-@workgroup_size : (8, 4, 2)
-fn main(u32 x, u32 y, u32 z) {
+fn main<8, 4, 2>(u32 x, u32 y, u32 z) {
 }
 )");
 	rtsl::CompilerInstance Compiler;
@@ -72,6 +83,29 @@ fn main(u32 x, u32 y, u32 z) {
 	REQUIRE(Configuration.workgroup_size == std::array<std::uint32_t, 3>{8, 4, 2});
 }
 
+TEST_CASE("deduced primary function templates lower as concrete specializations") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("generic-call.rtsl");
+	Invocation.setInputBuffer(R"(
+template<typename T>
+fn identity(T value) -> T { return value; }
+fn main() -> i32 { var i32 value = 1; return identity(value); }
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("generic-call");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	REQUIRE(Result.succeeded());
+	REQUIRE(std::ranges::count_if(Result.Module.functions, [](const rtsl::ir::Function& Function) { return !Function.implicit; }) == 2);
+	bool HasCall{};
+	for (const auto& Function : Result.Module.functions)
+		for (const auto& Block : Function.blocks)
+			HasCall = HasCall || std::ranges::any_of(Block.instructions,
+				[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_call; });
+	REQUIRE(HasCall);
+}
+
 TEST_CASE("entry attributes are preserved as backend metadata") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("stages.rtsl");
@@ -79,14 +113,13 @@ TEST_CASE("entry attributes are preserved as backend metadata") {
 
 struct Vertex {}
 @stage : tess_control
-@invocations : 4
-fn control() {
+fn control<4>() {
 }
 @stage : tess_eval
 fn evaluate(const quad_patch<Vertex>& patch, tessellation<fractional_odd, cw>) -> Vertex {
 }
 @stage : geometry
-fn expand(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
+fn expand<5>(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
     emit input[0];
 }
 )");
@@ -98,9 +131,7 @@ fn expand(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
 	REQUIRE(Result.succeeded());
 	REQUIRE(Result.Module.entry_points.size() == 3);
 	const auto& Control = std::get<rtsl::ir::TessellationControlConfiguration>(Result.Module.entry_points[0].configuration);
-	REQUIRE(Control.output_control_points == 1);
-	REQUIRE(Result.Module.strings.get(Result.Module.entry_points[0].attributes[1].name) == "invocations");
-	REQUIRE(Result.Module.strings.get(Result.Module.entry_points[0].attributes[1].tokens[0]) == "4");
+	REQUIRE(Control.output_control_points == 4);
 	const auto& Evaluation = std::get<rtsl::ir::TessellationEvaluationConfiguration>(Result.Module.entry_points[1].configuration);
 	REQUIRE(Evaluation.domain == rtsl::ir::TessellationDomain::tessellation_domain_quads);
 	REQUIRE(Evaluation.spacing == rtsl::ir::TessellationSpacing::tessellation_spacing_fractional_odd);
@@ -110,6 +141,41 @@ fn expand(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
 	REQUIRE(Geometry.output == rtsl::ir::PrimitiveTopology::primitive_triangle_strip);
 	REQUIRE(Geometry.maximum_vertices == 6);
 	REQUIRE(Geometry.invocations == 1);
+	const auto Triangle = std::ranges::find_if(Result.Module.types, [&](const rtsl::ir::Type& Type) {
+		return Type.kind == rtsl::ir::TypeKind::type_primitive && Result.Module.strings.get(Type.name) == "triangle";
+	});
+	REQUIRE(Triangle != Result.Module.types.end());
+	REQUIRE(Triangle->element_count == 3);
+}
+
+TEST_CASE("geometry emit requires the triangle strip vertex type") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("geometry-emit.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {}
+@stage : geometry
+fn main(triangle<Vertex> input) -> triangle_strip<Vertex, 6> {
+	emit vec4(1.0, 0.0, 0.0, 1.0);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
+}
+
+TEST_CASE("an emitter is semantically rejected outside a geometry return type") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("unrealized-emitter.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Vertex {}
+@stage : vertex
+fn vertex(Vertex value) -> Vertex {
+	emit value;
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE_FALSE(Compiler.execute());
 }
 
 TEST_CASE("tessellation outer levels are indexed") {
@@ -118,8 +184,7 @@ TEST_CASE("tessellation outer levels are indexed") {
 	Invocation.setInputBuffer(R"(
 struct Vertex {}
 @stage : tess_control
-@invocations : 4
-fn main(patch<Vertex>& patch) -> Vertex {
+fn main<4>(patch<Vertex>& patch) -> Vertex {
 	patch.outer[0] = 1.0;
 	return patch.current;
 }
@@ -130,7 +195,8 @@ fn main(patch<Vertex>& patch) -> Vertex {
 	rtsl::CodeGenerator Generator("outer-levels");
 	auto Result = Generator.generate(*Compiler.getASTContext());
 	REQUIRE(Result.succeeded());
-	REQUIRE(std::ranges::count(Result.Module.functions.front().blocks.front().instructions, rtsl::ir::Opcode::opcode_store,
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_tessellation_control);
+	REQUIRE(std::ranges::count(Function.blocks.front().instructions, rtsl::ir::Opcode::opcode_store,
 		&rtsl::ir::Instruction::opcode) == 1);
 
 	rtsl::CompilerInvocation InvalidInvocation;
@@ -153,7 +219,7 @@ TEST_CASE("a compute barrier lowers from a named statement label") {
 	Invocation.setInputName("barrier.rtsl");
 	Invocation.setInputBuffer(R"(
 @stage : compute
-fn main() {
+fn main<1, 1, 1>() {
 	ready:
 	var u32 value = 0;
 }
@@ -164,7 +230,8 @@ fn main() {
 	rtsl::CodeGenerator Generator("barrier");
 	auto Result = Generator.generate(*Compiler.getASTContext());
 	REQUIRE(Result.succeeded());
-	REQUIRE(std::ranges::any_of(Result.Module.functions.front().blocks.front().instructions,
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_compute);
+	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions,
 		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_barrier; }));
 }
 
@@ -188,19 +255,17 @@ fn main() -> f32 {
 		[](const rtsl::CodeGenDiagnostic& Diagnostic) { return Diagnostic.Message == "barriers are only valid in compute and tessellation-control entry functions"; }));
 }
 
-TEST_CASE("emit syntax lowers through the implicit emitter operator") {
+TEST_CASE("emit syntax appends to the geometry return object") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setModuleName("emit");
 	Invocation.setInputName("emit.rtsl");
 	Invocation.setInputBuffer(R"(
 struct Vertex {}
-fn forward(Vertex value) emit -> void {
-	emit value;
-	__return <- value;
-}
 @stage : geometry
 fn main(triangle<Vertex> input) -> triangle_strip<Vertex, 2> {
-	forward(input[0]);
+	emit input[0];
+	emit input[1];
+	emit end;
 }
 )");
 	rtsl::CompilerInstance Compiler;
@@ -210,13 +275,13 @@ fn main(triangle<Vertex> input) -> triangle_strip<Vertex, 2> {
 	auto Result = Generator.generate(*Compiler.getASTContext());
 	REQUIRE(Result.succeeded());
 
-	const auto Forward = std::ranges::find_if(Result.Module.functions,
-		[](const rtsl::ir::Function& Function) { return Function.implicit_emitter; });
-	REQUIRE(Forward != Result.Module.functions.end());
-	REQUIRE(Forward->implicit_emitter);
-	REQUIRE(Forward->blocks.size() == 1);
-	REQUIRE(std::ranges::count(Forward->blocks[0].instructions, rtsl::ir::Opcode::opcode_emit,
-		&rtsl::ir::Instruction::opcode) == 2);
+	const auto Geometry = std::ranges::find_if(Result.Module.entry_points,
+		[](const rtsl::ir::EntryPoint& Entry) { return Entry.stage == rtsl::ir::Stage::stage_geometry; });
+	REQUIRE(Geometry != Result.Module.entry_points.end());
+	const auto* Function = Result.Module.findFunction(Geometry->function);
+	REQUIRE(Function != nullptr);
+	REQUIRE(std::ranges::count(Function->blocks[0].instructions, rtsl::ir::Opcode::opcode_call,
+		&rtsl::ir::Instruction::opcode) == 3);
 }
 
 TEST_CASE("a constructor initializes its direct Position base from a vec3") {
@@ -269,7 +334,7 @@ fn main() -> f32 {
 	rtsl::CodeGenerator Generator("expressions");
 	auto Result = Generator.generate(*Compiler.getASTContext());
 	REQUIRE(Result.succeeded());
-	const auto& Function = Result.Module.functions.front();
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
 	REQUIRE(Function.blocks.size() == 3);
 	REQUIRE(Function.blocks.front().merge.kind == rtsl::ir::MergeKind::merge_selection);
 	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions,
@@ -353,7 +418,7 @@ fn main(vec2 uv) -> vec4 {
 	REQUIRE(Result.succeeded());
 	REQUIRE(Result.Module.resources.size() == 1);
 	REQUIRE(Result.Module.resources.front().kind == rtsl::ir::ResourceKind::resource_sampled_texture);
-	const auto& Function = Result.Module.functions.front();
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
 	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions,
 		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_resource_sample; }));
 }
@@ -379,7 +444,7 @@ fn main(Vertex vertex) -> vec4 {
 	rtsl::CodeGenerator Generator("fragment-local");
 	auto Result = Generator.generate(*Compiler.getASTContext());
 	REQUIRE(Result.succeeded());
-	const auto& Function = Result.Module.functions.front();
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
 	const auto Constant = std::ranges::find_if(Function.blocks.front().instructions,
 		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_constant_integer; });
 	REQUIRE(Constant != Function.blocks.front().instructions.end());

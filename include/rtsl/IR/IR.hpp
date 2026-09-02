@@ -158,8 +158,6 @@ enum class Opcode : std::uint16_t {
 	opcode_extract,
 	opcode_insert,
 	opcode_call,
-	opcode_emit,
-	opcode_end_primitive,
 	opcode_barrier,
 	opcode_memory_barrier,
 	opcode_resource_load,
@@ -240,6 +238,7 @@ struct Function {
 	std::vector<Block> blocks;
 	bool declaration{};
 	bool implicit_emitter{};
+	bool implicit{};
 };
 
 enum class Stage : std::uint8_t {

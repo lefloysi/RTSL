@@ -12,8 +12,9 @@
 
 namespace rtsl {
 
-inline constexpr std::uint16_t artifact_version_major = 1;
-inline constexpr std::uint16_t artifact_version_minor = 5;
+inline constexpr std::uint16_t artifact_version_major = 0;
+inline constexpr std::uint16_t artifact_version_minor = 1;
+inline constexpr std::uint8_t artifact_version_patch = 6;
 
 enum class ArtifactKind : std::uint8_t {
 	artifact_object,

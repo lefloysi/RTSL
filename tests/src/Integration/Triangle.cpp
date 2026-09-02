@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
@@ -21,7 +22,8 @@ TEST_CASE("triangle example compiles to a verified linked program artifact") {
 	auto Compilation = Compiler.compileToLinkedRTIR();
 	REQUIRE(Compilation.succeeded());
 	REQUIRE(Compilation.Link.Module.entry_points.size() == 2);
-	REQUIRE(Compilation.Link.Module.functions.size() == 3);
+	REQUIRE(std::ranges::count_if(Compilation.Link.Module.functions,
+		[](const rtsl::ir::Function& Function) { return !Function.implicit; }) == 3);
 	const rtsl::ir::Type* VertexType{};
 	for (const auto& Type : Compilation.Link.Module.types) {
 		if (Type.kind != rtsl::ir::TypeKind::type_structure) continue;

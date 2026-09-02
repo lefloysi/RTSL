@@ -21,7 +21,7 @@ public:
 	[[nodiscard]] FunctionId addFunction(SymbolId symbol, TypeId return_type, std::span<const TypeId> parameter_types,
 		std::span<const SymbolId> parameter_symbols = {}, bool declaration = false);
 	[[nodiscard]] FunctionId addFunction(SymbolId symbol, TypeId return_type, std::span<const TypeId> parameter_types,
-		std::span<const SymbolId> parameter_symbols, bool declaration, bool implicit_emitter);
+		std::span<const SymbolId> parameter_symbols, bool declaration, bool implicit_emitter, bool implicit = false);
 	[[nodiscard]] BlockId addBlock(FunctionId function);
 	[[nodiscard]] ValueId addBlockArgument(FunctionId function, BlockId block, TypeId type);
 	[[nodiscard]] ValueId appendInstruction(FunctionId function, BlockId block, Opcode opcode, TypeId type = {}, std::span<const ValueId> operands = {}, std::span<const std::uint32_t> immediates = {}, FunctionId callee = {});

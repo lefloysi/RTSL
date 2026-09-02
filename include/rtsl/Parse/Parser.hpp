@@ -18,7 +18,7 @@ private:
 	bool expectAndConsume(tok::TokenKind Kind, std::string_view Message);
 	ParsedAttributes parseAttributes();
 	void parseExternalDeclaration(ParsedAttributes& Attributes);
-	bool parseTemplateParameterList(std::vector<IdentifierInfo*>& Parameters);
+	bool parseTemplateParameterList(std::vector<ParsedTemplateParameter>& Parameters);
 	void parseFunctionTemplate(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseDeclSpec(DeclSpec& DS);
 	ParsedType parseType();
@@ -27,7 +27,7 @@ private:
 	void parseTypeAlias(DeclContext* Context, const DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseVariable(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes,
-		const std::vector<IdentifierInfo*>& TemplateParameters = {});
+		const std::vector<ParsedTemplateParameter>& TemplateParameters = {});
 	ParmVarDecl* parseParameter(FunctionDecl* FunctionContext);
 	CompoundStmt* parseCompoundStatement();
 	Stmt* parseStatement();

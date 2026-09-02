@@ -118,6 +118,9 @@ TEST_CASE("module interface importer exposes declarations to semantic analysis")
 	rtsl::DiagnosticsEngine diagnostics;
 	rtsl::IdentifierTable identifiers;
 	rtsl::Sema sema(context, diagnostics, identifiers);
+	rtsl::DeclSpec core_alias_spec;
+	rtsl::ParsedType intrinsic_f32{.Name = &identifiers.get("__f32")};
+	sema.actOnTypeAlias(context.getTranslationUnitDecl(), &identifiers.get("f32"), {}, core_alias_spec, intrinsic_f32, {});
 	REQUIRE(rtsl::ModuleInterfaceImporter{}.import(interface, sema).empty());
 	REQUIRE_FALSE(diagnostics.hasErrorOccurred());
 	rtsl::ParsedType weight{.Name = &identifiers.get("Weight")};
@@ -141,5 +144,5 @@ fn main() -> f32 { var Weight value = default_weight; return value; }
 	rtsl::CompilerInstance compiler;
 	compiler.setInvocation(std::move(invocation));
 	REQUIRE(compiler.execute());
-	REQUIRE(compiler.getSourceManager().getFileCount() == 2);
+	REQUIRE(compiler.getSourceManager().getFileCount() == 3);
 }

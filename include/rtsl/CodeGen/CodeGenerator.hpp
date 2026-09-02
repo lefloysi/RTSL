@@ -56,6 +56,7 @@ private:
 	[[nodiscard]] ir::ValueId lowerExpression(Expr* Expression);
 	[[nodiscard]] ir::TypeId lowerType(QualType Type);
 	[[nodiscard]] ir::TypeId lowerUnqualifiedType(const Type* Type);
+	[[nodiscard]] bool hasUnresolvedTemplateParameter(QualType ValueType) const;
 	[[nodiscard]] std::string qualifiedName(const NamedDecl* Declaration) const;
 	[[nodiscard]] std::string typeName(QualType Type) const;
 	[[nodiscard]] RecordDecl* constructorRecord(FunctionDecl* Function) const;
@@ -79,6 +80,8 @@ private:
 	std::unordered_map<std::uint32_t, ir::TypeId> ValueTypes;
 	ir::FunctionId CurrentFunction;
 	ir::BlockId CurrentBlock;
+	ir::ValueId CurrentReturnObject;
+	ir::ValueId CurrentImplicitObject;
 	FunctionDecl* CurrentASTFunction{};
 	RecordDecl* CurrentConstructor{};
 	std::unordered_map<const FieldDecl*, ir::ValueId> ConstructorFields;

@@ -28,12 +28,14 @@ QualType ASTContext::getTemplateSpecializationType(IdentifierInfo* Name, const s
 }
 
 QualType ASTContext::getTemplateSpecializationType(IdentifierInfo* Name, const std::vector<QualType>& Arguments,
-	const std::vector<std::optional<std::uint32_t>>& IntegerArguments) {
+	const std::vector<std::optional<std::uint32_t>>& IntegerArguments, const std::vector<IdentifierInfo*>& IntegerParameters) {
 	std::vector<std::optional<std::uint32_t>> Values = IntegerArguments;
 	Values.resize(Arguments.size());
-	TemplateSpecializationKey Key{.Name = Name, .Arguments = Arguments, .IntegerArguments = Values};
+	std::vector<IdentifierInfo*> Parameters = IntegerParameters;
+	Parameters.resize(Arguments.size());
+	TemplateSpecializationKey Key{.Name = Name, .Arguments = Arguments, .IntegerArguments = Values, .IntegerParameters = Parameters};
 	auto [Position, Inserted] = TemplateSpecializationTypes.try_emplace(std::move(Key), nullptr);
-	if (Inserted) Position->second = create<TemplateSpecializationType>(Name, copyArray(Arguments), copyArray(Values), static_cast<unsigned>(Arguments.size()));
+	if (Inserted) Position->second = create<TemplateSpecializationType>(Name, copyArray(Arguments), copyArray(Values), copyPointerArray(Parameters), static_cast<unsigned>(Arguments.size()));
 	return QualType(Position->second);
 }
 

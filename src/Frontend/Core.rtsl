@@ -1,0 +1,64 @@
+export using void = __void;
+export using bool = __bool;
+export using i32 = __i32;
+export using u32 = __u32;
+export using usize = __usize;
+export using f32 = __f32;
+export using vec2 = __vec2;
+export using vec3 = __vec3;
+export using vec4 = __vec4;
+export using mat2 = __mat2;
+export using mat3 = __mat3;
+export using mat4 = __mat4;
+
+export struct End {}
+export const var End end;
+
+template<typename T> export struct triangle {}
+
+template<typename T, usize N> export struct triangle_strip {
+	fn operator<-(T emitted) -> triangle_strip<T, N>;
+	fn operator<-(End marker) -> triangle_strip<T, N>;
+}
+
+template<typename T> export struct patch {}
+
+template<typename T> export struct triangle_patch {}
+
+template<typename T> export struct quad_patch {}
+
+template<typename T> export struct isoline_patch {}
+
+template<typename T> export struct tessellation {}
+
+export struct equal {}
+export struct fractional_even {}
+export struct fractional_odd {}
+export struct cw {}
+export struct ccw {}
+
+template<typename Header, typename Element> export struct buffer {}
+
+template<typename T> export struct image_1d {}
+template<typename T> export struct image_2d {}
+template<typename T> export struct image_3d {}
+template<typename T> export struct texture_1d {}
+template<typename T> export struct texture_2d {}
+template<typename T> export struct texture_3d {}
+export struct sampler {}
+
+export fn sample(texture_2d<f32> texture, vec2 coordinates) -> vec4;
+
+export struct Position {
+	vec4 position;
+	fn Position(vec3 value);
+	fn xy() -> vec2;
+}
+
+fn Position::Position(vec3 value) {
+	position = vec4(value, 1.0);
+}
+
+fn Position::xy() -> vec2 {
+	return vec2(position.x, position.y);
+}

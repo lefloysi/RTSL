@@ -85,6 +85,25 @@ TEST_CASE("linker diagnoses a missing function definition") {
 	REQUIRE(Result.Diagnostics[0].Code == rtsl::LinkDiagnosticCode::link_missing_definition);
 }
 
+TEST_CASE("linker matches an exact direct-specialization declaration and definition") {
+	rtsl::ir::ModuleBuilder DeclarationBuilder("declaration");
+	rtsl::ir::Type VoidType; VoidType.kind = rtsl::ir::TypeKind::type_void;
+	auto Void = DeclarationBuilder.internType(VoidType);
+	auto DeclarationSymbol = DeclarationBuilder.addSymbol("foo()<5>");
+	(void)DeclarationBuilder.addFunction(DeclarationSymbol, Void, {}, {}, true);
+	auto Declaration = DeclarationBuilder.takeModule();
+	rtsl::ir::ModuleBuilder DefinitionBuilder("definition");
+	Void = DefinitionBuilder.internType(VoidType);
+	auto DefinitionSymbol = DefinitionBuilder.addSymbol("foo()<5>");
+	auto Function = DefinitionBuilder.addFunction(DefinitionSymbol, Void, {});
+	auto Block = DefinitionBuilder.addBlock(Function);
+	DefinitionBuilder.setTerminator(Function, Block, {.kind = rtsl::ir::TerminatorKind::terminator_return});
+	auto Definition = DefinitionBuilder.takeModule();
+	const std::array Modules{Declaration, Definition};
+	rtsl::Linker Linker;
+	REQUIRE(Linker.link("program", Modules).succeeded());
+}
+
 TEST_CASE("linker preserves exported symbols") {
 	rtsl::ir::ModuleBuilder Builder("library");
 	rtsl::ir::Type VoidType;

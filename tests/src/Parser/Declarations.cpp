@@ -101,8 +101,8 @@ fn main(Point point) -> Point {
 	REQUIRE_FALSE(Compiler.getDiagnostics().hasErrorOccurred());
 	auto Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
 	unsigned Count = 0;
-	for (; Declaration; Declaration = Declaration->getNextDeclInContext()) ++Count;
-	REQUIRE(Count == 7);
+	for (; Declaration; Declaration = Declaration->getNextDeclInContext()) if (!Declaration->isImplicit()) ++Count;
+	REQUIRE(Count == 6);
 }
 
 TEST_CASE("Sema identifies registered type names") {
@@ -120,6 +120,61 @@ TEST_CASE("Sema identifies registered type names") {
 	REQUIRE(Sema->isTypeName(&Identifiers.get("texture_2d")));
 	REQUIRE(Sema->isTypeName(&Identifiers.get("UserType")));
 	REQUIRE_FALSE(Sema->isTypeName(&Identifiers.get("not_a_type")));
+}
+
+TEST_CASE("triangle strip owns the core emission operators") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("core-members.rtsl");
+	Invocation.setInputBuffer("");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	auto& Identifiers = Compiler.getSema()->getIdentifierTable();
+	auto* TranslationUnit = Compiler.getASTContext()->getTranslationUnitDecl();
+	rtsl::RecordDecl* TriangleStrip{};
+	unsigned TopLevelOperators{};
+	for (auto* Declaration = TranslationUnit->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext()) {
+		if (Declaration->getKind() == rtsl::DeclKind::decl_record &&
+			static_cast<rtsl::RecordDecl*>(Declaration)->getIdentifier() == &Identifiers.get("triangle_strip"))
+			TriangleStrip = static_cast<rtsl::RecordDecl*>(Declaration);
+		if (Declaration->getKind() == rtsl::DeclKind::decl_function &&
+			static_cast<rtsl::FunctionDecl*>(Declaration)->getIdentifier() == &Identifiers.get("operator<-"))
+			++TopLevelOperators;
+	}
+	REQUIRE(TriangleStrip != nullptr);
+	unsigned MemberOperators{};
+	for (auto* Declaration = TriangleStrip->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
+		if (Declaration->getKind() == rtsl::DeclKind::decl_function &&
+			static_cast<rtsl::FunctionDecl*>(Declaration)->getIdentifier() == &Identifiers.get("operator<-"))
+			++MemberOperators;
+	REQUIRE(MemberOperators == 2);
+	REQUIRE(TopLevelOperators == 0);
+}
+
+TEST_CASE("Sema bootstrap registers only hidden intrinsic type names") {
+	rtsl::ASTContext Context;
+	rtsl::DiagnosticsEngine Diagnostics;
+	rtsl::IdentifierTable Identifiers;
+	rtsl::Sema Sema(Context, Diagnostics, Identifiers);
+	REQUIRE(Sema.isTypeName(&Identifiers.get("__vec2")));
+	REQUIRE_FALSE(Sema.isTypeName(&Identifiers.get("vec2")));
+	REQUIRE_FALSE(Sema.isTypeName(&Identifiers.get("triangle_strip")));
+}
+
+TEST_CASE("a variable may declare an incomplete record type") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("incomplete-record-variable.rtsl");
+	Invocation.setInputBuffer("var struct Marker marker;");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	auto* Sema = Compiler.getSema();
+	REQUIRE(Sema != nullptr);
+	auto& Identifiers = Sema->getIdentifierTable();
+	REQUIRE(Sema->isTypeName(&Identifiers.get("Marker")));
+	auto* Value = Sema->actOnIdentifierExpr(&Identifiers.get("marker"), {});
+	REQUIRE(Value != nullptr);
+	REQUIRE(Value->getType().getTypePtr() == Sema->actOnType({.Name = &Identifiers.get("Marker")}).getTypePtr());
 }
 
 TEST_CASE("tessellation evaluation parameters support a direct const patch reference and type-only settings") {
@@ -209,7 +264,7 @@ TEST_CASE("out-of-line functions require a declared record member") {
 	Invocation.setInputName("undeclared-out-of-line-member.rtsl");
 	Invocation.setInputBuffer(R"(
 struct Point {
-	vec4 position;
+	vec3 position;
 	vec4 color;
 }
 struct Vertex : Position {
@@ -350,45 +405,42 @@ TEST_CASE("qualified type names are diagnosed instead of being truncated") {
 	REQUIRE(Location.Column == 9);
 }
 
-TEST_CASE("function template parameters are retained and visible to their definition") {
+TEST_CASE("function templates retain parameters and direct specializations") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("function-template.rtsl");
 	Invocation.setInputBuffer(R"(
-template<typename T>
-fn foo(T a) {
-}
+template<typename T : true, usize N>
+fn generic(T a) {}
+fn foo<5>();
+fn foo<5>() {}
+fn main() { foo<5>(); }
 )");
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
 	REQUIRE(Compiler.execute());
-	auto Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
+	auto* Declaration = Compiler.getASTContext()->getTranslationUnitDecl()->declsBegin();
 	while (Declaration && (Declaration->getKind() != rtsl::DeclKind::decl_function ||
-		static_cast<rtsl::FunctionDecl*>(Declaration)->getIdentifier()->getName() != "foo")) Declaration = Declaration->getNextDeclInContext();
+		static_cast<rtsl::FunctionDecl*>(Declaration)->getIdentifier()->getName() != "generic")) Declaration = Declaration->getNextDeclInContext();
 	REQUIRE(Declaration != nullptr);
-	auto Function = static_cast<rtsl::FunctionDecl*>(Declaration);
-	REQUIRE(Function->isFunctionTemplate());
-	REQUIRE(Function->getNumTemplateParameters() == 1);
-	REQUIRE(Function->templateParameters()[0]->getName() == "T");
-	REQUIRE(Function->parameters()[0]->getType().getTypePtr()->getTypeClass() == rtsl::TypeClass::type_template_parameter);
+	auto* Generic = static_cast<rtsl::FunctionDecl*>(Declaration);
+	REQUIRE(Generic->getNumTemplateParameters() == 2);
+	REQUIRE(Generic->templateParameters()[0].Name->getName() == "T");
+	REQUIRE(Generic->parameters()[0]->getType().getTypePtr()->getTypeClass() == rtsl::TypeClass::type_template_parameter);
+	Declaration = Declaration->getNextDeclInContext();
+	REQUIRE(Declaration != nullptr);
+	auto* Specialized = static_cast<rtsl::FunctionDecl*>(Declaration);
+	REQUIRE(Specialized->getNumTemplateArguments() == 1);
+	REQUIRE(Specialized->templateArguments()[0].IntegerValue == 5);
+	REQUIRE(Specialized->getBody() != nullptr);
 }
 
-TEST_CASE("function template calls report that instantiation is unavailable") {
+TEST_CASE("template constraints reject expressions") {
 	rtsl::CompilerInvocation Invocation;
-	Invocation.setInputName("function-template-call.rtsl");
-	Invocation.setInputBuffer(R"(
-template<typename T>
-fn foo(T a) {
-}
-fn main() {
-	foo(1);
-}
-)");
+	Invocation.setInputName("expression-template-constraint.rtsl");
+	Invocation.setInputBuffer("template<typename T : integral> fn foo(T value) {}");
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
 	REQUIRE_FALSE(Compiler.execute());
-	const auto& Diagnostics = Compiler.getDiagnostics().diagnostics();
-	REQUIRE(Diagnostics.size() == 1);
-	REQUIRE(Diagnostics.front().Message == "function template instantiation is not implemented");
 }
 
 TEST_CASE("Position is owned by the standard library") {

@@ -1,0 +1,10 @@
+#ifndef RTSL_FRONTEND_CORE_SOURCE_HPP
+#define RTSL_FRONTEND_CORE_SOURCE_HPP
+
+namespace rtsl::core {
+inline constexpr char source[] = R"rtsl(
+@RTSL_CORE_SOURCE@
+)rtsl";
+}
+
+#endif

@@ -6,6 +6,7 @@ add_executable(rtsl-tests
 	src/Frontend/ModuleInterface.cpp
 	src/Integration/Linker.cpp
 	src/Integration/Bezier.cpp
+	src/Integration/Geometry.cpp
 	src/Integration/Triangle.cpp
 	src/IR/CodeGen.cpp
 	src/IR/Ownership.cpp

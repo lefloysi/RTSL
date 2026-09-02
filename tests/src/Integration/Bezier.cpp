@@ -24,9 +24,8 @@ TEST_CASE("cubic Bezier tessellation example compiles to a verified linked progr
 
 	const auto& Control = Compilation.Link.Module.entry_points[0];
 	REQUIRE(Control.stage == rtsl::ir::Stage::stage_tessellation_control);
-	REQUIRE(Control.attributes.size() == 2);
-	REQUIRE(Compilation.Link.Module.strings.get(Control.attributes[1].name) == "invocations");
-	REQUIRE(Compilation.Link.Module.strings.get(Control.attributes[1].tokens[0]) == "4");
+	REQUIRE(Control.attributes.size() == 1);
+	REQUIRE(std::get<rtsl::ir::TessellationControlConfiguration>(Control.configuration).output_control_points == 4);
 	const auto& Evaluation = Compilation.Link.Module.entry_points[1];
 	REQUIRE(Evaluation.stage == rtsl::ir::Stage::stage_tessellation_evaluation);
 	const auto& Configuration = std::get<rtsl::ir::TessellationEvaluationConfiguration>(Evaluation.configuration);

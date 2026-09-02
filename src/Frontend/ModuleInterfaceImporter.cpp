@@ -75,8 +75,8 @@ std::vector<std::string> ModuleInterfaceImporter::import(const ModuleInterface& 
 				Declarator declarator{.Name = &identifiers.get(value.name), .Type = makeType(value.type, identifiers)};
 				sema.actOnVariable(context, spec, declarator, nullptr, makeAttributes(value.attributes, identifiers));
 			} else if constexpr (std::is_same_v<T, InterfaceFunction>) {
-				std::vector<IdentifierInfo*> templates;
-				for (const std::string& parameter : value.template_parameters) templates.push_back(&identifiers.get(parameter));
+				std::vector<ParsedTemplateParameter> templates;
+				for (const std::string& parameter : value.template_parameters) templates.push_back({.Name = &identifiers.get(parameter), .IsType = true});
 				sema.pushTemplateParameters(templates);
 				std::vector<ParmVarDecl*> parameters;
 				for (const InterfaceParameter& parameter : value.parameters) {

@@ -11,15 +11,88 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <windows.h>
+
 namespace {
+constexpr std::string_view languageKeywords[] = {
+#define TOKEN(Name)
+#define PUNCTUATOR(Name, Spelling)
+#define KEYWORD(Name, Flags) #Name,
+#include <rtsl/Basic/TokenKinds.def>
+#undef KEYWORD
+#undef PUNCTUATOR
+#undef TOKEN
+};
+
 std::string escape(std::string_view text) { std::string r; for (char c : text) { if (c == '\\' || c == '"') r += '\\'; if (c == '\n') r += "\\n"; else if (c != '\r') r += c; } return r; }
 std::string readFile(const std::string& path) { std::ifstream f(path, std::ios::binary); return {std::istreambuf_iterator<char>(f), {}}; }
 std::string uriToPath(std::string u) { const std::string p = "file:///"; if (u.rfind(p, 0) == 0) u.erase(0, p.size()); for (char& c : u) if (c == '/') c = '\\'; return u; }
 unsigned lineOf(std::string_view s, unsigned offset) { unsigned n = 0; for (unsigned i=0;i<offset && i<s.size();++i) if(s[i]=='\n') ++n; return n; }
 unsigned columnOf(std::string_view s, unsigned offset) { unsigned i=offset; while(i && s[i-1]!='\n') --i; return offset-i; }
+
+std::string quotedCommandArgument(std::string_view value) {
+ std::string result{"\""};
+ for (char character : value) {
+  if (character == '\\' || character == '\"') result += '\\';
+  result += character;
+ }
+ return result + '\"';
+}
+
+std::string clangFormatPath() {
+ char installDirectory[MAX_PATH]{};
+ const auto length = GetEnvironmentVariableA("VSINSTALLDIR", installDirectory, MAX_PATH);
+ if (length != 0 && length < MAX_PATH) {
+  const std::string candidate = std::string(installDirectory) + "VC\\Tools\\Llvm\\x64\\bin\\clang-format.exe";
+  if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) return candidate;
+ }
+ for (const char* edition : {"Community", "Professional", "Enterprise", "BuildTools"}) {
+  const std::string candidate = std::string("C:\\Program Files\\Microsoft Visual Studio\\2022\\") + edition + "\\VC\\Tools\\Llvm\\x64\\bin\\clang-format.exe";
+  if (GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES) return candidate;
+ }
+ return {};
+}
+
+std::string formatSource(const std::string& path, const std::string& text) {
+ const std::string formatter = clangFormatPath();
+ if (formatter.empty()) return {};
+ std::string assumedName = path;
+ if (const auto extension = assumedName.find_last_of('.'); extension != std::string::npos) assumedName.replace(extension, std::string::npos, ".cpp");
+ else assumedName += ".cpp";
+ const std::string command = quotedCommandArgument(formatter) + " -style=file -fallback-style=LLVM -assume-filename=" + quotedCommandArgument(assumedName);
+ SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, true};
+ HANDLE stdinRead{}, stdinWrite{}, stdoutRead{}, stdoutWrite{};
+ if (!CreatePipe(&stdinRead, &stdinWrite, &security, 0) || !CreatePipe(&stdoutRead, &stdoutWrite, &security, 0)) return {};
+ SetHandleInformation(stdinWrite, HANDLE_FLAG_INHERIT, 0);
+ SetHandleInformation(stdoutRead, HANDLE_FLAG_INHERIT, 0);
+ STARTUPINFOA startup{sizeof(STARTUPINFOA)};
+ startup.dwFlags = STARTF_USESTDHANDLES;
+ startup.hStdInput = stdinRead;
+ startup.hStdOutput = stdoutWrite;
+ startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+ PROCESS_INFORMATION process{};
+ std::vector<char> mutableCommand(command.begin(), command.end());
+ mutableCommand.push_back('\0');
+ if (!CreateProcessA(nullptr, mutableCommand.data(), nullptr, nullptr, true, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+  CloseHandle(stdinRead); CloseHandle(stdinWrite); CloseHandle(stdoutRead); CloseHandle(stdoutWrite); return {};
+ }
+ CloseHandle(stdinRead); CloseHandle(stdoutWrite);
+ std::thread writer([stdinWrite, &text] {
+  const char* cursor = text.data(); size_t remaining = text.size();
+  while (remaining != 0) { DWORD written{}; if (!WriteFile(stdinWrite, cursor, static_cast<DWORD>(std::min<size_t>(remaining, 1u << 20)), &written, nullptr)) break; cursor += written; remaining -= written; }
+  CloseHandle(stdinWrite);
+ });
+ std::string output; char buffer[4096]; DWORD read{};
+ while (ReadFile(stdoutRead, buffer, sizeof(buffer), &read, nullptr) && read != 0) output.append(buffer, read);
+ CloseHandle(stdoutRead); writer.join(); WaitForSingleObject(process.hProcess, INFINITE);
+ DWORD exitCode{}; GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hThread); CloseHandle(process.hProcess);
+ return exitCode == 0 ? output : std::string{};
+}
 enum SemanticType : unsigned { keyword, variable, type, function, number, string, op, comment, decorator, name_space, punctuation, control_keyword };
 struct LexedToken { rtsl::tok::TokenKind kind; unsigned offset; unsigned length; std::string_view spelling; };
 struct SemanticSpan { unsigned offset; unsigned length; SemanticType type; };
@@ -221,9 +294,101 @@ std::string hover(const std::string& name, const std::string& text, unsigned lin
  return "null";
 }
 std::string diagnostics(const std::string& name, const std::string& text) {
+ const auto tokens = lexSource(name, text);
  rtsl::CompilerInvocation inv; inv.setInputName(name); inv.setInputBuffer(text); rtsl::CompilerInstance ci; ci.setInvocation(std::move(inv)); [[maybe_unused]] const bool parsed = ci.execute(); std::ostringstream out; bool first=true;
- for(const auto& x:ci.getDiagnostics().diagnostics()){ auto p=ci.getSourceManager().getPresumedLoc(x.Range.Begin); if(!first)out<<','; first=false; out<<"{\"range\":{\"start\":{\"line\":"<<(p.Line?p.Line-1:0)<<",\"character\":"<<(p.Column?p.Column-1:0)<<"},\"end\":{\"line\":"<<(p.Line?p.Line-1:0)<<",\"character\":"<<(p.Column?p.Column-1:0)<<"}},\"severity\":"<<(x.Level==rtsl::DiagnosticLevel::diagnostic_error?1:2)<<",\"source\":\"rtsl\",\"message\":\""<<escape(x.Message)<<"\"}"; }
+ for(const auto& x:ci.getDiagnostics().diagnostics()) {
+  auto begin = ci.getSourceManager().getPresumedLoc(x.Range.Begin);
+  auto end = ci.getSourceManager().getPresumedLoc(x.Range.End);
+  // Sema diagnostics currently identify an offending identifier with a point
+  // location. Expand that point through the compiler lexer's actual token so
+  // Visual Studio underlines the identifier, rather than its first character.
+  if (x.Range.Begin.getRawEncoding() == x.Range.End.getRawEncoding()) {
+   const unsigned offset = x.Range.Begin.getRawEncoding() - 1;
+   const auto token = std::find_if(tokens.begin(), tokens.end(), [offset](const auto& candidate) {
+    return candidate.kind == rtsl::tok::identifier && candidate.offset <= offset && offset < candidate.offset + candidate.length;
+   });
+   if (token != tokens.end()) end = {begin.Filename, begin.Line, begin.Column + token->length};
+  }
+  if(!first)out<<','; first=false;
+  out<<"{\"range\":{\"start\":{\"line\":"<<(begin.Line?begin.Line-1:0)<<",\"character\":"<<(begin.Column?begin.Column-1:0)
+   <<"},\"end\":{\"line\":"<<(end.Line?end.Line-1:0)<<",\"character\":"<<(end.Column?end.Column-1:0)
+   <<"}},\"severity\":"<<(x.Level==rtsl::DiagnosticLevel::diagnostic_error?1:2)<<",\"source\":\"rtsl\",\"message\":\""<<escape(x.Message)<<"\"}";
+ }
  return out.str();
+}
+std::string formatting(const std::string& name, const std::string& text) {
+ const std::string formatted = formatSource(name, text);
+ if (formatted.empty() || formatted == text) return "[]";
+ return "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":" +
+  std::to_string(lineOf(text, static_cast<unsigned>(text.size()))) + ",\"character\":" +
+  std::to_string(columnOf(text, static_cast<unsigned>(text.size()))) + "}},\"newText\":\"" + escape(formatted) + "\"}]";
+}
+std::string onTypeFormatting(const std::string& name, const std::string& text, unsigned line, unsigned column) {
+ const unsigned offset = offsetAt(text, line, column);
+ constexpr std::string_view probe = "__rtsl_indentation_probe;";
+ std::string probeSource = text;
+ probeSource.insert(offset, probe);
+ const std::string formatted = formatSource(name, probeSource);
+ const auto probeOffset = formatted.find(probe);
+ if (probeOffset == std::string::npos) return "[]";
+ const auto lineStart = formatted.rfind('\n', probeOffset);
+ const std::string indentation = formatted.substr(lineStart == std::string::npos ? 0 : lineStart + 1,
+  probeOffset - (lineStart == std::string::npos ? 0 : lineStart + 1));
+ if (indentation.empty()) return "[]";
+ return "[{\"range\":{\"start\":{\"line\":" + std::to_string(line) + ",\"character\":0},\"end\":{\"line\":" +
+  std::to_string(line) + ",\"character\":" + std::to_string(column) + "}},\"newText\":\"" + escape(indentation) + "\"}]";
+}
+struct CompletionCandidate { std::string label; std::string detail; unsigned kind; };
+
+unsigned completionMatchScore(std::string_view label, std::string_view prefix) {
+ if (prefix.empty()) return 0;
+ const auto lower = [](char character) { return static_cast<char>(std::tolower(static_cast<unsigned char>(character))); };
+ const auto beginsWith = std::equal(prefix.begin(), prefix.end(), label.begin(), label.begin() + (std::min)(prefix.size(), label.size()),
+  [lower](char left, char right) { return lower(left) == lower(right); });
+ if (beginsWith && prefix.size() <= label.size()) return 0;
+ for (size_t start = 0; start + prefix.size() <= label.size(); ++start) {
+  if (std::equal(prefix.begin(), prefix.end(), label.begin() + start, [lower](char left, char right) { return lower(left) == lower(right); })) return 1;
+ }
+ size_t cursor = 0;
+ for (const char character : label) {
+  if (cursor == prefix.size()) return 2;
+  if (lower(character) == lower(prefix[cursor])) ++cursor;
+ }
+ return cursor == prefix.size() ? 2 : 3;
+}
+
+void addCompletionCandidate(std::vector<CompletionCandidate>& candidates, std::string_view label, std::string_view detail, unsigned kind) {
+ if (label.empty() || std::any_of(candidates.begin(), candidates.end(), [label](const auto& candidate) { return candidate.label == label; })) return;
+ candidates.push_back({std::string(label), std::string(detail), kind});
+}
+
+std::string completions(const std::string& name, const std::string& text, unsigned line, unsigned column) {
+ const unsigned offset = offsetAt(text, line, column);
+ unsigned prefixStart = offset;
+ while (prefixStart != 0 && (std::isalnum(static_cast<unsigned char>(text[prefixStart - 1])) || text[prefixStart - 1] == '_')) --prefixStart;
+ const std::string_view prefix = std::string_view(text).substr(prefixStart, offset - prefixStart);
+ std::vector<CompletionCandidate> candidates;
+ for (const auto keywordName : languageKeywords) addCompletionCandidate(candidates, keywordName, "keyword", 14);
+ for (const auto& token : lexSource(name, text)) if (token.kind == rtsl::tok::identifier)
+  addCompletionCandidate(candidates, token.spelling, "identifier in this document", 6);
+
+ // Completion is requested while the user is in the middle of a token or a
+ // declaration. Keep this request lexer-only; diagnostics and semantic tokens
+ // run the compiler once the document change has reached a stable snapshot.
+ std::sort(candidates.begin(), candidates.end(), [&prefix](const auto& left, const auto& right) {
+  const auto leftScore = completionMatchScore(left.label, prefix), rightScore = completionMatchScore(right.label, prefix);
+  return leftScore != rightScore ? leftScore < rightScore : left.label < right.label;
+ });
+ std::ostringstream result; bool first = true;
+ for (const auto& candidate : candidates) {
+  if (completionMatchScore(candidate.label, prefix) == 3) continue;
+  if (!first) result << ','; first = false;
+  result << "{\"label\":\"" << escape(candidate.label) << "\",\"kind\":" << candidate.kind << ",\"detail\":\"" << escape(candidate.detail)
+   << "\",\"filterText\":\"" << escape(candidate.label) << "\",\"textEdit\":{\"range\":{\"start\":{\"line\":" << line
+   << ",\"character\":" << columnOf(text, prefixStart) << "},\"end\":{\"line\":" << line << ",\"character\":" << column
+   << "}},\"newText\":\"" << escape(candidate.label) << "\"}}";
+ }
+ return "{\"isIncomplete\":false,\"items\":[" + result.str() + "]}";
 }
 void send(const std::string& body){ std::cout<<"Content-Length: "<<body.size()<<"\n\n"<<body<<std::flush; }
 std::string stringField(const std::string& json, const std::string& key) {
@@ -251,9 +416,20 @@ int main(int argc,char** argv) {
  if(argc==3 && std::string(argv[1])=="--check"){ auto s=readFile(argv[2]); std::cout<<diagnostics(argv[2],s)<<'\n'; return 0; }
  std::string openUri, openText, header, body;
  while(std::getline(std::cin,header)) { if(header.rfind("Content-Length:",0)!=0) continue; auto n=std::stoul(header.substr(15)); std::getline(std::cin,header); body.assign(n,'\0'); std::cin.read(body.data(),n); auto method=stringField(body,"method"), id=rawField(body,"id");
-  if(method=="initialize") send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"keyword\",\"variable\",\"type\",\"cppFunction\",\"number\",\"string\",\"operator\",\"comment\",\"cppMacro\",\"namespace\",\"rtsl.punctuation\",\"cppEnumerator\"],\"tokenModifiers\":[]},\"full\":true},\"completionProvider\":{\"triggerCharacters\":[\".\",\"<\",\":\"]},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]}}}}" );
+  if(method=="initialize") send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"keyword\",\"variable\",\"type\",\"cppFunction\",\"number\",\"string\",\"operator\",\"comment\",\"cppMacro\",\"namespace\",\"rtsl.punctuation\",\"cppEnumerator\"],\"tokenModifiers\":[]},\"full\":true},\"documentFormattingProvider\":true,\"documentOnTypeFormattingProvider\":{\"firstTriggerCharacter\":\"\\n\"},\"completionProvider\":{\"triggerCharacters\":[\".\",\"<\",\":\",\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\",\"j\",\"k\",\"l\",\"m\",\"n\",\"o\",\"p\",\"q\",\"r\",\"s\",\"t\",\"u\",\"v\",\"w\",\"x\",\"y\",\"z\",\"A\",\"B\",\"C\",\"D\",\"E\",\"F\",\"G\",\"H\",\"I\",\"J\",\"K\",\"L\",\"M\",\"N\",\"O\",\"P\",\"Q\",\"R\",\"S\",\"T\",\"U\",\"V\",\"W\",\"X\",\"Y\",\"Z\",\"_\"]},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]}}}}" );
   else if(method=="textDocument/didOpen" || method=="textDocument/didChange") { openUri=stringField(body,"uri"); openText=stringField(body,"text"); auto path=uriToPath(openUri); send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\""+escape(openUri)+"\",\"diagnostics\":["+diagnostics(path,openText)+"]}}"); }
   else if(method=="textDocument/semanticTokens/full") send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":{\"data\":["+lexTokens(uriToPath(openUri),openText)+"]}}");
+  else if(method=="textDocument/formatting") send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":"+formatting(uriToPath(openUri),openText)+"}");
+  else if(method=="textDocument/onTypeFormatting") {
+   const auto line = rawField(body, "line"), character = rawField(body, "character");
+   const auto result = line.empty() || character.empty() ? "[]" : onTypeFormatting(uriToPath(openUri), openText, std::stoul(line), std::stoul(character));
+   send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":"+result+"}");
+  }
+  else if(method=="textDocument/completion") {
+   const auto line = rawField(body, "line"), character = rawField(body, "character");
+   const auto result = line.empty() || character.empty() ? "{\"isIncomplete\":false,\"items\":[]}" : completions(uriToPath(openUri), openText, std::stoul(line), std::stoul(character));
+   send("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":"+result+"}");
+  }
   else if(method=="textDocument/hover") {
    const auto line = rawField(body, "line"), character = rawField(body, "character");
    const auto result = line.empty() || character.empty() ? "null" : hover(uriToPath(openUri), openText, std::stoul(line), std::stoul(character));

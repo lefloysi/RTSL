@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(RTSL VERSION 0.1.0 LANGUAGES CXX)
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/Frontend/Core.rtsl")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/Frontend/Core.rtsl" RTSL_CORE_SOURCE)
+configure_file(src/Frontend/CoreSource.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/rtsl/Frontend/CoreSource.hpp" @ONLY)
+
 add_library(rtsl STATIC
 	src/AST/ASTContext.cpp
 	src/Basic/Diagnostic.cpp
@@ -30,7 +34,7 @@ target_include_directories(rtsl PUBLIC
 	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 	$<INSTALL_INTERFACE:include>
 )
-target_include_directories(rtsl PRIVATE src)
+target_include_directories(rtsl PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 option(RTSL_BUILD_CLI "Build the rtslc command-line driver" ${PROJECT_IS_TOP_LEVEL})
 if(RTSL_BUILD_CLI)

@@ -124,6 +124,20 @@ void Parser::parseExternalDeclaration(ParsedAttributes& Attributes) {
 		return;
 	default: {
 		parseDeclSpec(DS);
+		if (DS.HasVar && Tok.is(tok::kw_struct)) {
+			const SourceLocation Location = Tok.getLocation();
+			consumeToken();
+			if (Tok.isNot(tok::identifier)) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected structure name");
+				synchronizeDeclaration(); return;
+			}
+			auto* Name = Tok.getIdentifierInfo();
+			consumeToken();
+			Actions.actOnStartRecord(Context, Name, Location, false, DS.Internal, DS.Exported, Attributes);
+			DS.Type = {.Name = Name, .Location = Location};
+			parseVariable(Context, DS, Attributes);
+			return;
+		}
 		if (!DS.Type.Name) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected declaration");
 			synchronizeDeclaration();
@@ -134,41 +148,63 @@ void Parser::parseExternalDeclaration(ParsedAttributes& Attributes) {
 	}
 }
 
-bool Parser::parseTemplateParameterList(std::vector<IdentifierInfo*>& Parameters) {
+bool Parser::parseTemplateParameterList(std::vector<ParsedTemplateParameter>& Parameters) {
 	consumeToken();
 	if (!expectAndConsume(tok::less, "expected '<' after 'template'")) return false;
 	while (Tok.isNot(tok::greater) && Tok.isNot(tok::eof)) {
-		if (!consumeIf(tok::kw_typename)) {
-			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
-				"expected 'typename' in template parameter list");
-			return false;
+		ParsedTemplateParameter Parameter;
+		Parameter.IsType = consumeIf(tok::kw_typename);
+		if (!Parameter.IsType) {
+			Parameter.ValueType = parseType();
+			if (!Parameter.ValueType.Name) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
+					"expected 'typename' or value type in template parameter list");
+				return false;
+			}
 		}
 		if (Tok.isNot(tok::identifier)) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
 				"expected template parameter name");
 			return false;
 		}
-		Parameters.push_back(Tok.getIdentifierInfo());
+		Parameter.Name = Tok.getIdentifierInfo();
 		consumeToken();
+		if (consumeIf(tok::colon)) {
+			if (Tok.is(tok::identifier) && (Tok.getIdentifierInfo()->getName() == "true" || Tok.getIdentifierInfo()->getName() == "false")) {
+				Parameter.Constraint = Tok.getIdentifierInfo()->getName() == "true";
+				consumeToken();
+			} else {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
+					"template constraints currently require true or false");
+				return false;
+			}
+		}
+		Parameters.push_back(std::move(Parameter));
 		if (!consumeIf(tok::comma)) break;
 	}
 	return expectAndConsume(tok::greater, "expected '>' after template parameter list");
 }
 
 void Parser::parseFunctionTemplate(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes) {
-	std::vector<IdentifierInfo*> Parameters;
+	std::vector<ParsedTemplateParameter> Parameters;
 	if (!parseTemplateParameterList(Parameters)) {
 		synchronizeDeclaration();
 		return;
 	}
-	if (Tok.isNot(tok::kw_fn)) {
+	while (Tok.is(tok::kw_export) || Tok.is(tok::kw_static)) {
+		if (Tok.is(tok::kw_export)) DS.Exported = true;
+		else DS.Internal = true;
+		consumeToken();
+	}
+	if (Tok.isNot(tok::kw_fn) && Tok.isNot(tok::kw_struct)) {
 		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()},
-			"a template declaration must declare a function");
+			"a template declaration must declare a function or structure");
 		synchronizeDeclaration();
 		return;
 	}
 	Actions.pushTemplateParameters(Parameters);
-	parseFunction(Context, DS, Attributes, Parameters);
+	if (Tok.is(tok::kw_fn)) parseFunction(Context, DS, Attributes, Parameters);
+	else parseRecord(Context, DS, Attributes);
 	Actions.popTemplateParameters(Parameters);
 }
 
@@ -312,22 +348,42 @@ void Parser::parseVariable(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 }
 
 void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes,
-	const std::vector<IdentifierInfo*>& TemplateParameters) {
+	const std::vector<ParsedTemplateParameter>& TemplateParameters) {
 	SourceLocation Location = Tok.getLocation();
 	consumeToken();
 	Declarator D;
 	D.Location = Location;
-	if (Tok.is(tok::identifier)) {
+	if (Tok.is(tok::identifier) || Tok.is(tok::kw_operator)) {
 		auto* FirstName = Tok.getIdentifierInfo();
 		D.EnclosingLocation = Tok.getLocation();
 		consumeToken();
-		if (consumeIf(tok::coloncolon)) {
+		if (FirstName->getName() == "operator") {
+			if (Tok.is(tok::lessminus)) {
+				D.Name = &PP.getIdentifierTable().get("operator<-");
+				consumeToken();
+			} else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected operator token after 'operator'");
+		}
+		else if (consumeIf(tok::coloncolon)) {
 			D.EnclosingName = FirstName;
 			if (Tok.is(tok::identifier)) { D.Name = Tok.getIdentifierInfo(); consumeToken(); }
 			else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected function name after '::'");
 		} else D.Name = FirstName;
 	}
 	else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected function name");
+	if (consumeIf(tok::less)) {
+		while (Tok.isNot(tok::greater) && Tok.isNot(tok::eof)) {
+			if (Tok.is(tok::numeric_literal)) {
+				ParsedType Value{.Name = &PP.getIdentifierTable().get("usize"), .Location = Tok.getLocation()};
+				std::uint32_t Number{};
+				auto [Position, Error] = std::from_chars(Tok.getLiteralData(), Tok.getLiteralData() + Tok.getLength(), Number);
+				if (Error == std::errc{} && Position == Tok.getLiteralData() + Tok.getLength()) Value.IntegerValue = Number;
+				else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected an unsigned integer template argument");
+				D.TemplateArguments.push_back(Value); consumeToken();
+			} else D.TemplateArguments.push_back(parseType());
+			if (!consumeIf(tok::comma)) break;
+		}
+		expectAndConsume(tok::greater, "expected '>' after function template arguments");
+	}
 	expectAndConsume(tok::l_paren, "expected '(' after function name");
 	std::vector<ParmVarDecl*> Parameters;
 	std::vector<ParsedType> TypeOnlyParameters;
@@ -536,8 +592,31 @@ Expr* Parser::parsePrimaryExpression() {
 	auto& Context = Actions.getASTContext();
 	Expr* Result{};
 	if (Tok.is(tok::identifier)) {
-		Result = Actions.actOnIdentifierExpr(Tok.getIdentifierInfo(), Tok.getLocation());
-		consumeToken();
+		if (Actions.isTypeName(Tok.getIdentifierInfo()) && peekToken().is(tok::less)) {
+			auto Type = parseType();
+			Result = Context.create<TypeExpr>(Actions.actOnType(Type));
+		} else if (Actions.isFunctionName(Tok.getIdentifierInfo()) && peekToken().is(tok::less)) {
+			auto* Name = Tok.getIdentifierInfo();
+			auto Location = Tok.getLocation();
+			consumeToken(); consumeIf(tok::less);
+			std::vector<ParsedType> Arguments;
+			while (Tok.isNot(tok::greater) && Tok.isNot(tok::eof)) {
+				if (Tok.is(tok::numeric_literal)) {
+					ParsedType Value{.Name = &PP.getIdentifierTable().get("usize"), .Location = Tok.getLocation()};
+					std::uint32_t Number{};
+					auto [Position, Error] = std::from_chars(Tok.getLiteralData(), Tok.getLiteralData() + Tok.getLength(), Number);
+					if (Error == std::errc{} && Position == Tok.getLiteralData() + Tok.getLength()) Value.IntegerValue = Number;
+					else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected an unsigned integer template argument");
+					Arguments.push_back(Value); consumeToken();
+				} else Arguments.push_back(parseType());
+				if (!consumeIf(tok::comma)) break;
+			}
+			expectAndConsume(tok::greater, "expected '>' after function template arguments");
+			Result = Actions.actOnTemplateIdentifierExpr(Name, Arguments, Location);
+		} else {
+			Result = Actions.actOnIdentifierExpr(Tok.getIdentifierInfo(), Tok.getLocation());
+			consumeToken();
+		}
 	} else if (Tok.is(tok::numeric_literal)) {
 		const SourceLocation Location = Tok.getLocation();
 		auto Data = Tok.getLiteralData();

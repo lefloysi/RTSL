@@ -6,7 +6,20 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet></PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet></PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ItemDefinitionGroup><ClCompile><LanguageStandard>stdcpp20</LanguageStandard><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions></ClCompile><Link><SubSystem>Console</SubSystem></Link></ItemDefinitionGroup>
+  <ItemDefinitionGroup><ClCompile><LanguageStandard>stdcpp20</LanguageStandard><AdditionalIncludeDirectories>$(IntDir)generated;$(MSBuildThisFileDirectory)..\..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><ExceptionHandling>Sync</ExceptionHandling><AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions></ClCompile><Link><SubSystem>Console</SubSystem></Link></ItemDefinitionGroup>
   <ItemGroup><ClCompile Include="main.cpp" /><ClCompile Include="..\..\src\AST\ASTContext.cpp" /><ClCompile Include="..\..\src\Basic\*.cpp" /><ClCompile Include="..\..\src\CodeGen\CodeGenerator.cpp" /><ClCompile Include="..\..\src\Frontend\*.cpp" /><ClCompile Include="..\..\src\IR\*.cpp" /><ClCompile Include="..\..\src\Lex\*.cpp" /><ClCompile Include="..\..\src\Linker\*.cpp" /><ClCompile Include="..\..\src\Parse\Parser.cpp" /><ClCompile Include="..\..\src\Serialization\Artifact.cpp" /><ClCompile Include="..\..\src\Sema\Sema.cpp" /></ItemGroup>
+  <Target Name="GenerateCoreSourceHeader" BeforeTargets="ClCompile">
+    <PropertyGroup><CoreSourceHeader>$(IntDir)generated\rtsl\Frontend\CoreSource.hpp</CoreSourceHeader></PropertyGroup>
+    <MakeDir Directories="$(IntDir)generated\rtsl\Frontend" />
+    <ReadLinesFromFile File="$(MSBuildThisFileDirectory)..\..\src\Frontend\Core.rtsl"><Output TaskParameter="Lines" ItemName="CoreSourceLine" /></ReadLinesFromFile>
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="#ifndef RTSL_FRONTEND_CORE_SOURCE_HPP" Overwrite="true" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="#define RTSL_FRONTEND_CORE_SOURCE_HPP" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="namespace rtsl::core {" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="inline constexpr char source[] = R&quot;rtsl(" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="@(CoreSourceLine)" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines=")rtsl&quot;%3B" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="}" Overwrite="false" />
+    <WriteLinesToFile File="$(CoreSourceHeader)" Lines="#endif" Overwrite="false" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -77,16 +77,19 @@ private:
 
 class TemplateSpecializationType final : public Type {
 public:
-	TemplateSpecializationType(IdentifierInfo* Name, const QualType* Arguments, const std::optional<std::uint32_t>* IntegerArguments, unsigned ArgumentCount)
-		: Type(TypeClass::type_template_specialization), Name(Name), Arguments(Arguments), IntegerArguments(IntegerArguments), ArgumentCount(ArgumentCount) {}
+	TemplateSpecializationType(IdentifierInfo* Name, const QualType* Arguments, const std::optional<std::uint32_t>* IntegerArguments,
+		IdentifierInfo* const* IntegerParameters, unsigned ArgumentCount)
+		: Type(TypeClass::type_template_specialization), Name(Name), Arguments(Arguments), IntegerArguments(IntegerArguments), IntegerParameters(IntegerParameters), ArgumentCount(ArgumentCount) {}
 	[[nodiscard]] IdentifierInfo* getName() const { return Name; }
 	[[nodiscard]] const QualType* arguments() const { return Arguments; }
 	[[nodiscard]] unsigned getArgumentCount() const { return ArgumentCount; }
 	[[nodiscard]] std::optional<std::uint32_t> getIntegerArgument(unsigned Index) const { return Index < ArgumentCount ? IntegerArguments[Index] : std::nullopt; }
+	[[nodiscard]] IdentifierInfo* getIntegerParameter(unsigned Index) const { return Index < ArgumentCount ? IntegerParameters[Index] : nullptr; }
 private:
 	IdentifierInfo* Name;
 	const QualType* Arguments;
 	const std::optional<std::uint32_t>* IntegerArguments;
+	IdentifierInfo* const* IntegerParameters;
 	unsigned ArgumentCount;
 };
 

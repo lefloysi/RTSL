@@ -25,6 +25,13 @@ struct ParsedParameterContract {
 	IdentifierInfo* Contract{};
 };
 
+struct ParsedTemplateParameter {
+	IdentifierInfo* Name{};
+	ParsedType ValueType;
+	bool IsType{};
+	std::optional<bool> Constraint;
+};
+
 class DeclSpec {
 public:
 	StorageClass Storage{StorageClass::storage_ordinary};
@@ -43,6 +50,7 @@ public:
 	SourceLocation Location;
 	ParsedType Type;
 	bool Emits{};
+	std::vector<ParsedType> TemplateArguments;
 };
 
 }

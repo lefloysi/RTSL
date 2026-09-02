@@ -2,6 +2,7 @@
 
 #include <rtsl/Frontend/ModuleInterface.hpp>
 #include <rtsl/Frontend/ModuleInterfaceImporter.hpp>
+#include <rtsl/Frontend/CoreSource.hpp>
 #include <rtsl/Lex/Lexer.hpp>
 
 #include <rtsl/Lex/Preprocessor.hpp>
@@ -119,6 +120,11 @@ bool CompilerInstance::execute() {
 		if (key != "<main>") ordered_sources.push_back(sources.find(key)->second);
 	};
 	visitSource("<main>", Invocation.getInputName(), Invocation.getInputBuffer());
+	Actions->setParsingCore(true);
+	PP->enterSourceFile(Sources.createFileID("<rtsl-core>", core::source));
+	SyntaxParser = std::make_unique<Parser>(*PP, *Actions, Diagnostics);
+	SyntaxParser->parseTranslationUnit();
+	Actions->setParsingCore(false);
 	std::vector<FileID> files;
 	files.push_back(Sources.createFileID(Invocation.getInputName(), Invocation.getInputBuffer()));
 	for (const TranslationUnitInput* unit : ordered_sources) files.push_back(Sources.createFileID(unit->InputName, unit->InputBuffer));

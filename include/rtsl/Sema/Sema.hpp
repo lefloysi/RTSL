@@ -16,6 +16,7 @@ public:
 	Sema(ASTContext& Context, DiagnosticsEngine& Diagnostics, IdentifierTable& Identifiers);
 	[[nodiscard]] QualType actOnType(const ParsedType& Type);
 	bool isTypeName(const IdentifierInfo* name) const;
+	void setParsingCore(bool value) { ParsingCore = value; }
 	RecordDecl* actOnStartRecord(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location, bool Complete,
 		bool Internal, bool Exported, const ParsedAttributes& Attributes);
 	FieldDecl* actOnField(RecordDecl* Record, const Declarator& D, const ParsedAttributes& Attributes);
@@ -23,13 +24,15 @@ public:
 		const ParsedAttributes& Attributes);
 	VarDecl* actOnLocalVariable(const DeclSpec& DS, const Declarator& D, Expr* Init);
 	ParmVarDecl* actOnParameter(DeclContext* Context, const Declarator& D, const ParsedAttributes& Attributes);
-	void pushTemplateParameters(const std::vector<IdentifierInfo*>& Parameters);
-	void popTemplateParameters(const std::vector<IdentifierInfo*>& Parameters);
+	void pushTemplateParameters(const std::vector<ParsedTemplateParameter>& Parameters);
+	void popTemplateParameters(const std::vector<ParsedTemplateParameter>& Parameters);
 	FunctionDecl* actOnFunction(DeclContext* Context, const DeclSpec& DS, const Declarator& D,
 		const std::vector<ParmVarDecl*>& Parameters,
 		const std::vector<ParsedParameterContract>& ParameterContracts, Expr* BaseInitializer,
-		const ParsedAttributes& Attributes, const std::vector<IdentifierInfo*>& TemplateParameters,
+		const ParsedAttributes& Attributes, const std::vector<ParsedTemplateParameter>& TemplateParameters,
 		const std::vector<ParsedType>& TypeOnlyParameters);
+	[[nodiscard]] bool isFunctionName(IdentifierInfo* Name) const;
+	Expr* actOnTemplateIdentifierExpr(IdentifierInfo* Name, const std::vector<ParsedType>& Arguments, SourceLocation Location);
 	TypeAliasDecl* actOnTypeAlias(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location,
 		const DeclSpec& DS, const ParsedType& Type, const ParsedAttributes& Attributes);
 	ImportDecl* actOnImport(DeclContext* Context, const Token& ModuleToken);
@@ -62,19 +65,23 @@ private:
 	void addRecordFieldsToFunctionScope(RecordDecl* Record);
 	[[nodiscard]] RecordDecl* recordForType(QualType ValueType) const;
 	[[nodiscard]] FieldDecl* lookupField(RecordDecl* Record, IdentifierInfo* Name) const;
+	[[nodiscard]] FunctionDecl* lookupMemberFunction(RecordDecl* Record, IdentifierInfo* Name) const;
+	[[nodiscard]] QualType substituteType(QualType Type, const FunctionDecl* Pattern, const std::vector<TemplateArgument>& Arguments) const;
+	FunctionDecl* instantiateFunction(FunctionDecl* Pattern, const std::vector<TemplateArgument>& Arguments);
 	ASTContext& Context;
 	DiagnosticsEngine& Diagnostics;
 	IdentifierTable& Identifiers;
 	std::unordered_map<IdentifierInfo*, QualType> Types;
 	std::unordered_map<IdentifierInfo*, ValueDecl*> Values;
+	std::unordered_map<IdentifierInfo*, std::vector<FunctionDecl*>> Functions;
 	std::unordered_map<IdentifierInfo*, RecordDecl*> Records;
+	std::unordered_map<IdentifierInfo*, QualType> TemplateValueParameters;
 	std::unordered_map<IdentifierInfo*, FunctionDecl*> Constructors;
 	std::vector<std::unordered_map<IdentifierInfo*, ValueDecl*>> LocalScopes;
 	IdentifierInfo* BufferTemplate{};
-	IdentifierInfo* PositionType{};
 	IdentifierInfo* ReturnEmitter{};
-	FunctionDecl* SampleIntrinsic{};
 	FunctionDecl* CurrentFunction{};
+	bool ParsingCore{};
 };
 
 }

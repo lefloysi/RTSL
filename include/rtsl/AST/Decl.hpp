@@ -38,6 +38,8 @@ public:
 	[[nodiscard]] DeclContext* getDeclContext() const { return Context; }
 	[[nodiscard]] Attr* getAttrs() const { return Attributes; }
 	void setAttrs(Attr* Value) { Attributes = Value; }
+	[[nodiscard]] bool isImplicit() const { return Implicit; }
+	void setImplicit(bool Value = true) { Implicit = Value; }
 protected:
 	Decl(DeclKind Kind, DeclContext* Context, SourceLocation Location) : Kind(Kind), Context(Context), Location(Location) {}
 private:
@@ -46,6 +48,7 @@ private:
 	SourceLocation Location;
 	Decl* NextDecl{};
 	Attr* Attributes{};
+	bool Implicit{};
 	friend class DeclContext;
 };
 
@@ -112,6 +115,7 @@ public:
 	[[nodiscard]] QualType getBaseType() const { return BaseType; }
 	[[nodiscard]] bool isBuiltinPosition() const { return BuiltinPosition; }
 	void setBaseType(QualType Value) { BaseType = Value; }
+	void setBuiltinPosition(bool Value = true) { BuiltinPosition = Value; }
 private:
 	QualType BaseType;
 	bool Complete;
@@ -154,17 +158,32 @@ struct ParameterContract {
 	IdentifierInfo* Contract{};
 };
 
+struct TemplateArgument {
+	QualType Type;
+	std::optional<std::uint32_t> IntegerValue;
+};
+
+struct TemplateParameter {
+	IdentifierInfo* Name{};
+	QualType ValueType;
+	bool IsType{};
+	std::optional<bool> Constraint;
+};
+
 class FunctionDecl final : public ValueDecl, public DeclContext {
 public:
 	FunctionDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, QualType ReturnType,
 		ParmVarDecl** Parameters, unsigned ParameterCount, const ParameterContract* ParameterContracts,
-		unsigned ParameterContractCount, IdentifierInfo* const* TemplateParameters, unsigned TemplateParameterCount,
+		unsigned ParameterContractCount, const TemplateParameter* TemplateParameters, unsigned TemplateParameterCount,
+		const TemplateArgument* TemplateArguments, unsigned TemplateArgumentCount,
 		const QualType* TypeOnlyParameters, unsigned TypeOnlyParameterCount, Expr* BaseInitializer, bool ImplicitEmitter, bool Internal, bool Exported)
 		: ValueDecl(DeclKind::decl_function, Context, Location, Name, ReturnType), Parameters(Parameters),
 		  ParameterCount(ParameterCount), ParameterContracts(ParameterContracts), ParameterContractCount(ParameterContractCount),
-		  TemplateParameters(TemplateParameters), TemplateParameterCount(TemplateParameterCount), TypeOnlyParameters(TypeOnlyParameters), TypeOnlyParameterCount(TypeOnlyParameterCount), BaseInitializer(BaseInitializer),
+		  TemplateParameters(TemplateParameters), TemplateParameterCount(TemplateParameterCount), TemplateArguments(TemplateArguments), TemplateArgumentCount(TemplateArgumentCount), TypeOnlyParameters(TypeOnlyParameters), TypeOnlyParameterCount(TypeOnlyParameterCount), BaseInitializer(BaseInitializer),
 		  ImplicitEmitter(ImplicitEmitter), Internal(Internal), Exported(Exported) {}
 	void setBody(CompoundStmt* Value) { Body = Value; }
+	void setTemplatePattern(FunctionDecl* Value) { TemplatePattern = Value; }
+	[[nodiscard]] FunctionDecl* getTemplatePattern() const { return TemplatePattern; }
 	void setBaseInitializer(Expr* Value) { BaseInitializer = Value; }
 	[[nodiscard]] CompoundStmt* getBody() const { return Body; }
 	[[nodiscard]] Expr* getBaseInitializer() const { return BaseInitializer; }
@@ -172,12 +191,16 @@ public:
 	[[nodiscard]] unsigned getNumParams() const { return ParameterCount; }
 	[[nodiscard]] const ParameterContract* parameterContracts() const { return ParameterContracts; }
 	[[nodiscard]] unsigned getNumParameterContracts() const { return ParameterContractCount; }
-	[[nodiscard]] IdentifierInfo* const* templateParameters() const { return TemplateParameters; }
+	[[nodiscard]] const TemplateParameter* templateParameters() const { return TemplateParameters; }
 	[[nodiscard]] unsigned getNumTemplateParameters() const { return TemplateParameterCount; }
 	[[nodiscard]] bool isFunctionTemplate() const { return TemplateParameterCount != 0; }
+	[[nodiscard]] const TemplateArgument* templateArguments() const { return TemplateArguments; }
+	[[nodiscard]] unsigned getNumTemplateArguments() const { return TemplateArgumentCount; }
 	[[nodiscard]] const QualType* typeOnlyParameters() const { return TypeOnlyParameters; }
 	[[nodiscard]] unsigned getNumTypeOnlyParameters() const { return TypeOnlyParameterCount; }
 	[[nodiscard]] bool hasImplicitEmitter() const { return ImplicitEmitter; }
+	[[nodiscard]] bool hasImplicitObject() const { return ImplicitObject; }
+	void setImplicitObject(bool Value = true) { ImplicitObject = Value; }
 	[[nodiscard]] bool hasInternalLinkage() const { return Internal; }
 	[[nodiscard]] bool isExported() const { return Exported; }
 private:
@@ -185,13 +208,17 @@ private:
 	unsigned ParameterCount;
 	const ParameterContract* ParameterContracts;
 	unsigned ParameterContractCount;
-	IdentifierInfo* const* TemplateParameters;
+	const TemplateParameter* TemplateParameters;
 	unsigned TemplateParameterCount;
+	const TemplateArgument* TemplateArguments;
+	unsigned TemplateArgumentCount;
 	const QualType* TypeOnlyParameters;
 	unsigned TypeOnlyParameterCount;
 	CompoundStmt* Body{};
 	Expr* BaseInitializer{};
+	FunctionDecl* TemplatePattern{};
 	bool ImplicitEmitter;
+	bool ImplicitObject{};
 	bool Internal;
 	bool Exported;
 };

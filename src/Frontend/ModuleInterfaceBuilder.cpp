@@ -76,6 +76,7 @@ ModuleInterfaceBuildResult ModuleInterfaceBuilder::buildUnit(std::string_view im
 	result.unit.import_path = import_path;
 	for (const Decl* declaration = translation_unit.declsBegin(); declaration;
 		declaration = declaration->getNextDeclInContext()) {
+		if (declaration->isImplicit()) continue;
 		if (declaration->getKind() == DeclKind::decl_import) {
 			const auto* import = static_cast<const ImportDecl*>(declaration);
 			result.unit.imports.push_back({
@@ -115,10 +116,6 @@ ModuleInterfaceBuildResult ModuleInterfaceBuilder::buildUnit(std::string_view im
 		case DeclKind::decl_function: {
 			const auto* function = static_cast<const FunctionDecl*>(declaration);
 			if (!function->isExported()) break;
-			if (function->isFunctionTemplate() && function->getBody()) {
-				result.diagnostics.push_back("module interface serialization for exported generic definitions is not implemented");
-				break;
-			}
 			InterfaceFunction exported{.name = std::string(function->getIdentifier()->getName()), .attributes = buildAttributes(function->getAttrs()),
 				.return_type = buildType(function->getType()), .implicit_emitter = function->hasImplicitEmitter(),
 				.declaration = function->getBody() == nullptr};
@@ -129,7 +126,7 @@ ModuleInterfaceBuildResult ModuleInterfaceBuilder::buildUnit(std::string_view im
 			for (unsigned index = 0; index < function->getNumTypeOnlyParameters(); ++index)
 				exported.type_only_parameters.push_back(buildType(function->typeOnlyParameters()[index]));
 			for (unsigned index = 0; index < function->getNumTemplateParameters(); ++index)
-				exported.template_parameters.push_back(std::string(function->templateParameters()[index]->getName()));
+				exported.template_parameters.push_back(std::string(function->templateParameters()[index].Name->getName()));
 			result.unit.declarations.emplace_back(std::move(exported));
 			break;
 		}
