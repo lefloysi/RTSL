@@ -1,6 +1,7 @@
 #include <rtsl/Linker/Linker.hpp>
 
 #include <array>
+#include <algorithm>
 
 
 namespace rtsl {
@@ -91,14 +92,19 @@ void Linker::declareFunctions(const ir::Module& Module, ModuleMaps& Maps) {
 		if (Existing == FunctionsBySymbol.end()) {
 			auto Function = Builder.addFunction(Symbol, Maps.Types[Source.return_type.value()], ParameterTypes,
 				ParameterSymbols, Source.declaration, Source.implicit_emitter, Source.implicit);
+			auto* Target = Builder.module().findFunction(Function);
+			for (std::size_t Index = 0; Index < Source.parameters.size(); ++Index)
+				Target->parameters[Index].builtin = Source.parameters[Index].builtin;
 			FunctionsBySymbol.emplace(Symbol.value(), Function);
 			Maps.Functions[Source.id.value()] = Function;
 			if (!Source.declaration) SelectedDefinitions.insert(&Source);
 			continue;
 		}
 		auto Target = Builder.module().findFunction(Existing->second);
+		const bool SameBindings = Target->parameters.size() == Source.parameters.size() && std::ranges::equal(
+			Target->parameters, Source.parameters, {}, &ir::Parameter::builtin, &ir::Parameter::builtin);
 		if (!sameSignature(*Target, Maps.Types[Source.return_type.value()], ParameterTypes) ||
-			Target->implicit_emitter != Source.implicit_emitter)
+			Target->implicit_emitter != Source.implicit_emitter || !SameBindings)
 			diagnose(LinkDiagnosticCode::link_incompatible_declaration, Name, "function declarations have incompatible types");
 		Maps.Functions[Source.id.value()] = Existing->second;
 		if (!Source.declaration) {

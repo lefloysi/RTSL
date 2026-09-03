@@ -44,6 +44,33 @@ fn main(u32 value) -> u32 {
 	REQUIRE(Result.Module.entry_points[0].stage == rtsl::ir::Stage::stage_vertex);
 }
 
+TEST_CASE("matrix-vector multiplication retains the canonical Position vector type") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("matrix-vector");
+	Invocation.setInputName("matrix-vector.rtsl");
+	Invocation.setInputBuffer(R"(
+uniform mat4 mvp;
+struct Vertex : Position {
+	fn Vertex(vec3 value) {
+		position = vec4(value, 1.0);
+		position = mvp * position;
+	}
+}
+@stage : vertex
+fn main(vec3 value) -> Vertex {
+	return Vertex(value);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("matrix-vector");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	for (const auto& Diagnostic : Result.Diagnostics) INFO(Diagnostic.Message);
+	for (const auto& Issue : Result.Verification.issues()) INFO(Issue.context << ": " << Issue.message);
+	REQUIRE(Result.succeeded());
+}
+
 TEST_CASE("storage reads lower to a typed resource load") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setModuleName("storage_read");
@@ -70,7 +97,7 @@ TEST_CASE("compute workgroup size is preserved in backend-neutral metadata") {
 	Invocation.setInputName("compute.rtsl");
 	Invocation.setInputBuffer(R"(
 @stage : compute
-fn main<8, 4, 2>(u32 x, u32 y, u32 z) {
+fn main<8, 4, 2>(usize x, usize y, usize z) {
 }
 )");
 	rtsl::CompilerInstance Compiler;
@@ -78,9 +105,57 @@ fn main<8, 4, 2>(u32 x, u32 y, u32 z) {
 	REQUIRE(Compiler.execute());
 	rtsl::CodeGenerator Generator("compute");
 	auto Result = Generator.generate(*Compiler.getASTContext());
+	for (const auto& Diagnostic : Result.Diagnostics) INFO(Diagnostic.Message);
+	for (const auto& Issue : Result.Verification.issues()) INFO(Issue.context << ": " << Issue.message);
 	REQUIRE(Result.succeeded());
 	auto Configuration = std::get<rtsl::ir::ComputeConfiguration>(Result.Module.entry_points[0].configuration);
 	REQUIRE(Configuration.workgroup_size == std::array<std::uint32_t, 3>{8, 4, 2});
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_compute);
+	REQUIRE(Function.parameters.size() == 3);
+	REQUIRE(Function.parameters[0].builtin == rtsl::ir::Builtin::builtin_global_invocation_x);
+	REQUIRE(Function.parameters[1].builtin == rtsl::ir::Builtin::builtin_global_invocation_y);
+	REQUIRE(Function.parameters[2].builtin == rtsl::ir::Builtin::builtin_global_invocation_z);
+}
+
+TEST_CASE("compute resource indexing and image queries lower to resource operations") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("compute-resources");
+	Invocation.setInputName("compute-resources.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Header {
+	u32 count;
+}
+var buffer<Header, u32> values;
+var image_2d<vec4> output;
+@stage : compute
+fn main<8, 4, 1>(usize x, usize y, usize z) {
+	var u32 count = values.count;
+	var u32 value = values[x];
+	values[x] = value;
+	var vec2<usize> extent = output.size();
+	output[x, y] = vec4(0.0, 0.0, 0.0, 1.0);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	for (const auto& Diagnostic : Compiler.getDiagnostics().diagnostics()) INFO(Diagnostic.Message);
+	REQUIRE(Compiler.execute());
+	for (const auto& Diagnostic : Compiler.getDiagnostics().diagnostics()) INFO(Diagnostic.Message);
+	rtsl::CodeGenerator Generator("compute-resources");
+	auto Generated = Generator.generate(*Compiler.getASTContext());
+	for (const auto& Diagnostic : Generated.Diagnostics) INFO(Diagnostic.Message);
+	for (const auto& Issue : Generated.Verification.issues()) INFO(Issue.context << ": " << Issue.message);
+	REQUIRE(Generated.succeeded());
+	const auto& Function = stageFunction(Generated.Module, rtsl::ir::Stage::stage_compute);
+	REQUIRE(std::ranges::count_if(Function.blocks.front().instructions, [](const rtsl::ir::Instruction& Instruction) {
+		return Instruction.opcode == rtsl::ir::Opcode::opcode_resource_load;
+	}) >= 2);
+	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions, [](const rtsl::ir::Instruction& Instruction) {
+		return Instruction.opcode == rtsl::ir::Opcode::opcode_resource_store;
+	}));
+	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions, [](const rtsl::ir::Instruction& Instruction) {
+		return Instruction.opcode == rtsl::ir::Opcode::opcode_resource_query;
+	}));
 }
 
 TEST_CASE("deduced primary function templates lower as concrete specializations") {
@@ -219,7 +294,7 @@ TEST_CASE("a compute barrier lowers from a named statement label") {
 	Invocation.setInputName("barrier.rtsl");
 	Invocation.setInputBuffer(R"(
 @stage : compute
-fn main<1, 1, 1>() {
+fn main<1, 1, 1>(usize x, usize y, usize z) {
 	ready:
 	var u32 value = 0;
 }

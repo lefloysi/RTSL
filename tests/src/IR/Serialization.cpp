@@ -3,6 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
+
 namespace rtsl::test {
 
 Artifact makeArtifact() {
@@ -10,8 +12,23 @@ Artifact makeArtifact() {
 	rtsl::ir::Type void_type;
 	void_type.kind = rtsl::ir::TypeKind::type_void;
 	const rtsl::ir::TypeId void_id = builder.internType(void_type);
+	rtsl::ir::Type invocation_type;
+	invocation_type.kind = rtsl::ir::TypeKind::type_vector;
+	invocation_type.element_count = 3;
+	invocation_type.element_type = void_id;
+	const rtsl::ir::TypeId invocation_id = builder.internType(invocation_type);
 	const rtsl::ir::SymbolId symbol = builder.addSymbol("serialization-test::main", true);
-	const rtsl::ir::FunctionId function = builder.addFunction(symbol, void_id, {}, {}, false, true);
+	const std::array parameter_types{invocation_id, invocation_id, invocation_id};
+	const std::array parameter_symbols{
+		builder.addSymbol("serialization-test::main::x"),
+		builder.addSymbol("serialization-test::main::y"),
+		builder.addSymbol("serialization-test::main::z"),
+	};
+	const rtsl::ir::FunctionId function = builder.addFunction(symbol, void_id, parameter_types, parameter_symbols, false, true);
+	auto* Function = builder.module().findFunction(function);
+	Function->parameters[0].builtin = rtsl::ir::Builtin::builtin_global_invocation_x;
+	Function->parameters[1].builtin = rtsl::ir::Builtin::builtin_global_invocation_y;
+	Function->parameters[2].builtin = rtsl::ir::Builtin::builtin_global_invocation_z;
 	const rtsl::ir::BlockId block = builder.addBlock(function);
 	rtsl::ir::Terminator terminator;
 	terminator.kind = rtsl::ir::TerminatorKind::terminator_return;
@@ -47,6 +64,9 @@ TEST_CASE("RTIR artifacts round trip deterministically") {
 	REQUIRE(read.artifact->module.strings.get(read.artifact->module.name) == "serialization-test");
 	REQUIRE(read.artifact->module.functions[0].implicit_emitter);
 	REQUIRE(read.artifact->module.symbols[0].exported);
+	REQUIRE(read.artifact->module.functions[0].parameters[0].builtin == rtsl::ir::Builtin::builtin_global_invocation_x);
+	REQUIRE(read.artifact->module.functions[0].parameters[1].builtin == rtsl::ir::Builtin::builtin_global_invocation_y);
+	REQUIRE(read.artifact->module.functions[0].parameters[2].builtin == rtsl::ir::Builtin::builtin_global_invocation_z);
 	REQUIRE(read.artifact->module.strings.get(read.artifact->module.entry_points[0].attributes[0].name) == "invocations");
 	REQUIRE(read.artifact->module.strings.get(read.artifact->module.entry_points[0].attributes[0].tokens[0]) == "4");
 

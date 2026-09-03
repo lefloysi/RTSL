@@ -133,6 +133,58 @@ FieldDecl* Sema::lookupField(RecordDecl* Record, IdentifierInfo* Name) const {
 	return Base ? lookupField(Base, Name) : nullptr;
 }
 
+QualType Sema::substituteRecordType(QualType Type, const RecordDecl* Owner, QualType Receiver) const {
+	if (!Type || !Owner) return Type;
+	const rtsl::Type* Value = Type.getTypePtr();
+	if (Value->getTypeClass() == TypeClass::type_template_parameter) {
+		auto* Name = static_cast<const TemplateParameterType*>(Value)->getName();
+		const rtsl::Type* ReceiverType = Receiver.getTypePtr();
+		if (ReceiverType && ReceiverType->getTypeClass() == TypeClass::type_template_specialization) {
+			auto* Specialization = static_cast<const TemplateSpecializationType*>(ReceiverType);
+			for (unsigned Index = 0; Index < Owner->getNumTemplateParameters() && Index < Specialization->getArgumentCount(); ++Index)
+				if (Owner->templateParameters()[Index].IsType && Owner->templateParameters()[Index].Name == Name)
+					return Specialization->arguments()[Index];
+		}
+	}
+	if (Value->getTypeClass() == TypeClass::type_reference)
+		return Context.getReferenceType(substituteRecordType(static_cast<const ReferenceType*>(Value)->getPointeeType(), Owner, Receiver));
+	if (Value->getTypeClass() == TypeClass::type_pointer)
+		return Context.getPointerType(substituteRecordType(static_cast<const PointerType*>(Value)->getPointeeType(), Owner, Receiver));
+	if (Value->getTypeClass() == TypeClass::type_template_specialization) {
+		auto* Specialization = static_cast<const TemplateSpecializationType*>(Value);
+		std::vector<QualType> Arguments;
+		std::vector<std::optional<std::uint32_t>> IntegerArguments;
+		std::vector<IdentifierInfo*> IntegerParameters;
+		for (unsigned Index = 0; Index < Specialization->getArgumentCount(); ++Index) {
+			Arguments.push_back(substituteRecordType(Specialization->arguments()[Index], Owner, Receiver));
+			IntegerArguments.push_back(Specialization->getIntegerArgument(Index));
+			IntegerParameters.push_back(Specialization->getIntegerParameter(Index));
+		}
+		return Context.getTemplateSpecializationType(Specialization->getName(), Arguments, IntegerArguments, IntegerParameters);
+	}
+	return Type;
+}
+
+FieldDecl* Sema::lookupField(QualType ValueType, IdentifierInfo* Name) const {
+	auto* Record = recordForType(ValueType);
+	if (!Record) return nullptr;
+	for (Decl* Declaration = Record->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
+		if (Declaration->getKind() == DeclKind::decl_field && static_cast<FieldDecl*>(Declaration)->getIdentifier() == Name)
+			return static_cast<FieldDecl*>(Declaration);
+	QualType Base = substituteRecordType(Record->getBaseType(), Record, ValueType);
+	return Base ? lookupField(Base, Name) : nullptr;
+}
+
+QualType Sema::lookupFieldType(QualType ValueType, IdentifierInfo* Name) const {
+	auto* Record = recordForType(ValueType);
+	if (!Record) return {};
+	for (Decl* Declaration = Record->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
+		if (Declaration->getKind() == DeclKind::decl_field && static_cast<FieldDecl*>(Declaration)->getIdentifier() == Name)
+			return substituteRecordType(static_cast<FieldDecl*>(Declaration)->getType(), Record, ValueType);
+	QualType Base = substituteRecordType(Record->getBaseType(), Record, ValueType);
+	return Base ? lookupFieldType(Base, Name) : QualType{};
+}
+
 Attr* Sema::processAttributes(const ParsedAttributes& Parsed) {
 	Attr* First{};
 	Attr* Last{};
@@ -158,12 +210,18 @@ Attr* Sema::processAttributes(const ParsedAttributes& Parsed) {
 }
 
 RecordDecl* Sema::actOnStartRecord(DeclContext* DeclContext, IdentifierInfo* Name, SourceLocation Location,
-	bool Complete, bool Internal, bool Exported, const ParsedAttributes& Attributes) {
+	bool Complete, bool Internal, bool Exported, const ParsedAttributes& Attributes,
+	const std::vector<ParsedTemplateParameter>& ParsedTemplateParameters) {
 	if (auto Existing = Records.find(Name); Existing != Records.end()) {
 		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "redefinition of record type");
 		return Existing->second;
 	}
-	auto Result = Context.create<RecordDecl>(DeclContext, Location, Name, Complete, Internal, Exported);
+	std::vector<TemplateParameter> TemplateParameters;
+	for (const auto& Parameter : ParsedTemplateParameters) TemplateParameters.push_back({.Name = Parameter.Name,
+		.ValueType = Parameter.IsType ? QualType{} : actOnType(Parameter.ValueType), .IsType = Parameter.IsType,
+		.Constraint = Parameter.Constraint});
+	auto Result = Context.create<RecordDecl>(DeclContext, Location, Name, Complete, Internal, Exported, QualType{}, false,
+		Context.copyArray(TemplateParameters), static_cast<unsigned>(TemplateParameters.size()));
 	Result->setImplicit(ParsingCore);
 	if (ParsingCore && Name && Name->getName() == "Position") Result->setBuiltinPosition();
 	Result->setAttrs(processAttributes(Attributes));
@@ -417,7 +475,7 @@ FunctionDecl* Sema::actOnFunction(DeclContext* LocalContext, const DeclSpec& DS,
 	Result->setAttrs(processAttributes(Attributes));
 	FunctionContext->addDecl(Result);
 	Functions[D.Name].push_back(Result);
-	if (!Values.contains(D.Name)) Values[D.Name] = Result;
+	if (!HasImplicitObject && !Values.contains(D.Name)) Values[D.Name] = Result;
 	for (const auto& [Name, Record] : Records)
 		if (static_cast<DeclContext*>(Record) == FunctionContext && Name == D.Name) Constructors[D.Name] = Result;
 	for (auto Parameter : EffectiveParameters) Result->addDecl(Parameter);
@@ -547,6 +605,56 @@ FunctionDecl* Sema::lookupMemberFunction(RecordDecl* Record, IdentifierInfo* Nam
 	return Base ? lookupMemberFunction(Base, Name) : nullptr;
 }
 
+FunctionDecl* Sema::instantiateRecordMemberFunction(FunctionDecl* Pattern, RecordDecl* Owner, QualType Receiver) {
+	for (FunctionDecl* Candidate : Functions[Pattern->getIdentifier()]) {
+		if (Candidate->getTemplatePattern() != Pattern || Candidate->getNumTemplateArguments() != Owner->getNumTemplateParameters()) continue;
+		const Type* ReceiverType = Receiver.getTypePtr();
+		if (!ReceiverType || ReceiverType->getTypeClass() != TypeClass::type_template_specialization) continue;
+		auto* Specialization = static_cast<const TemplateSpecializationType*>(ReceiverType);
+		bool Same = Specialization->getArgumentCount() == Candidate->getNumTemplateArguments();
+		for (unsigned Index = 0; Same && Index < Candidate->getNumTemplateArguments(); ++Index)
+			Same = Candidate->templateArguments()[Index].Type == Specialization->arguments()[Index] &&
+				Candidate->templateArguments()[Index].IntegerValue == Specialization->getIntegerArgument(Index);
+		if (Same) return Candidate;
+	}
+	std::vector<ParmVarDecl*> Parameters;
+	for (unsigned Index = 0; Index < Pattern->getNumParams(); ++Index) {
+		auto* Source = Pattern->parameters()[Index];
+		QualType Type = Pattern->hasImplicitObject() && Index == 0 ? Receiver : substituteRecordType(Source->getType(), Owner, Receiver);
+		Parameters.push_back(Context.create<ParmVarDecl>(nullptr, Source->getLocation(), Source->getIdentifier(), Type));
+	}
+	std::vector<TemplateArgument> Arguments;
+	const rtsl::Type* ReceiverType = Receiver.getTypePtr();
+	if (ReceiverType && ReceiverType->getTypeClass() == TypeClass::type_template_specialization) {
+		auto* Specialization = static_cast<const TemplateSpecializationType*>(ReceiverType);
+		for (unsigned Index = 0; Index < Specialization->getArgumentCount(); ++Index)
+			Arguments.push_back({.Type = Specialization->arguments()[Index], .IntegerValue = Specialization->getIntegerArgument(Index)});
+	}
+	auto* Result = Context.create<FunctionDecl>(Pattern->getDeclContext(), Pattern->getLocation(), Pattern->getIdentifier(),
+		substituteRecordType(Pattern->getType(), Owner, Receiver), Context.copyPointerArray(Parameters), static_cast<unsigned>(Parameters.size()),
+		nullptr, 0, nullptr, 0, Context.copyArray(Arguments), static_cast<unsigned>(Arguments.size()), nullptr, 0,
+		nullptr, Pattern->hasImplicitEmitter(), Pattern->hasInternalLinkage(), Pattern->isExported());
+	Result->setImplicit(Pattern->isImplicit());
+	Result->setBody(Pattern->getBody());
+	Result->setTemplatePattern(Pattern);
+	Result->setImplicitObject(Pattern->hasImplicitObject());
+	Pattern->getDeclContext()->addDecl(Result);
+	Functions[Result->getIdentifier()].push_back(Result);
+	return Result;
+}
+
+FunctionDecl* Sema::resolveMemberFunction(QualType Receiver, IdentifierInfo* Name) {
+	auto* Record = recordForType(Receiver);
+	if (!Record) return nullptr;
+	if (auto* Function = lookupMemberFunction(Record, Name)) {
+		if (Record->getNumTemplateParameters() != 0 && Receiver.getTypePtr()->getTypeClass() == TypeClass::type_template_specialization)
+			return instantiateRecordMemberFunction(Function, Record, Receiver);
+		return Function;
+	}
+	QualType Base = substituteRecordType(Record->getBaseType(), Record, Receiver);
+	return Base ? resolveMemberFunction(Base, Name) : nullptr;
+}
+
 bool Sema::isFunctionName(IdentifierInfo* Name) const {
 	return Name != nullptr && Functions.contains(Name);
 }
@@ -642,25 +750,16 @@ Expr* Sema::actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation L
 			if (Result) return Result;
 		}
 	}
-	if (BaseType && BaseType->getTypeClass() == TypeClass::type_named && Member) {
-		auto Name = static_cast<const NamedType*>(BaseType)->getName()->getName();
+	if (BaseType && BaseType->getTypeClass() == TypeClass::type_template_specialization && Member) {
+		const auto* Vector = static_cast<const TemplateSpecializationType*>(BaseType);
+		auto Name = Vector->getName()->getName();
 		if (Name.starts_with("__")) Name.remove_prefix(2);
 		auto Component = Member->getName();
-		if ((Name == "vec2" || Name == "vec3" || Name == "vec4") && !Component.empty() && Component.size() <= 4 &&
-			std::ranges::all_of(Component, [](char Character) {
-				return Character == 'x' || Character == 'y' || Character == 'z' || Character == 'w';
-			}) &&
-			std::ranges::all_of(Component, [&](char Character) {
-				const unsigned Index = Character == 'x' ? 0 : Character == 'y' ? 1 : Character == 'z' ? 2 : 3;
-				return Index < static_cast<unsigned>(Name.back() - '0');
-			})) {
+		if ((Name == "vec2" || Name == "vec3" || Name == "vec4") && Component.size() == 1) {
+			const unsigned Index = Component[0] == 'x' ? 0 : Component[0] == 'y' ? 1 : Component[0] == 'z' ? 2 : Component[0] == 'w' ? 3 : 4;
+			if (Index >= static_cast<unsigned>(Name.back() - '0')) return nullptr;
 			auto Result = Context.create<PostfixExpr>(StmtClass::expr_member, Base, Member, nullptr, 0);
-			if (Component.size() == 1) Result->setType(Context.getBuiltinType(BuiltinTypeKind::builtin_f32));
-			else for (const auto& [VectorName, VectorType] : Types)
-				if (VectorName->getName() == std::string("vec") + std::to_string(Component.size())) {
-					Result->setType(VectorType);
-					break;
-				}
+			Result->setType(Vector->getArgumentCount() == 1 ? Vector->arguments()[0] : Context.getBuiltinType(BuiltinTypeKind::builtin_f32));
 			return Result;
 		}
 	}
@@ -669,13 +768,13 @@ Expr* Sema::actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation L
 		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "member access requires a structure value");
 		return nullptr;
 	}
-	auto Field = lookupField(Record, Member);
+	auto Field = lookupField(Base->getType(), Member);
 	if (Field) {
 		auto Result = Context.create<PostfixExpr>(StmtClass::expr_member, Base, Member, nullptr, 0);
-		Result->setType(Field->getType());
+		Result->setType(lookupFieldType(Base->getType(), Member));
 		return Result;
 	}
-	if (auto* Function = lookupMemberFunction(Record, Member)) {
+	if (auto* Function = resolveMemberFunction(Base->getType(), Member)) {
 		auto Result = Context.create<PostfixExpr>(StmtClass::expr_member, Base, Member, nullptr, 0);
 		Result->setType(Function->getType());
 		return Result;
@@ -684,14 +783,18 @@ Expr* Sema::actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation L
 	return nullptr;
 }
 
-Expr* Sema::actOnSubscriptExpr(Expr* Base, Expr* Index, SourceLocation Location) {
-	if (!Base || !Index) return nullptr;
+Expr* Sema::actOnSubscriptExpr(Expr* Base, const std::vector<Expr*>& Indices, SourceLocation Location) {
+	if (!Base || Indices.empty()) return nullptr;
 	if (Base->getStmtClass() == StmtClass::expr_member) {
 		auto Member = static_cast<PostfixExpr*>(Base);
 		if (Member->getMember() && Member->getMember()->getName() == "outer") {
-			applyContextualType(Index, Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
+			if (Indices.size() != 1) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "tessellation outer levels require one index");
+				return nullptr;
+			}
+			applyContextualType(Indices[0], Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
 			auto Result = Context.create<PostfixExpr>(StmtClass::expr_subscript, Base, nullptr,
-				Context.copyPointerArray(std::vector<Expr*>{Index}), 1);
+				Context.copyPointerArray(Indices), static_cast<unsigned>(Indices.size()));
 			Result->setType(Context.getBuiltinType(BuiltinTypeKind::builtin_f32));
 			return Result;
 		}
@@ -704,15 +807,41 @@ Expr* Sema::actOnSubscriptExpr(Expr* Base, Expr* Index, SourceLocation Location)
 		const std::string_view Name = Patch->getName()->getName();
 		if ((Name == "patch" || Name == "triangle_patch" || Name == "quad_patch" || Name == "isoline_patch" || Name == "triangle") &&
 			Patch->getArgumentCount() != 0) {
-			applyContextualType(Index, Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
+			if (Indices.size() != 1) {
+				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "primitive and patch values require one index");
+				return nullptr;
+			}
+			applyContextualType(Indices[0], Context.getBuiltinType(BuiltinTypeKind::builtin_u32));
 			auto Result = Context.create<PostfixExpr>(StmtClass::expr_subscript, Base, nullptr,
-				Context.copyPointerArray(std::vector<Expr*>{Index}), 1);
+				Context.copyPointerArray(Indices), static_cast<unsigned>(Indices.size()));
 			Result->setType(Patch->arguments()[0]);
 			return Result;
 		}
 	}
-	Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "subscript requires a patch or primitive value");
-	return nullptr;
+	auto* Function = resolveMemberFunction(Base->getType(), &Identifiers.get("operator[]"));
+	if (!Function) {
+		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "subscript requires an operator[] member");
+		return nullptr;
+	}
+	if (Function->getNumParams() != Indices.size() + 1) {
+		Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "subscript argument count does not match operator[]");
+		return nullptr;
+	}
+	std::vector<Expr*> Arguments{Base};
+	for (unsigned Index = 0; Index < Indices.size(); ++Index) {
+		applyContextualType(Indices[Index], Function->parameters()[Index + 1]->getType());
+		if (Indices[Index]->getType() && Indices[Index]->getType().getTypePtr() != Function->parameters()[Index + 1]->getType().getTypePtr()) {
+			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "subscript argument type does not match operator[] parameter");
+			return nullptr;
+		}
+		Arguments.push_back(Indices[Index]);
+	}
+	auto* Callee = Context.create<DeclRefExpr>(Function);
+	Callee->setType(Function->getType());
+	auto* Result = Context.create<PostfixExpr>(StmtClass::expr_call, Callee, nullptr,
+		Context.copyPointerArray(Arguments), static_cast<unsigned>(Arguments.size()));
+	Result->setType(Function->getType());
+	return Result;
 }
 
 Expr* Sema::actOnCallExpr(Expr* Callee, const std::vector<Expr*>& Arguments, SourceLocation Location) {
@@ -720,7 +849,7 @@ Expr* Sema::actOnCallExpr(Expr* Callee, const std::vector<Expr*>& Arguments, Sou
 	if (Callee->getStmtClass() == StmtClass::expr_member) {
 		auto* Member = static_cast<PostfixExpr*>(Callee);
 		auto* Record = recordForType(Member->getBase()->getType());
-		auto* Function = Record && Member->getMember() ? lookupMemberFunction(Record, Member->getMember()) : nullptr;
+		auto* Function = Record && Member->getMember() ? resolveMemberFunction(Member->getBase()->getType(), Member->getMember()) : nullptr;
 		if (!Function) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Location}, "member expression is not callable");
 			return nullptr;
@@ -734,7 +863,7 @@ Expr* Sema::actOnCallExpr(Expr* Callee, const std::vector<Expr*>& Arguments, Sou
 			if (static_cast<DeclContext*>(Candidate) == Function->getDeclContext()) { Owner = Candidate; break; }
 		if (!Owner) return nullptr;
 		Expr* Receiver = Member->getBase();
-		if (Receiver->getType() != Context.getNamedType(Owner->getIdentifier())) {
+		if (recordForType(Receiver->getType()) != Owner) {
 			std::vector<Expr*> Fields;
 			for (Decl* Declaration = Owner->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
 				if (Declaration->getKind() == DeclKind::decl_field) {
@@ -895,8 +1024,14 @@ Expr* Sema::actOnBinaryExpr(tok::TokenKind Opcode, Expr* Left, Expr* Right) {
 					return Type && Type->getTypeClass() == TypeClass::type_named &&
 					static_cast<const NamedType*>(Type)->getName()->getName() == Name;
 			};
-			auto isVector = [&](const Type* Type) { return isNamed(Type, "vec2") || isNamed(Type, "vec3") || isNamed(Type, "vec4"); };
-			auto isMatrix = [&](const Type* Type) { return isNamed(Type, "mat2") || isNamed(Type, "mat3") || isNamed(Type, "mat4"); };
+			auto isVector = [&](const Type* Type) {
+				return isNamed(Type, "vec2") || isNamed(Type, "vec3") || isNamed(Type, "vec4") ||
+					isNamed(Type, "__vec2") || isNamed(Type, "__vec3") || isNamed(Type, "__vec4");
+			};
+			auto isMatrix = [&](const Type* Type) {
+				return isNamed(Type, "mat2") || isNamed(Type, "mat3") || isNamed(Type, "mat4") ||
+					isNamed(Type, "__mat2") || isNamed(Type, "__mat3") || isNamed(Type, "__mat4");
+			};
 			if ((isMatrix(LeftType) && isVector(RightType)) ||
 				(LeftType && LeftType->getTypeClass() == TypeClass::type_builtin && isVector(RightType)))
 				Result->setType(Right->getType());

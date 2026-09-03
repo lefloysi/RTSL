@@ -204,7 +204,7 @@ void Parser::parseFunctionTemplate(DeclContext* Context, DeclSpec& DS, ParsedAtt
 	}
 	Actions.pushTemplateParameters(Parameters);
 	if (Tok.is(tok::kw_fn)) parseFunction(Context, DS, Attributes, Parameters);
-	else parseRecord(Context, DS, Attributes);
+	else parseRecord(Context, DS, Attributes, Parameters);
 	Actions.popTemplateParameters(Parameters);
 }
 
@@ -289,7 +289,8 @@ Declarator Parser::parseDeclarator(ParsedType Type) {
 	return Result;
 }
 
-void Parser::parseRecord(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes) {
+void Parser::parseRecord(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes,
+	const std::vector<ParsedTemplateParameter>& TemplateParameters) {
 	SourceLocation Location = Tok.getLocation();
 	consumeToken();
 	IdentifierInfo* Name{};
@@ -311,7 +312,7 @@ void Parser::parseRecord(DeclContext* Context, DeclSpec& DS, ParsedAttributes& A
 		}
 	}
 	bool Complete = Tok.is(tok::l_brace);
-	auto Record = Actions.actOnStartRecord(Context, Name, Location, Complete, DS.Internal, DS.Exported, Attributes);
+	auto Record = Actions.actOnStartRecord(Context, Name, Location, Complete, DS.Internal, DS.Exported, Attributes, TemplateParameters);
 	Record->setBaseType(BaseType);
 	if (!Complete) { expectAndConsume(tok::semi, "expected ';' after structure declaration"); return; }
 	consumeToken();
@@ -361,6 +362,10 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 			if (Tok.is(tok::lessminus)) {
 				D.Name = &PP.getIdentifierTable().get("operator<-");
 				consumeToken();
+			} else if (Tok.is(tok::l_square)) {
+				D.Name = &PP.getIdentifierTable().get("operator[]");
+				consumeToken();
+				expectAndConsume(tok::r_square, "expected ']' after 'operator['");
 			} else Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected operator token after 'operator'");
 		}
 		else if (consumeIf(tok::coloncolon)) {
@@ -655,9 +660,13 @@ Expr* Parser::parsePrimaryExpression() {
 			continue;
 		}
 		if (consumeIf(tok::l_square)) {
-			Expr* Index = parseExpression();
+			std::vector<Expr*> Indices;
+			while (Tok.isNot(tok::r_square) && Tok.isNot(tok::eof)) {
+				Indices.push_back(parseExpression());
+				if (!consumeIf(tok::comma)) break;
+			}
 			expectAndConsume(tok::r_square, "expected ']' after index");
-			Result = Actions.actOnSubscriptExpr(Result, Index, Tok.getLocation());
+			Result = Actions.actOnSubscriptExpr(Result, Indices, Tok.getLocation());
 			continue;
 		}
 		if (consumeIf(tok::l_paren)) {

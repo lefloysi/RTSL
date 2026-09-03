@@ -97,6 +97,9 @@ struct StructMember {
 
 enum class Builtin : std::uint8_t {
 	builtin_position,
+	builtin_global_invocation_x,
+	builtin_global_invocation_y,
+	builtin_global_invocation_z,
 };
 
 struct BuiltinMember {
@@ -228,6 +231,7 @@ struct Parameter {
 	ValueId value;
 	TypeId type;
 	SymbolId symbol;
+	std::optional<Builtin> builtin;
 };
 
 struct Function {

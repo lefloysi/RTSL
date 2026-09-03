@@ -1,4 +1,5 @@
 #include <rtsl/CodeGen/CodeGenerator.hpp>
+#include <algorithm>
 #include <bit>
 #include <charconv>
 
@@ -95,6 +96,11 @@ void CodeGenerator::defineRecordStages(RecordDecl* Record) {
 }
 
 void CodeGenerator::lowerRecord(RecordDecl* Record) {
+	const std::string_view Name = Record->getIdentifier()->getName();
+	if (Name == "__vec2" || Name == "__vec3" || Name == "__vec4") {
+		NamedTypes[Record->getIdentifier()] = lowerType(Context->getNamedType(Record->getIdentifier()));
+		return;
+	}
 	ir::Type Type;
 	Type.kind = ir::TypeKind::type_structure;
 	Type.name = Builder.module().strings.intern(qualifiedName(Record));
@@ -441,6 +447,18 @@ void CodeGenerator::lowerIfStatement(IfStmt* Statement) {
 
 ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 	if (!Expression) return {};
+	auto resourceReference = [&](Expr* Value, std::string_view ResourceName) -> std::optional<std::pair<VarDecl*, ir::SymbolId>> {
+		if (!Value || Value->getStmtClass() != StmtClass::expr_decl_ref) return std::nullopt;
+		auto* Declaration = static_cast<DeclRefExpr*>(Value)->getDecl();
+		if (Declaration->getKind() != DeclKind::decl_variable) return std::nullopt;
+		auto* Variable = static_cast<VarDecl*>(Declaration);
+		const Type* Type = Variable->getType().getTypePtr();
+		if (!Type || Type->getTypeClass() != TypeClass::type_template_specialization) return std::nullopt;
+		if (static_cast<const TemplateSpecializationType*>(Type)->getName()->getName() != ResourceName) return std::nullopt;
+		auto Symbol = GlobalSymbols.find(Variable);
+		if (Symbol == GlobalSymbols.end()) return std::nullopt;
+		return std::pair{Variable, Symbol->second};
+	};
 	switch (Expression->getStmtClass()) {
 	case StmtClass::expr_emitter: {
 		if (CurrentReturnObject) return CurrentReturnObject;
@@ -460,6 +478,14 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 			ValueTypes[Value.value()] = Type;
 			return Value;
 		}
+		if (Declaration->getKind() == DeclKind::decl_field && CurrentConstructor) {
+			auto Position = ConstructorFields.find(static_cast<FieldDecl*>(Declaration));
+			if (Position == ConstructorFields.end()) {
+				diagnose("use of an uninitialized constructor field");
+				return {};
+			}
+			return Position->second;
+		}
 		if (auto Position = Values.find(Declaration); Position != Values.end()) {
 			if (!Position->second) diagnose("use of an uninitialized local variable");
 			return Position->second;
@@ -473,7 +499,10 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 			return Value;
 		}
 		auto Symbol = GlobalSymbols.find(Declaration);
-		if (Symbol == GlobalSymbols.end()) { diagnose("unlowered declaration reference"); return {}; }
+		if (Symbol == GlobalSymbols.end()) {
+			diagnose("unlowered declaration reference '" + std::string(Declaration->getIdentifier()->getName()) + "'");
+			return {};
+		}
 		std::uint32_t Immediate = Symbol->second.value();
 		auto Type = lowerType(Declaration->getType());
 		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_resource_load, Type, {}, std::span(&Immediate, 1));
@@ -530,6 +559,29 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 				return Value;
 			}
 		}
+		if (Binary->getOpcode() == tok::equal && Binary->getLeft()->getStmtClass() == StmtClass::expr_call) {
+			auto* Call = static_cast<PostfixExpr*>(Binary->getLeft());
+			if (Call->getBase()->getStmtClass() == StmtClass::expr_decl_ref) {
+				auto* Callee = static_cast<DeclRefExpr*>(Call->getBase())->getDecl();
+				if (Callee->getKind() == DeclKind::decl_function && Callee->getIdentifier()->getName() == "operator[]" &&
+					Call->getArgumentCount() >= 2) {
+					auto Resource = resourceReference(Call->arguments()[0], "buffer");
+					if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_1d");
+					if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_2d");
+					if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_3d");
+					if (Resource) {
+						std::vector<ir::ValueId> Operands;
+						for (unsigned Index = 1; Index < Call->getArgumentCount(); ++Index) Operands.push_back(lowerExpression(Call->arguments()[Index]));
+						auto Stored = lowerExpression(Binary->getRight());
+						if (!Stored || std::ranges::any_of(Operands, [](ir::ValueId Value) { return !Value; })) return {};
+						Operands.push_back(Stored);
+						std::uint32_t Symbol = Resource->second.value();
+						Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_resource_store, {}, Operands, std::span(&Symbol, 1));
+						return Stored;
+					}
+				}
+			}
+		}
 		if (Binary->getOpcode() == tok::equal &&
 			(Binary->getLeft()->getStmtClass() == StmtClass::expr_member || Binary->getLeft()->getStmtClass() == StmtClass::expr_subscript)) {
 			ir::ValueId Operands[] = {lowerExpression(Binary->getLeft()), lowerExpression(Binary->getRight())};
@@ -552,7 +604,10 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 	case StmtClass::expr_construct: {
 		auto Construct = static_cast<ConstructExpr*>(Expression);
 		std::vector<ir::ValueId> Arguments;
-		if (RecordDecl* Record = recordForType(Construct->getType())) {
+		RecordDecl* Record = recordForType(Construct->getType());
+		const bool IntrinsicVector = Record && (Record->getIdentifier()->getName() == "__vec2" ||
+			Record->getIdentifier()->getName() == "__vec3" || Record->getIdentifier()->getName() == "__vec4");
+		if (Record && !IntrinsicVector) {
 			if (!lowerRecordConstruction(Construct, Record, Arguments)) return {};
 		} else {
 			for (unsigned Index = 0; Index < Construct->getArgumentCount(); ++Index)
@@ -577,10 +632,11 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 			auto Resource = static_cast<DeclRefExpr*>(Call->arguments()[0])->getDecl();
 			auto Symbol = GlobalSymbols.find(Resource);
 			const Type* ResourceType = Resource->getType().getTypePtr();
-			const bool SampledTexture = ResourceType && ResourceType->getTypeClass() == TypeClass::type_template_specialization &&
-				static_cast<const TemplateSpecializationType*>(ResourceType)->getName()->getName() == "texture_2d";
-			if (Symbol == GlobalSymbols.end() || !SampledTexture) {
-				diagnose("sample target is not a global texture resource");
+			const bool SampleableResource = ResourceType && ResourceType->getTypeClass() == TypeClass::type_template_specialization &&
+				([](std::string_view Name) { return Name == "texture_2d" || Name == "image_2d"; })
+					(static_cast<const TemplateSpecializationType*>(ResourceType)->getName()->getName());
+			if (Symbol == GlobalSymbols.end() || !SampleableResource) {
+				diagnose("sample target is not a global texture or image resource");
 				return {};
 			}
 			auto Coordinates = lowerExpression(Call->arguments()[1]);
@@ -590,6 +646,36 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 				Type, std::span(&Coordinates, 1), std::span(&ResourceSymbol, 1));
 			ValueTypes[Value.value()] = Type;
 			return Value;
+		}
+		if (Declaration->getIdentifier()->getName() == "operator[]" && Call->getArgumentCount() >= 2) {
+			auto Resource = resourceReference(Call->arguments()[0], "buffer");
+			if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_1d");
+			if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_2d");
+			if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_3d");
+			if (Resource) {
+				std::vector<ir::ValueId> Coordinates;
+				for (unsigned Index = 1; Index < Call->getArgumentCount(); ++Index) Coordinates.push_back(lowerExpression(Call->arguments()[Index]));
+				if (std::ranges::any_of(Coordinates, [](ir::ValueId Value) { return !Value; })) return {};
+				std::uint32_t Symbol = Resource->second.value();
+				auto Type = lowerType(Declaration->getType());
+				auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_resource_load,
+					Type, Coordinates, std::span(&Symbol, 1));
+				ValueTypes[Value.value()] = Type;
+				return Value;
+			}
+		}
+		if (Declaration->getIdentifier()->getName() == "size" && Call->getArgumentCount() == 1) {
+			auto Resource = resourceReference(Call->arguments()[0], "image_1d");
+			if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_2d");
+			if (!Resource) Resource = resourceReference(Call->arguments()[0], "image_3d");
+			if (Resource) {
+				std::uint32_t Symbol = Resource->second.value();
+				auto Type = lowerType(Declaration->getType());
+				auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_resource_query,
+					Type, {}, std::span(&Symbol, 1));
+				ValueTypes[Value.value()] = Type;
+				return Value;
+			}
 		}
 		std::vector<ir::ValueId> Arguments;
 		for (unsigned Index = 0; Index < Call->getArgumentCount(); ++Index) Arguments.push_back(lowerExpression(Call->arguments()[Index]));
@@ -615,7 +701,20 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 			auto Member = static_cast<PostfixExpr*>(Base);
 			if (Member->getMember() && Member->getMember()->getName() == "outer") Outer = Member;
 		}
-		std::vector<ir::ValueId> Operands{lowerExpression(Outer ? Outer->getBase() : Base)};
+		std::vector<ir::ValueId> Operands;
+		if (Access->getStmtClass() == StmtClass::expr_member && !Outer) {
+			if (auto Resource = resourceReference(Base, "buffer")) {
+				auto* BufferType = static_cast<const TemplateSpecializationType*>(Resource->first->getType().getTypePtr());
+				if (BufferType->getArgumentCount() < 1) { diagnose("buffer resource has no header type"); return {}; }
+				std::uint32_t Symbol = Resource->second.value();
+				auto HeaderType = lowerType(BufferType->arguments()[0]);
+				auto Header = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_resource_load,
+					HeaderType, {}, std::span(&Symbol, 1));
+				ValueTypes[Header.value()] = HeaderType;
+				Operands.push_back(Header);
+			}
+		}
+		if (Operands.empty()) Operands.push_back(lowerExpression(Outer ? Outer->getBase() : Base));
 		if (Access->getArgumentCount()) Operands.push_back(lowerExpression(Access->arguments()[0]));
 		for (ir::ValueId Operand : Operands) if (!Operand) return {};
 		std::vector<std::uint32_t> Immediates;
@@ -696,10 +795,19 @@ ir::TypeId CodeGenerator::lowerUnqualifiedType(const Type* ASTType) {
 	case TypeClass::type_template_specialization: {
 		auto Specialization = static_cast<const TemplateSpecializationType*>(ASTType);
 		auto Name = Specialization->getName()->getName();
+		if (Name.starts_with("__")) Name.remove_prefix(2);
+		if ((Name == "vec2" || Name == "vec3" || Name == "vec4") && Specialization->getArgumentCount() == 1) {
+			Type.kind = ir::TypeKind::type_vector;
+			Type.element_count = static_cast<std::uint32_t>(Name.back() - '0');
+			Type.element_type = lowerType(Specialization->arguments()[0]);
+			break;
+		}
 		Type.kind = (Name == "patch" || Name == "triangle_patch" || Name == "quad_patch" || Name == "isoline_patch") ? ir::TypeKind::type_patch :
 			(Name == "triangle" || Name == "triangle_strip") ? ir::TypeKind::type_primitive : ir::TypeKind::type_structure;
 		Type.name = Builder.module().strings.intern(Name);
-		if (Specialization->getArgumentCount()) Type.element_type = lowerType(Specialization->arguments()[0]);
+		for (unsigned Index = 0; Index < Specialization->getArgumentCount(); ++Index)
+			Type.parameter_types.push_back(lowerType(Specialization->arguments()[Index]));
+		if (Specialization->getArgumentCount()) Type.element_type = Type.parameter_types.front();
 		Type.element_count = Name == "triangle" ? 3 : Specialization->getIntegerArgument(1).value_or(0);
 		break;
 	}
@@ -884,10 +992,23 @@ bool CodeGenerator::lowerStage(FunctionDecl* Function, ir::FunctionId FunctionID
 	}
 	else if (Name == "compute") {
 		Entry.stage = ir::Stage::stage_compute;
+		if (Function->getNumParams() != 3) {
+			diagnose("compute entry function requires three usize global invocation parameters");
+			return false;
+		}
+		for (unsigned Index = 0; Index < 3; ++Index)
+			if (Function->parameters()[Index]->getType() != Context->getBuiltinType(BuiltinTypeKind::builtin_usize)) {
+				diagnose("compute entry function global invocation parameters must have type usize");
+				return false;
+			}
 		if (Function->getNumTemplateArguments() != 3) {
 			diagnose("compute entry function requires three workgroup-size template arguments");
 			return false;
 		}
+		auto* IRFunction = Builder.module().findFunction(FunctionID);
+		IRFunction->parameters[0].builtin = ir::Builtin::builtin_global_invocation_x;
+		IRFunction->parameters[1].builtin = ir::Builtin::builtin_global_invocation_y;
+		IRFunction->parameters[2].builtin = ir::Builtin::builtin_global_invocation_z;
 		ir::ComputeConfiguration Configuration;
 		for (unsigned Index = 0; Index < 3; ++Index) {
 			auto Value = Function->templateArguments()[Index].IntegerValue;

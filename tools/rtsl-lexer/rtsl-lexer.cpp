@@ -44,6 +44,15 @@ static void collectComments(std::string_view text, std::vector<RtslLexicalSpan>&
  }
 }
 
+static bool startsDeclaration(rtsl::tok::TokenKind kind) {
+ using namespace rtsl::tok;
+ switch (kind) {
+ case kw_import: case kw_struct: case kw_using: case kw_var: case kw_const: case kw_static:
+ case kw_export: case kw_uniform: case kw_storage: case kw_fn: case kw_template: return true;
+ default: return false;
+ }
+}
+
 __declspec(dllexport) unsigned rtsl_lexical_spans(const char* text, unsigned textLength, RtslLexicalSpan* spans, unsigned capacity) {
  if (!text || !spans) return 0;
  const std::string source(text, textLength);
@@ -51,24 +60,27 @@ __declspec(dllexport) unsigned rtsl_lexical_spans(const char* text, unsigned tex
  collectComments(source, result);
  rtsl::SourceManager sources; rtsl::DiagnosticsEngine diagnostics; rtsl::IdentifierTable identifiers;
  const auto file = sources.createFileID("<editor>", source); rtsl::Lexer lexer(file, sources, identifiers, diagnostics); rtsl::Token token;
- unsigned attributeLine = static_cast<unsigned>(-1);
+ bool inAttribute = false;
  for (;;) {
   lexer.lex(token); if (token.is(rtsl::tok::eof)) break;
   const auto kind = token.getKind();
   const unsigned offset = token.getLocation().getRawEncoding() - 1;
   unsigned category = 0;
-  if (kind == rtsl::tok::at) { attributeLine = offset; category = attribute; }
-  else if (attributeLine != static_cast<unsigned>(-1) && source.substr(attributeLine, offset - attributeLine).find('\n') == std::string::npos) category = attribute;
-  else if (kind == rtsl::tok::kw_if || kind == rtsl::tok::kw_else || kind == rtsl::tok::kw_return || kind == rtsl::tok::kw_emit) category = control_keyword;
-  else if (kind >= rtsl::tok::kw_import && kind <= rtsl::tok::kw_typename) category = keyword;
-  else if (kind == rtsl::tok::numeric_literal) category = number;
-  else if (kind == rtsl::tok::string_literal) category = string;
-  else if (rtsl::tok::isPunctuator(kind)) {
-   switch (kind) {
-   case rtsl::tok::l_square: case rtsl::tok::r_square: case rtsl::tok::l_paren: case rtsl::tok::r_paren:
-   case rtsl::tok::l_brace: case rtsl::tok::r_brace: case rtsl::tok::period: case rtsl::tok::ellipsis:
-   case rtsl::tok::comma: case rtsl::tok::colon: case rtsl::tok::coloncolon: case rtsl::tok::semi: category = punctuation; break;
-   default: category = op; break;
+  if (kind == rtsl::tok::at) { inAttribute = true; category = attribute; }
+  else if (inAttribute && !startsDeclaration(kind)) category = attribute;
+  else {
+   inAttribute = false;
+   if (kind == rtsl::tok::kw_if || kind == rtsl::tok::kw_else || kind == rtsl::tok::kw_return || kind == rtsl::tok::kw_emit) category = control_keyword;
+   else if (kind >= rtsl::tok::kw_import && kind <= rtsl::tok::kw_typename) category = keyword;
+   else if (kind == rtsl::tok::numeric_literal) category = number;
+   else if (kind == rtsl::tok::string_literal) category = string;
+   else if (rtsl::tok::isPunctuator(kind)) {
+    switch (kind) {
+    case rtsl::tok::l_square: case rtsl::tok::r_square: case rtsl::tok::l_paren: case rtsl::tok::r_paren:
+    case rtsl::tok::l_brace: case rtsl::tok::r_brace: case rtsl::tok::period: case rtsl::tok::ellipsis:
+    case rtsl::tok::comma: case rtsl::tok::colon: case rtsl::tok::coloncolon: case rtsl::tok::semi: category = punctuation; break;
+    default: category = op; break;
+    }
    }
   }
   result.push_back({offset, token.getLength(), category});

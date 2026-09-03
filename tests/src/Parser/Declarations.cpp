@@ -8,8 +8,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -161,6 +163,45 @@ TEST_CASE("Sema bootstrap registers only hidden intrinsic type names") {
 	REQUIRE_FALSE(Sema.isTypeName(&Identifiers.get("triangle_strip")));
 }
 
+TEST_CASE("compiler core declares vector components as normal fields") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("vector-components.rtsl");
+	Invocation.setInputBuffer(R"(
+fn components(vec2 two, vec3 three, vec4 four) -> f32 {
+	return two.y + three.z + four.w;
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	auto& Identifiers = Compiler.getSema()->getIdentifierTable();
+	auto* TranslationUnit = Compiler.getASTContext()->getTranslationUnitDecl();
+	auto findVector = [&](std::string_view Name) {
+		for (auto* Declaration = TranslationUnit->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext())
+			if (Declaration->getKind() == rtsl::DeclKind::decl_record &&
+				static_cast<rtsl::RecordDecl*>(Declaration)->getIdentifier() == &Identifiers.get(Name))
+				return static_cast<rtsl::RecordDecl*>(Declaration);
+		return static_cast<rtsl::RecordDecl*>(nullptr);
+	};
+	auto checkComponents = [&](std::string_view VectorName, std::initializer_list<std::string_view> Names) {
+		auto* Vector = findVector(VectorName);
+		REQUIRE(Vector != nullptr);
+		auto Component = Names.begin();
+		for (auto* Declaration = Vector->declsBegin(); Declaration; Declaration = Declaration->getNextDeclInContext()) {
+			if (Declaration->getKind() != rtsl::DeclKind::decl_field) continue;
+			REQUIRE(Component != Names.end());
+			REQUIRE(static_cast<rtsl::FieldDecl*>(Declaration)->getIdentifier() == &Identifiers.get(*Component));
+			REQUIRE(static_cast<rtsl::FieldDecl*>(Declaration)->getType() ==
+				Compiler.getSema()->actOnType({.Name = &Identifiers.get("f32")}));
+			++Component;
+		}
+		REQUIRE(Component == Names.end());
+	};
+	checkComponents("__vec2", {"x", "y"});
+	checkComponents("__vec3", {"x", "y", "z"});
+	checkComponents("__vec4", {"x", "y", "z", "w"});
+}
+
 TEST_CASE("a variable may declare an incomplete record type") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("incomplete-record-variable.rtsl");
@@ -175,6 +216,23 @@ TEST_CASE("a variable may declare an incomplete record type") {
 	auto* Value = Sema->actOnIdentifierExpr(&Identifiers.get("marker"), {});
 	REQUIRE(Value != nullptr);
 	REQUIRE(Value->getType().getTypePtr() == Sema->actOnType({.Name = &Identifiers.get("Marker")}).getTypePtr());
+}
+
+TEST_CASE("subscript operators accept multiple arguments") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("subscript-operator.rtsl");
+	Invocation.setInputBuffer(R"(
+struct Grid {
+	fn operator[](usize x, usize y) -> u32;
+}
+fn sample(Grid grid) -> u32 {
+	return grid[1, 2];
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	REQUIRE_FALSE(Compiler.getDiagnostics().hasErrorOccurred());
 }
 
 TEST_CASE("tessellation evaluation parameters support a direct const patch reference and type-only settings") {

@@ -106,6 +106,15 @@ bool isPunctuation(rtsl::tok::TokenKind kind) {
  }
 }
 
+bool startsDeclaration(rtsl::tok::TokenKind kind) {
+ using namespace rtsl::tok;
+ switch (kind) {
+ case kw_import: case kw_struct: case kw_using: case kw_var: case kw_const: case kw_static:
+ case kw_export: case kw_uniform: case kw_storage: case kw_fn: case kw_template: return true;
+ default: return false;
+ }
+}
+
 void addSpan(std::vector<SemanticSpan>& spans, unsigned offset, unsigned length, SemanticType type) {
  if (length != 0) spans.push_back({offset, length, type});
 }
@@ -171,30 +180,31 @@ std::vector<SemanticSpan> classifyTokens(const std::string& name, const std::str
  std::unordered_set<std::string_view> knownTypes;
  std::vector<SemanticSpan> spans;
  collectComments(text, spans);
- unsigned attributeLine = static_cast<unsigned>(-1);
+ bool inAttribute = false;
  for (unsigned index = 0; index < tokens.size(); ++index) {
   const auto& token = tokens[index];
   const auto previous = index == 0 ? rtsl::tok::unknown : tokens[index - 1].kind;
   SemanticType classification = variable;
   using namespace rtsl::tok;
-  const unsigned tokenLine = lineOf(text, token.offset);
-  if (token.kind == at) { attributeLine = tokenLine; classification = decorator; }
-  else if (tokenLine == attributeLine) classification = decorator;
-  else if (token.kind == kw_if || token.kind == kw_else || token.kind == kw_return || token.kind == kw_emit) classification = control_keyword;
-  else if (token.kind >= kw_import && token.kind <= kw_typename) classification = keyword;
-  else if (token.kind == numeric_literal) classification = number;
-  else if (token.kind == string_literal) classification = string;
-  else if (isPunctuation(token.kind)) classification = punctuation;
-  else if (isPunctuator(token.kind)) classification = op;
-  else if (previous == at) classification = decorator;
-  else if ((previous == kw_import ||
-   (previous == less && index > 1 && tokens[index - 2].kind == kw_import)) && token.kind == identifier) classification = name_space;
-  else if (previous == coloncolon && token.kind == identifier) classification = function;
-  else if (token.kind == identifier && sema && compilerIdentifiers &&
-   sema->isTypeName(&compilerIdentifiers->get(token.spelling))) classification = type;
-  else if (knownTypes.contains(token.spelling)) classification = type;
-  else if (previous == kw_fn && token.kind == identifier) classification = function;
-  else if (token.kind == identifier && index + 1 < tokens.size() && tokens[index + 1].kind == l_paren) classification = function;
+  if (token.kind == at) { inAttribute = true; classification = decorator; }
+  else if (inAttribute && !startsDeclaration(token.kind)) classification = decorator;
+  else {
+   inAttribute = false;
+   if (token.kind == kw_if || token.kind == kw_else || token.kind == kw_return || token.kind == kw_emit) classification = control_keyword;
+   else if (token.kind >= kw_import && token.kind <= kw_typename) classification = keyword;
+   else if (token.kind == numeric_literal) classification = number;
+   else if (token.kind == string_literal) classification = string;
+   else if (isPunctuation(token.kind)) classification = punctuation;
+   else if (isPunctuator(token.kind)) classification = op;
+   else if ((previous == kw_import ||
+    (previous == less && index > 1 && tokens[index - 2].kind == kw_import)) && token.kind == identifier) classification = name_space;
+   else if (previous == coloncolon && token.kind == identifier) classification = function;
+   else if (token.kind == identifier && sema && compilerIdentifiers &&
+    sema->isTypeName(&compilerIdentifiers->get(token.spelling))) classification = type;
+   else if (knownTypes.contains(token.spelling)) classification = type;
+   else if (previous == kw_fn && token.kind == identifier) classification = function;
+   else if (token.kind == identifier && index + 1 < tokens.size() && tokens[index + 1].kind == l_paren) classification = function;
+  }
   if ((previous == kw_struct || previous == kw_using || previous == kw_typename) && token.kind == identifier) {
    knownTypes.insert(token.spelling); classification = type;
   }
@@ -287,8 +297,9 @@ std::string hover(const std::string& name, const std::string& text, unsigned lin
  for (const auto& span : spans) {
   if (offset < span.offset || offset >= span.offset + span.length) continue;
   const auto spelling = std::string_view(text).substr(span.offset, span.length);
+  if (span.type != function && span.type != type) return "null";
   const auto information = span.type == function ? functionInformation(name, text, spelling) : std::string{};
-  const auto value = information.empty() ? std::string(semanticName(span.type)) + ": " + std::string(spelling) : information;
+  const auto value = information.empty() ? "type " + std::string(spelling) : information;
   return "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"" + escape(value) + "\"}}";
  }
  return "null";

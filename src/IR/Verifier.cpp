@@ -16,6 +16,14 @@ VerificationResult verify(const Module& module) {
 	std::unordered_set<std::uint32_t> type_ids;
 	std::unordered_set<std::uint32_t> symbol_ids;
 	std::unordered_set<std::uint32_t> function_ids;
+	std::unordered_map<std::uint32_t, const Resource*> resources_by_symbol;
+	std::unordered_set<std::uint32_t> global_symbols;
+	for (const Resource& resource : module.resources) {
+		resources_by_symbol.emplace(resource.symbol.value(), &resource);
+		global_symbols.insert(resource.symbol.value());
+	}
+	for (const Uniform& uniform : module.uniforms) global_symbols.insert(uniform.symbol.value());
+	for (const StorageObject& object : module.storage_objects) global_symbols.insert(object.symbol.value());
 
 	for (const Type& type : module.types) {
 		const std::string context = std::format("type {}", type.id.value());
@@ -47,8 +55,10 @@ VerificationResult verify(const Module& module) {
 	}
 
 	std::unordered_set<std::uint32_t> entry_emitters;
+	std::unordered_set<std::uint32_t> compute_entries;
 	for (const EntryPoint& entry : module.entry_points)
 		if (entry.stage == Stage::stage_geometry) entry_emitters.insert(entry.function.value());
+		else if (entry.stage == Stage::stage_compute) compute_entries.insert(entry.function.value());
 
 	for (const Function& function : module.functions) {
 		const std::string function_context = std::format("function {}", function.id.value());
@@ -57,6 +67,18 @@ VerificationResult verify(const Module& module) {
 		}
 		if (!module.findSymbol(function.symbol)) result.add(VerificationCode::verification_unknown_symbol, function_context, "function symbol does not exist");
 		if (!module.findType(function.return_type)) result.add(VerificationCode::verification_unknown_type, function_context, "function return type does not exist");
+		std::array<bool, 3> global_invocation_components{};
+		for (const Parameter& parameter : function.parameters) {
+			if (!parameter.builtin) continue;
+			if (*parameter.builtin == Builtin::builtin_global_invocation_x || *parameter.builtin == Builtin::builtin_global_invocation_y || *parameter.builtin == Builtin::builtin_global_invocation_z) {
+				const unsigned Component = static_cast<unsigned>(*parameter.builtin) - static_cast<unsigned>(Builtin::builtin_global_invocation_x);
+				if (global_invocation_components[Component])
+					result.add(VerificationCode::verification_invalid_metadata, function_context, "compute entry function has duplicate global invocation components");
+				global_invocation_components[Component] = true;
+				if (!compute_entries.contains(function.id.value()))
+					result.add(VerificationCode::verification_invalid_metadata, function_context, "global invocation parameter belongs only to a compute entry function");
+			}
+		}
 
 		std::unordered_map<std::uint32_t, TypeId> values;
 		std::unordered_set<std::uint32_t> blocks;
@@ -80,6 +102,40 @@ VerificationResult verify(const Module& module) {
 				}
 				for (ValueId operand : instruction.operands) {
 					if (!values.contains(operand.value())) result.add(VerificationCode::verification_unknown_value, function_context, "instruction references an undefined or forward value");
+				}
+				const auto resource = [&]() -> const Resource* {
+					if (instruction.immediates.size() != 1) {
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource instruction requires exactly one resource symbol immediate");
+						return nullptr;
+					}
+					auto Position = resources_by_symbol.find(instruction.immediates[0]);
+					if (Position == resources_by_symbol.end()) {
+						result.add(VerificationCode::verification_unknown_symbol, function_context, "resource instruction references an unknown resource symbol");
+						return nullptr;
+					}
+					return Position->second;
+				};
+				if (instruction.opcode == Opcode::opcode_resource_load) {
+					if (instruction.immediates.size() != 1 || !global_symbols.contains(instruction.immediates[0]))
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource load requires one declared global symbol immediate");
+				} else if (instruction.opcode == Opcode::opcode_resource_store) {
+					const Resource* target = resource();
+					if (instruction.operands.size() < 2)
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource store requires coordinates and a stored value");
+					if (target && target->access == Access::access_read_only)
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource store targets a read-only resource");
+				} else if (instruction.opcode == Opcode::opcode_resource_query) {
+					const Resource* target = resource();
+					if (!instruction.operands.empty())
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource query takes no dynamic operands");
+					if (target && target->kind != ResourceKind::resource_storage_texture)
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource query requires a storage image");
+				} else if (instruction.opcode == Opcode::opcode_resource_sample) {
+					const Resource* target = resource();
+					if (instruction.operands.size() != 1)
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource sample requires exactly one coordinate operand");
+					if (target && target->kind != ResourceKind::resource_sampled_texture && target->kind != ResourceKind::resource_storage_texture)
+						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource sample requires a sampled texture or image");
 				}
 				if (instruction.opcode == Opcode::opcode_construct) {
 					const Type* constructed_type = module.findType(instruction.type);

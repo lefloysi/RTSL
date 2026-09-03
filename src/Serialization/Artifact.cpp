@@ -238,7 +238,10 @@ EncodedSection writeFunctions(const ir::Module& module) {
 	for (const ir::Function& function : module.functions) {
 		writer.writeId(function.id); writer.writeId(function.symbol); writer.writeId(function.return_type); writer.writeBool(function.declaration); writer.writeBool(function.implicit_emitter); writer.writeBool(function.implicit);
 		writer.writeU32(static_cast<std::uint32_t>(function.parameters.size()));
-		for (const ir::Parameter& parameter : function.parameters) { writer.writeId(parameter.value); writer.writeId(parameter.type); writer.writeId(parameter.symbol); }
+		for (const ir::Parameter& parameter : function.parameters) {
+			writer.writeId(parameter.value); writer.writeId(parameter.type); writer.writeId(parameter.symbol);
+			writer.writeOptional(parameter.builtin, [](Writer& writer, ir::Builtin builtin) { writer.writeEnum(builtin); });
+		}
 		writer.writeU32(static_cast<std::uint32_t>(function.blocks.size()));
 		for (const ir::Block& block : function.blocks) {
 			writer.writeId(block.id);
@@ -362,7 +365,14 @@ bool readFunctions(Reader& reader, ir::Module& module) {
 			(reader.versionPatch() >= 2 && !reader.readBool(function.implicit_emitter)) ||
 			(reader.versionPatch() >= 6 && !reader.readBool(function.implicit))) return false;
 		std::uint32_t parameters{}; if (!reader.readCount(parameters, "function.parameters")) return false; function.parameters.reserve(parameters);
-		for (std::uint32_t parameter_index = 0; parameter_index < parameters; ++parameter_index) { ir::Parameter parameter; if (!reader.readId(parameter.value) || !reader.readId(parameter.type) || !reader.readId(parameter.symbol)) return false; function.parameters.push_back(parameter); }
+		for (std::uint32_t parameter_index = 0; parameter_index < parameters; ++parameter_index) {
+			ir::Parameter parameter;
+			if (!reader.readId(parameter.value) || !reader.readId(parameter.type) || !reader.readId(parameter.symbol)) return false;
+			if (reader.versionPatch() >= 7 && !reader.readOptional(parameter.builtin, [](Reader& reader, ir::Builtin& builtin) {
+				return reader.readEnum(builtin, ir::Builtin::builtin_global_invocation_z, "function.parameter.builtin");
+			})) return false;
+			function.parameters.push_back(parameter);
+		}
 		std::uint32_t blocks{}; if (!reader.readCount(blocks, "function.blocks")) return false; function.blocks.reserve(blocks);
 		for (std::uint32_t block_index = 0; block_index < blocks; ++block_index) {
 			ir::Block block; if (!reader.readId(block.id)) return false;

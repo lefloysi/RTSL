@@ -1,0 +1,14 @@
+struct Header {
+	u32 count;
+}
+
+var buffer<Header, u32> values;
+var image_2d<vec4> output;
+
+@stage : compute
+fn temperature<16, 16, 1>(usize x, usize y, usize z) {
+	var u32 value = values[x];
+	values[x] = value;
+	var vec2<usize> extent = output.size();
+	output[x, y] = vec4(0.0, 0.0, 0.0, 1.0);
+}

@@ -18,7 +18,8 @@ public:
 	bool isTypeName(const IdentifierInfo* name) const;
 	void setParsingCore(bool value) { ParsingCore = value; }
 	RecordDecl* actOnStartRecord(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location, bool Complete,
-		bool Internal, bool Exported, const ParsedAttributes& Attributes);
+		bool Internal, bool Exported, const ParsedAttributes& Attributes,
+		const std::vector<ParsedTemplateParameter>& TemplateParameters = {});
 	FieldDecl* actOnField(RecordDecl* Record, const Declarator& D, const ParsedAttributes& Attributes);
 	VarDecl* actOnVariable(DeclContext* Context, const DeclSpec& DS, const Declarator& D, Expr* Init,
 		const ParsedAttributes& Attributes);
@@ -48,7 +49,7 @@ public:
 	Expr* actOnIdentifierExpr(IdentifierInfo* Name, SourceLocation Location);
 	Expr* actOnCurrentEmitterExpr(SourceLocation Location);
 	Expr* actOnMemberExpr(Expr* Base, IdentifierInfo* Member, SourceLocation Location);
-	Expr* actOnSubscriptExpr(Expr* Base, Expr* Index, SourceLocation Location);
+	Expr* actOnSubscriptExpr(Expr* Base, const std::vector<Expr*>& Indices, SourceLocation Location);
 	Expr* actOnCallExpr(Expr* Callee, const std::vector<Expr*>& Arguments, SourceLocation Location);
 	Expr* actOnUnaryExpr(tok::TokenKind Opcode, Expr* Operand);
 	Expr* actOnBinaryExpr(tok::TokenKind Opcode, Expr* Left, Expr* Right);
@@ -65,7 +66,12 @@ private:
 	void addRecordFieldsToFunctionScope(RecordDecl* Record);
 	[[nodiscard]] RecordDecl* recordForType(QualType ValueType) const;
 	[[nodiscard]] FieldDecl* lookupField(RecordDecl* Record, IdentifierInfo* Name) const;
+	[[nodiscard]] FieldDecl* lookupField(QualType ValueType, IdentifierInfo* Name) const;
+	[[nodiscard]] QualType lookupFieldType(QualType ValueType, IdentifierInfo* Name) const;
 	[[nodiscard]] FunctionDecl* lookupMemberFunction(RecordDecl* Record, IdentifierInfo* Name) const;
+	[[nodiscard]] FunctionDecl* resolveMemberFunction(QualType Receiver, IdentifierInfo* Name);
+	[[nodiscard]] QualType substituteRecordType(QualType Type, const RecordDecl* Owner, QualType Receiver) const;
+	FunctionDecl* instantiateRecordMemberFunction(FunctionDecl* Pattern, RecordDecl* Owner, QualType Receiver);
 	[[nodiscard]] QualType substituteType(QualType Type, const FunctionDecl* Pattern, const std::vector<TemplateArgument>& Arguments) const;
 	FunctionDecl* instantiateFunction(FunctionDecl* Pattern, const std::vector<TemplateArgument>& Arguments);
 	ASTContext& Context;

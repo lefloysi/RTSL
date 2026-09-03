@@ -11,6 +11,24 @@ export using mat2 = __mat2;
 export using mat3 = __mat3;
 export using mat4 = __mat4;
 
+export struct __vec2 {
+	f32 x;
+	f32 y;
+}
+
+export struct __vec3 {
+	f32 x;
+	f32 y;
+	f32 z;
+}
+
+export struct __vec4 {
+	f32 x;
+	f32 y;
+	f32 z;
+	f32 w;
+}
+
 export struct End {}
 export const var End end;
 
@@ -37,11 +55,23 @@ export struct fractional_odd {}
 export struct cw {}
 export struct ccw {}
 
-template<typename Header, typename Element> export struct buffer {}
+template<typename Header, typename Element> export struct buffer : Header {
+	fn operator[](usize index) -> Element;
+}
 
-template<typename T> export struct image_1d {}
-template<typename T> export struct image_2d {}
-template<typename T> export struct image_3d {}
+template<typename T> export struct image_1d {
+	fn operator[](usize x) -> T;
+	fn size() -> usize;
+}
+template<typename T> export struct image_2d {
+	fn operator[](usize x, usize y) -> T;
+	fn size() -> vec2<usize>;
+	fn sample(vec2 coordinates) -> T;
+}
+template<typename T> export struct image_3d {
+	fn operator[](usize x, usize y, usize z) -> T;
+	fn size() -> vec3<usize>;
+}
 template<typename T> export struct texture_1d {}
 template<typename T> export struct texture_2d {}
 template<typename T> export struct texture_3d {}

@@ -103,16 +103,27 @@ public:
 		: ValueDecl(DeclKind::decl_field, Context, Location, Name, Type) {}
 };
 
+struct TemplateParameter {
+	IdentifierInfo* Name{};
+	QualType ValueType;
+	bool IsType{};
+	std::optional<bool> Constraint;
+};
+
 class RecordDecl final : public NamedDecl, public DeclContext {
 public:
 	RecordDecl(DeclContext* Context, SourceLocation Location, IdentifierInfo* Name, bool Complete, bool Internal, bool Exported,
-		QualType BaseType = {}, bool BuiltinPosition = false)
+		QualType BaseType = {}, bool BuiltinPosition = false, const TemplateParameter* TemplateParameters = nullptr,
+		unsigned TemplateParameterCount = 0)
 		: NamedDecl(DeclKind::decl_record, Context, Location, Name), BaseType(BaseType), Complete(Complete),
-		  Internal(Internal), Exported(Exported), BuiltinPosition(BuiltinPosition) {}
+		  Internal(Internal), Exported(Exported), BuiltinPosition(BuiltinPosition), TemplateParameters(TemplateParameters),
+		  TemplateParameterCount(TemplateParameterCount) {}
 	[[nodiscard]] bool isCompleteDefinition() const { return Complete; }
 	[[nodiscard]] bool hasInternalLinkage() const { return Internal; }
 	[[nodiscard]] bool isExported() const { return Exported; }
 	[[nodiscard]] QualType getBaseType() const { return BaseType; }
+	[[nodiscard]] const TemplateParameter* templateParameters() const { return TemplateParameters; }
+	[[nodiscard]] unsigned getNumTemplateParameters() const { return TemplateParameterCount; }
 	[[nodiscard]] bool isBuiltinPosition() const { return BuiltinPosition; }
 	void setBaseType(QualType Value) { BaseType = Value; }
 	void setBuiltinPosition(bool Value = true) { BuiltinPosition = Value; }
@@ -122,6 +133,8 @@ private:
 	bool Internal;
 	bool Exported;
 	bool BuiltinPosition;
+	const TemplateParameter* TemplateParameters;
+	unsigned TemplateParameterCount;
 };
 
 class TypeAliasDecl final : public NamedDecl {
@@ -161,13 +174,6 @@ struct ParameterContract {
 struct TemplateArgument {
 	QualType Type;
 	std::optional<std::uint32_t> IntegerValue;
-};
-
-struct TemplateParameter {
-	IdentifierInfo* Name{};
-	QualType ValueType;
-	bool IsType{};
-	std::optional<bool> Constraint;
 };
 
 class FunctionDecl final : public ValueDecl, public DeclContext {
