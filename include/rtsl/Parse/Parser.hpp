@@ -22,6 +22,7 @@ private:
 	void parseFunctionTemplate(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes);
 	void parseDeclSpec(DeclSpec& DS);
 	ParsedType parseType();
+	ParsedType parseAnonymousRecordType(SourceLocation Location);
 	Declarator parseDeclarator(ParsedType Type);
 	void parseRecord(DeclContext* Context, DeclSpec& DS, ParsedAttributes& Attributes,
 		const std::vector<ParsedTemplateParameter>& TemplateParameters = {});

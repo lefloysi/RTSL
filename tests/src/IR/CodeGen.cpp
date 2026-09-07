@@ -71,6 +71,65 @@ fn main(vec3 value) -> Vertex {
 	REQUIRE(Result.succeeded());
 }
 
+TEST_CASE("scalar arithmetic operands broadcast to the result vector type") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("scalar-vector-arithmetic");
+	Invocation.setInputName("scalar-vector-arithmetic.rtsl");
+	Invocation.setInputBuffer(R"(
+@stage : fragment
+fn main() -> vec4 {
+	var vec2 scaled = vec2(8.0, 4.0) / 2.0;
+	return vec4(scaled, 0.0, 1.0);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("scalar-vector-arithmetic");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	for (const auto& Diagnostic : Result.Diagnostics) INFO(Diagnostic.Message);
+	for (const auto& Issue : Result.Verification.issues()) INFO(Issue.context << ": " << Issue.message);
+	REQUIRE(Result.succeeded());
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
+	const auto Divide = std::ranges::find_if(Function.blocks[0].instructions,
+		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_divide; });
+	REQUIRE(Divide != Function.blocks[0].instructions.end());
+	REQUIRE(Divide->operands.size() == 2);
+	const auto Broadcast = std::ranges::find_if(Function.blocks[0].instructions, [Divide](const rtsl::ir::Instruction& Instruction) {
+		return Instruction.result == Divide->operands[1];
+	});
+	REQUIRE(Broadcast != Function.blocks[0].instructions.end());
+	REQUIRE(Broadcast->opcode == rtsl::ir::Opcode::opcode_construct);
+	REQUIRE(Broadcast->type == Divide->type);
+	REQUIRE(Broadcast->operands.size() == 2);
+	REQUIRE(Broadcast->operands[0] == Broadcast->operands[1]);
+}
+
+TEST_CASE("scalar numeric construction lowers to numeric conversion") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("scalar-conversion");
+	Invocation.setInputName("scalar-conversion.rtsl");
+	Invocation.setInputBuffer(R"(
+@stage : fragment
+fn main() -> f32 {
+	var f32 fraction = -2.75;
+	var i32 integral = i32(fraction);
+	return f32(integral);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("scalar-conversion");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	for (const auto& Diagnostic : Result.Diagnostics) INFO(Diagnostic.Message);
+	for (const auto& Issue : Result.Verification.issues()) INFO(Issue.context << ": " << Issue.message);
+	REQUIRE(Result.succeeded());
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
+	REQUIRE(std::ranges::count_if(Function.blocks[0].instructions,
+		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_convert; }) == 2);
+}
+
 TEST_CASE("storage reads lower to a typed resource load") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setModuleName("storage_read");

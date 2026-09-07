@@ -231,6 +231,12 @@ RecordDecl* Sema::actOnStartRecord(DeclContext* DeclContext, IdentifierInfo* Nam
 	return Result;
 }
 
+RecordDecl* Sema::actOnStartAnonymousRecord(DeclContext* DeclContext, SourceLocation Location, bool Internal,
+	bool Exported, const ParsedAttributes& Attributes) {
+	const std::string Name = "__anonymous_record_" + std::to_string(NextAnonymousRecord++);
+	return actOnStartRecord(DeclContext, &Identifiers.get(Name), Location, true, Internal, Exported, Attributes);
+}
+
 FieldDecl* Sema::actOnField(RecordDecl* Record, const Declarator& D, const ParsedAttributes& Attributes) {
 	auto Result = Context.create<FieldDecl>(Record, D.Location, D.Name, actOnType(D.Type));
 	Result->setAttrs(processAttributes(Attributes));

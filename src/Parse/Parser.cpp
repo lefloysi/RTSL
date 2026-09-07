@@ -124,20 +124,6 @@ void Parser::parseExternalDeclaration(ParsedAttributes& Attributes) {
 		return;
 	default: {
 		parseDeclSpec(DS);
-		if (DS.HasVar && Tok.is(tok::kw_struct)) {
-			const SourceLocation Location = Tok.getLocation();
-			consumeToken();
-			if (Tok.isNot(tok::identifier)) {
-				Diagnostics.report(DiagnosticLevel::diagnostic_error, {Location, Tok.getLocation()}, "expected structure name");
-				synchronizeDeclaration(); return;
-			}
-			auto* Name = Tok.getIdentifierInfo();
-			consumeToken();
-			Actions.actOnStartRecord(Context, Name, Location, false, DS.Internal, DS.Exported, Attributes);
-			DS.Type = {.Name = Name, .Location = Location};
-			parseVariable(Context, DS, Attributes);
-			return;
-		}
 		if (!DS.Type.Name) {
 			Diagnostics.report(DiagnosticLevel::diagnostic_error, {Tok.getLocation(), Tok.getLocation()}, "expected declaration");
 			synchronizeDeclaration();
@@ -240,10 +226,23 @@ void Parser::parseDeclSpec(DeclSpec& DS) {
 ParsedType Parser::parseType() {
 	ParsedType Result;
 	Result.Constant = consumeIf(tok::kw_const);
+	const bool Constant = Result.Constant;
+	const SourceLocation StructLocation = Tok.getLocation();
+	Result.ElaboratedStruct = consumeIf(tok::kw_struct);
+	if (Result.ElaboratedStruct && Tok.is(tok::l_brace)) {
+		Result = parseAnonymousRecordType(StructLocation);
+		Result.Constant = Constant;
+		Result.Pointer = consumeIf(tok::star);
+		Result.Reference = consumeIf(tok::amp);
+		return Result;
+	}
 	if (Tok.isNot(tok::identifier)) return Result;
 	Result.Location = Tok.getLocation();
 	Result.Name = Tok.getIdentifierInfo();
 	consumeToken();
+	if (Result.ElaboratedStruct && !Actions.isTypeName(Result.Name))
+		Actions.actOnStartRecord(Actions.getASTContext().getTranslationUnitDecl(), Result.Name, Result.Location,
+			false, false, false, {});
 	if (consumeIf(tok::less)) {
 		while (Tok.isNot(tok::greater) && Tok.isNot(tok::eof)) {
 			if (Tok.is(tok::numeric_literal)) {
@@ -274,6 +273,38 @@ ParsedType Parser::parseType() {
 	Result.Pointer = consumeIf(tok::star);
 	Result.Reference = consumeIf(tok::amp);
 	return Result;
+}
+
+ParsedType Parser::parseAnonymousRecordType(SourceLocation Location) {
+	ParsedAttributes Attributes;
+	expectAndConsume(tok::l_brace, "expected '{' after anonymous structure");
+	auto* Record = Actions.actOnStartAnonymousRecord(Actions.getASTContext().getTranslationUnitDecl(), Location,
+		true, false, Attributes);
+	while (Tok.isNot(tok::r_brace) && Tok.isNot(tok::eof)) {
+		if (consumeIf(tok::semi)) continue;
+		auto FieldAttributes = parseAttributes();
+		if (Tok.is(tok::kw_fn)) {
+			DeclSpec FunctionSpec;
+			parseFunction(Record, FunctionSpec, FieldAttributes);
+			continue;
+		}
+		if (Tok.is(tok::kw_template)) {
+			DeclSpec FunctionSpec;
+			parseFunctionTemplate(Record, FunctionSpec, FieldAttributes);
+			continue;
+		}
+		DeclSpec FieldSpec;
+		parseDeclSpec(FieldSpec);
+		if (!FieldSpec.Type.Name) {
+			synchronizeDeclaration();
+			continue;
+		}
+		auto Field = parseDeclarator(FieldSpec.Type);
+		Actions.actOnField(Record, Field, FieldAttributes);
+		expectAndConsume(tok::semi, "expected ';' after field");
+	}
+	expectAndConsume(tok::r_brace, "expected '}' after anonymous structure");
+	return {.Name = Record->getIdentifier(), .Location = Location, .ElaboratedStruct = true};
 }
 
 Declarator Parser::parseDeclarator(ParsedType Type) {
@@ -406,7 +437,12 @@ void Parser::parseFunction(DeclContext* Context, DeclSpec& DS, ParsedAttributes&
 			if (!consumeIf(tok::comma)) break;
 			continue;
 		}
-		auto ParameterDeclarator = parseDeclarator(Type);
+		Declarator ParameterDeclarator;
+		if (Tok.is(tok::identifier)) ParameterDeclarator = parseDeclarator(Type);
+		else if (Type.ElaboratedStruct && (Tok.is(tok::comma) || Tok.is(tok::r_paren))) {
+			ParameterDeclarator.Type = std::move(Type);
+			ParameterDeclarator.Location = ParameterDeclarator.Type.Location;
+		} else ParameterDeclarator = parseDeclarator(Type);
 		if (!ParameterDeclarator.Name) break;
 		Parameters.push_back(Actions.actOnParameter(nullptr, ParameterDeclarator, ParameterAttributes));
 		if (Tok.is(tok::l_brace)) {

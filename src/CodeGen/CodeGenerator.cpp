@@ -597,6 +597,18 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 			return {};
 		}
 		auto Type = lowerType(Expression->getType());
+		const ir::Type* ResultType = Builder.module().findType(Type);
+		if (ResultType && ResultType->kind == ir::TypeKind::type_vector &&
+			(Opcode == ir::Opcode::opcode_add || Opcode == ir::Opcode::opcode_subtract ||
+				Opcode == ir::Opcode::opcode_multiply || Opcode == ir::Opcode::opcode_divide ||
+				Opcode == ir::Opcode::opcode_remainder)) {
+			for (ir::ValueId& Operand : Operands) {
+				if (ValueTypes.at(Operand.value()) != ResultType->element_type) continue;
+				std::vector<ir::ValueId> Elements(ResultType->element_count, Operand);
+				Operand = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_construct, Type, Elements);
+				ValueTypes[Operand.value()] = Type;
+			}
+		}
 		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, Opcode, Type, Operands);
 		ValueTypes[Value.value()] = Type;
 		return Value;
@@ -615,7 +627,15 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 		}
 		for (ir::ValueId Argument : Arguments) if (!Argument) return {};
 		auto Type = lowerType(Construct->getType());
-		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_construct, Type, Arguments);
+		auto Opcode = ir::Opcode::opcode_construct;
+		auto IsNumeric = [](const ir::Type* Value) {
+			return Value && (Value->kind == ir::TypeKind::type_signed_integer || Value->kind == ir::TypeKind::type_unsigned_integer || Value->kind == ir::TypeKind::type_floating);
+		};
+		if (Arguments.size() == 1 && IsNumeric(Builder.module().findType(Type))) {
+			const auto Source = ValueTypes.at(Arguments.front().value());
+			if (Source != Type && IsNumeric(Builder.module().findType(Source))) Opcode = ir::Opcode::opcode_convert;
+		}
+		auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, Opcode, Type, Arguments);
 		ValueTypes[Value.value()] = Type;
 		return Value;
 	}

@@ -17,6 +17,7 @@ struct ParsedType {
 	bool Pointer{};
 	bool Reference{};
 	bool Constant{};
+	bool ElaboratedStruct{};
 };
 
 struct ParsedParameterContract {

@@ -107,6 +107,49 @@ fn main(Point point) -> Point {
 	REQUIRE(Count == 6);
 }
 
+TEST_CASE("uniform variables accept anonymous structure declarations") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("anonymous-uniform");
+	Invocation.setInputName("anonymous-uniform.rtsl");
+	Invocation.setInputBuffer(R"(
+uniform struct {
+	vec2 center;
+	vec2 extent;
+	vec4 region;
+	vec4 tint;
+	f32 texture_scale;
+} world_draw;
+)");
+
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	auto Compilation = Compiler.compileToLinkedRTIR();
+	REQUIRE(Compilation.succeeded());
+	REQUIRE(Compilation.CodeGeneration.Module.uniforms.size() == 1);
+	const auto& Uniform = Compilation.CodeGeneration.Module.uniforms.front();
+	const auto* Type = Compilation.CodeGeneration.Module.findType(Uniform.type);
+	REQUIRE(Type != nullptr);
+	REQUIRE(Type->kind == rtsl::ir::TypeKind::type_structure);
+	REQUIRE(Type->members.size() == 5);
+	REQUIRE(Compilation.CodeGeneration.Module.strings.get(Type->members[0].name) == "center");
+	REQUIRE(Compilation.CodeGeneration.Module.strings.get(Type->members[4].name) == "texture_scale");
+}
+
+TEST_CASE("structure type expressions work in templates and unnamed parameters") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setInputName("structure-type-expressions.rtsl");
+	Invocation.setInputBuffer(R"(
+var buffer<void, struct { vec4 color; }> instances;
+fn accept(struct Foo) {}
+)");
+
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	auto Compilation = Compiler.compileToLinkedRTIR();
+	REQUIRE(Compilation.succeeded());
+	REQUIRE(Compilation.CodeGeneration.Module.resources.size() == 1);
+}
+
 TEST_CASE("Sema identifies registered type names") {
 	rtsl::CompilerInvocation Invocation;
 	Invocation.setInputName("type-names.rtsl");

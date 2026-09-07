@@ -20,6 +20,8 @@ public:
 	RecordDecl* actOnStartRecord(DeclContext* Context, IdentifierInfo* Name, SourceLocation Location, bool Complete,
 		bool Internal, bool Exported, const ParsedAttributes& Attributes,
 		const std::vector<ParsedTemplateParameter>& TemplateParameters = {});
+	RecordDecl* actOnStartAnonymousRecord(DeclContext* Context, SourceLocation Location, bool Internal, bool Exported,
+		const ParsedAttributes& Attributes);
 	FieldDecl* actOnField(RecordDecl* Record, const Declarator& D, const ParsedAttributes& Attributes);
 	VarDecl* actOnVariable(DeclContext* Context, const DeclSpec& DS, const Declarator& D, Expr* Init,
 		const ParsedAttributes& Attributes);
@@ -87,6 +89,7 @@ private:
 	IdentifierInfo* BufferTemplate{};
 	IdentifierInfo* ReturnEmitter{};
 	FunctionDecl* CurrentFunction{};
+	unsigned NextAnonymousRecord{};
 	bool ParsingCore{};
 };
 
