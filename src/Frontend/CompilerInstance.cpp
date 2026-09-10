@@ -120,6 +120,8 @@ bool CompilerInstance::execute() {
 		if (key != "<main>") ordered_sources.push_back(sources.find(key)->second);
 	};
 	visitSource("<main>", Invocation.getInputName(), Invocation.getInputBuffer());
+	for (const TranslationUnitInput& unit : Invocation.getTranslationUnits())
+		visitSource(unit.ImportPath, unit.InputName, unit.InputBuffer);
 	Actions->setParsingCore(true);
 	PP->enterSourceFile(Sources.createFileID("<rtsl-core>", core::source));
 	SyntaxParser = std::make_unique<Parser>(*PP, *Actions, Diagnostics);

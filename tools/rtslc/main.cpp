@@ -8,16 +8,19 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 int main(int ArgumentCount, char** Arguments) {
 	CLI::App Application{"RTSL compiler frontend"};
 	std::string InputPath;
 	std::string ModuleName;
 	std::string OutputPath;
+	std::vector<std::string> AdditionalInputPaths;
 	bool EmitProgram{};
 	Application.add_option("input", InputPath, "RTSL source file")->required()->check(CLI::ExistingFile);
 	Application.add_option("-m,--module", ModuleName, "Module name");
 	Application.add_option("-o,--output", OutputPath, "Output artifact path");
+	Application.add_option("--source", AdditionalInputPaths, "Additional RTSL source file")->check(CLI::ExistingFile);
 	Application.add_flag("--emit-program", EmitProgram, "Compile and link a program artifact");
 	CLI11_PARSE(Application, ArgumentCount, Arguments);
 
@@ -27,6 +30,11 @@ int main(int ArgumentCount, char** Arguments) {
 	Invocation.setInputName(InputPath);
 	Invocation.setInputBuffer(std::move(Source));
 	Invocation.setModuleName(std::move(ModuleName));
+	for (const std::string& AdditionalInputPath : AdditionalInputPaths) {
+		std::ifstream AdditionalInput(AdditionalInputPath, std::ios::binary);
+		std::string AdditionalSource(std::istreambuf_iterator<char>(AdditionalInput), {});
+		Invocation.addTranslationUnit({AdditionalInputPath, AdditionalInputPath, std::move(AdditionalSource)});
+	}
 	rtsl::CompilerInstance Compiler;
 	Compiler.setInvocation(std::move(Invocation));
 	if (!OutputPath.empty()) EmitProgram = true;
