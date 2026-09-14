@@ -586,3 +586,42 @@ fn main(Vertex vertex) -> vec4 {
 	REQUIRE_FALSE(std::ranges::any_of(Function.blocks.front().instructions,
 		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_convert; }));
 }
+
+TEST_CASE("nested conditional merges follow all incoming value definitions") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("nested-conditional");
+	Invocation.setInputName("nested-conditional.rtsl");
+	Invocation.setInputBuffer(R"(
+@stage : fragment
+fn main(f32 input) -> f32 {
+	var f32 value = input;
+	if (input > 0.0) {
+		if (input > 1.0) { value = input * 2.0; }
+		else { value = input + 1.0; }
+	} else {
+		if (input < -1.0) { value = -input; }
+	}
+	return value;
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("nested-conditional");
+	const auto Result = Generator.generate(*Compiler.getASTContext());
+	REQUIRE(Result.succeeded());
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
+	std::vector<rtsl::ir::ValueId> Defined;
+	for (const auto& Parameter : Function.parameters) { Defined.push_back(Parameter.value); }
+	for (const auto& Block : Function.blocks) {
+		for (const auto& Predecessor : Function.blocks) {
+			if (!Predecessor.terminator) { continue; }
+			for (const auto& Successor : Predecessor.terminator->successors) {
+				if (Successor.block != Block.id) { continue; }
+				for (const auto Value : Successor.arguments) { CHECK(std::ranges::find(Defined, Value) != Defined.end()); }
+			}
+		}
+		for (const auto& Argument : Block.arguments) { Defined.push_back(Argument.value); }
+		for (const auto& Instruction : Block.instructions) { if (Instruction.result) { Defined.push_back(Instruction.result); } }
+	}
+}

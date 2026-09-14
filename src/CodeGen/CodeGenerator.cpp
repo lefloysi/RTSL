@@ -464,6 +464,11 @@ void CodeGenerator::lowerIfStatement(IfStmt* Statement) {
 		if (Bindings[Index].constructor_field) ConstructorFields[static_cast<const FieldDecl*>(Bindings[Index].declaration)] = Merge->arguments[Index].value;
 		else Values[Bindings[Index].declaration] = Merge->arguments[Index].value;
 	}
+	// Nested conditionals append their predecessor blocks after the outer merge
+	// was reserved. Keep the completed merge after all of those definitions.
+	auto& Blocks = Builder.module().findFunction(CurrentFunction)->blocks;
+	const auto MergePosition = std::ranges::find(Blocks, MergeBlock, &ir::Block::id);
+	std::rotate(MergePosition, MergePosition + 1, Blocks.end());
 }
 
 ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
