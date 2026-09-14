@@ -395,17 +395,36 @@ void CodeGenerator::lowerIfStatement(IfStmt* Statement) {
 		return;
 	}
 	const auto Before = Values;
+	const auto BeforeConstructorFields = ConstructorFields;
 	const auto ThenBlock = Builder.addBlock(CurrentFunction);
 	const auto ElseBlock = Statement->getElse() ? Builder.addBlock(CurrentFunction) : ir::BlockId{};
 	const auto MergeBlock = Builder.addBlock(CurrentFunction);
-	std::vector<const ValueDecl*> Declarations;
+	struct Binding {
+		const ValueDecl* declaration{};
+		bool constructor_field = false;
+	};
+	std::vector<Binding> Bindings;
 	std::vector<ir::ValueId> BeforeValues;
 	for (const auto& [Declaration, Value] : Before) {
-		Declarations.push_back(Declaration);
+		Bindings.push_back({.declaration = Declaration});
 		BeforeValues.push_back(Value);
 		auto MergeValue = Builder.addBlockArgument(CurrentFunction, MergeBlock, ValueTypes[Value.value()]);
 		ValueTypes[MergeValue.value()] = ValueTypes[Value.value()];
 	}
+	for (const auto& [Declaration, Value] : BeforeConstructorFields) {
+		Bindings.push_back({.declaration = Declaration, .constructor_field = true});
+		BeforeValues.push_back(Value);
+		auto MergeValue = Builder.addBlockArgument(CurrentFunction, MergeBlock, ValueTypes[Value.value()]);
+		ValueTypes[MergeValue.value()] = ValueTypes[Value.value()];
+	}
+	const auto arguments = [&] {
+		std::vector<ir::ValueId> result;
+		for (const Binding& binding : Bindings) {
+			if (binding.constructor_field) result.push_back(ConstructorFields.at(static_cast<const FieldDecl*>(binding.declaration)));
+			else result.push_back(Values.at(binding.declaration));
+		}
+		return result;
+	};
 	Builder.setMerge(CurrentFunction, CurrentBlock, {.kind = ir::MergeKind::merge_selection, .merge_block = MergeBlock});
 	ir::Terminator Branch{.kind = ir::TerminatorKind::terminator_conditional_branch};
 	Branch.operands.push_back(Condition);
@@ -415,34 +434,36 @@ void CodeGenerator::lowerIfStatement(IfStmt* Statement) {
 
 	CurrentBlock = ThenBlock;
 	Values = Before;
+	ConstructorFields = BeforeConstructorFields;
 	++ConditionalDepth;
 	lowerStatement(Statement->getThen());
 	--ConditionalDepth;
 	if (!Builder.module().findBlock(*Builder.module().findFunction(CurrentFunction), CurrentBlock)->terminator) {
-		std::vector<ir::ValueId> Arguments;
-		for (const ValueDecl* Declaration : Declarations) Arguments.push_back(Values[Declaration]);
 		Builder.setTerminator(CurrentFunction, CurrentBlock,
-			{.kind = ir::TerminatorKind::terminator_branch, .successors = {{.block = MergeBlock, .arguments = std::move(Arguments)}}});
+			{.kind = ir::TerminatorKind::terminator_branch, .successors = {{.block = MergeBlock, .arguments = arguments()}}});
 	}
 
 	if (ElseBlock) {
 		CurrentBlock = ElseBlock;
 		Values = Before;
+		ConstructorFields = BeforeConstructorFields;
 		++ConditionalDepth;
 		lowerStatement(Statement->getElse());
 		--ConditionalDepth;
 		if (!Builder.module().findBlock(*Builder.module().findFunction(CurrentFunction), CurrentBlock)->terminator) {
-			std::vector<ir::ValueId> Arguments;
-			for (const ValueDecl* Declaration : Declarations) Arguments.push_back(Values[Declaration]);
 			Builder.setTerminator(CurrentFunction, CurrentBlock,
-				{.kind = ir::TerminatorKind::terminator_branch, .successors = {{.block = MergeBlock, .arguments = std::move(Arguments)}}});
+				{.kind = ir::TerminatorKind::terminator_branch, .successors = {{.block = MergeBlock, .arguments = arguments()}}});
 		}
 	}
 
 	CurrentBlock = MergeBlock;
 	Values.clear();
+	ConstructorFields.clear();
 	auto Merge = Builder.module().findBlock(*Builder.module().findFunction(CurrentFunction), MergeBlock);
-	for (std::size_t Index = 0; Index < Declarations.size(); ++Index) Values[Declarations[Index]] = Merge->arguments[Index].value;
+	for (std::size_t Index = 0; Index < Bindings.size(); ++Index) {
+		if (Bindings[Index].constructor_field) ConstructorFields[static_cast<const FieldDecl*>(Bindings[Index].declaration)] = Merge->arguments[Index].value;
+		else Values[Bindings[Index].declaration] = Merge->arguments[Index].value;
+	}
 }
 
 ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
