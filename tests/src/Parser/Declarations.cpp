@@ -371,7 +371,7 @@ struct Point {
 struct Vertex : Position {
 	vec4 color;
 }
-fn Vertex::Vertex(Point point) : Position(point.position) {
+fn Vertex::Vertex(Point point) : Position(vec4(point.position, 1.0)) {
 	color = point.color;
 }
 )");

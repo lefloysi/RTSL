@@ -137,6 +137,16 @@ VerificationResult verify(const Module& module) {
 					if (target && target->kind != ResourceKind::resource_sampled_texture && target->kind != ResourceKind::resource_storage_texture)
 						result.add(VerificationCode::verification_invalid_instruction, function_context, "resource sample requires a sampled texture or image");
 				}
+				if (instruction.opcode == Opcode::opcode_sqrt || instruction.opcode == Opcode::opcode_clamp) {
+					const Type* type = module.findType(instruction.type);
+					const std::size_t operand_count = instruction.opcode == Opcode::opcode_sqrt ? 1 : 3;
+					bool valid = instruction.result && type && type->kind == TypeKind::type_floating && type->bit_width == 32 &&
+						instruction.operands.size() == operand_count && instruction.immediates.empty();
+					for (ValueId operand : instruction.operands)
+						valid = valid && values.contains(operand.value()) && values.at(operand.value()) == instruction.type;
+					if (!valid) result.add(VerificationCode::verification_type_mismatch, function_context,
+						"floating-point intrinsic operands do not match the result type");
+				}
 				if (instruction.opcode == Opcode::opcode_construct) {
 					const Type* constructed_type = module.findType(instruction.type);
 					bool operands_exist = std::ranges::all_of(instruction.operands,

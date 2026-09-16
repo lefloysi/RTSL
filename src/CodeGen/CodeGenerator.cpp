@@ -1,5 +1,6 @@
 #include <rtsl/CodeGen/CodeGenerator.hpp>
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <charconv>
 
@@ -722,6 +723,27 @@ ir::ValueId CodeGenerator::lowerExpression(Expr* Expression) {
 				ValueTypes[Value.value()] = Type;
 				return Value;
 			}
+		}
+		if (Declaration->getIdentifier()->getName() == "sqrt" && Call->getArgumentCount() == 1) {
+			auto Operand = lowerExpression(Call->arguments()[0]);
+			if (!Operand) return {};
+			auto Type = lowerType(Declaration->getType());
+			auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_sqrt,
+				Type, std::span(&Operand, 1));
+			ValueTypes[Value.value()] = Type;
+			return Value;
+		}
+		if (Declaration->getIdentifier()->getName() == "clamp" && Call->getArgumentCount() == 3) {
+			std::array<ir::ValueId, 3> Operands;
+			for (unsigned Index = 0; Index < Operands.size(); ++Index) {
+				Operands[Index] = lowerExpression(Call->arguments()[Index]);
+				if (!Operands[Index]) return {};
+			}
+			auto Type = lowerType(Declaration->getType());
+			auto Value = Builder.appendInstruction(CurrentFunction, CurrentBlock, ir::Opcode::opcode_clamp,
+				Type, Operands);
+			ValueTypes[Value.value()] = Type;
+			return Value;
 		}
 		std::vector<ir::ValueId> Arguments;
 		for (unsigned Index = 0; Index < Call->getArgumentCount(); ++Index) Arguments.push_back(lowerExpression(Call->arguments()[Index]));

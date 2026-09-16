@@ -169,6 +169,8 @@ enum class Opcode : std::uint16_t {
 	opcode_resource_query,
 	opcode_derivative,
 	opcode_discard,
+	opcode_sqrt,
+	opcode_clamp,
 };
 
 struct Instruction {

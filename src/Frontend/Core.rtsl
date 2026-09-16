@@ -78,15 +78,17 @@ template<typename T> export struct texture_3d {}
 export struct sampler {}
 
 export fn sample(texture_2d<f32> texture, vec2 coordinates) -> vec4;
+export fn sqrt(f32 value) -> f32;
+export fn clamp(f32 value, f32 minimum, f32 maximum) -> f32;
 
 export struct Position {
 	vec4 position;
-	fn Position(vec3 value);
+	fn Position(vec4 value);
 	fn xy() -> vec2;
 }
 
-fn Position::Position(vec3 value) {
-	position = vec4(value, 1.0);
+fn Position::Position(vec4 value) {
+	position = value;
 }
 
 fn Position::xy() -> vec2 {

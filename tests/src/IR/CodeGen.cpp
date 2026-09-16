@@ -431,7 +431,7 @@ struct Vertex : Position {
 	vec4 color;
 	fn Vertex(Point point);
 };
-fn Vertex::Vertex(Point point) : Position(point.position) {
+fn Vertex::Vertex(Point point) : Position(vec4(point.position, 1.0)) {
 	color = point.color;
 }
 @stage : vertex
@@ -481,6 +481,29 @@ fn main() -> f32 {
 	REQUIRE(Result.Module.findType(Integer->type)->kind == rtsl::ir::TypeKind::type_signed_integer);
 	REQUIRE_FALSE(std::ranges::any_of(Function.blocks.front().instructions,
 		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_convert; }));
+}
+
+TEST_CASE("floating-point square root and clamp lower to numeric intrinsics") {
+	rtsl::CompilerInvocation Invocation;
+	Invocation.setModuleName("numeric-intrinsics");
+	Invocation.setInputName("numeric-intrinsics.rtsl");
+	Invocation.setInputBuffer(R"(
+@stage : fragment
+fn main() -> f32 {
+	return clamp(sqrt(9.0), 0.0, 1.0);
+}
+)");
+	rtsl::CompilerInstance Compiler;
+	Compiler.setInvocation(std::move(Invocation));
+	REQUIRE(Compiler.execute());
+	rtsl::CodeGenerator Generator("numeric-intrinsics");
+	auto Result = Generator.generate(*Compiler.getASTContext());
+	REQUIRE(Result.succeeded());
+	const auto& Function = stageFunction(Result.Module, rtsl::ir::Stage::stage_fragment);
+	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions,
+		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_sqrt; }));
+	REQUIRE(std::ranges::any_of(Function.blocks.front().instructions,
+		[](const rtsl::ir::Instruction& Instruction) { return Instruction.opcode == rtsl::ir::Opcode::opcode_clamp; }));
 }
 
 TEST_CASE("integer literals receive their type from local declarations, assignments, calls, and returns") {
