@@ -128,9 +128,9 @@ bool CompilerInstance::execute() {
 	SyntaxParser->parseTranslationUnit();
 	Actions->setParsingCore(false);
 	std::vector<FileID> files;
-	files.push_back(Sources.createFileID(Invocation.getInputName(), Invocation.getInputBuffer()));
 	for (const TranslationUnitInput* unit : ordered_sources) files.push_back(Sources.createFileID(unit->InputName, unit->InputBuffer));
-	for (FileID file : files) PP->enterSourceFile(file);
+	files.push_back(Sources.createFileID(Invocation.getInputName(), Invocation.getInputBuffer()));
+	for (auto file = files.rbegin(); file != files.rend(); ++file) PP->enterSourceFile(*file);
 	SyntaxParser = std::make_unique<Parser>(*PP, *Actions, Diagnostics);
 	SyntaxParser->parseTranslationUnit();
 	validateImports();

@@ -237,7 +237,9 @@ struct Parameter {
 };
 
 struct Function {
-	FunctionId id;
+	using ID = FunctionId;
+
+	ID id;
 	SymbolId symbol;
 	TypeId return_type;
 	std::vector<Parameter> parameters;
@@ -319,7 +321,7 @@ using StageConfiguration = std::variant<std::monostate, TessellationControlConfi
 
 struct EntryPoint {
 	SymbolId symbol;
-	FunctionId function;
+	Function::ID function;
 	StringId source_name;
 	Stage stage{Stage::stage_vertex};
 	StageConfiguration configuration{std::monostate{}};
