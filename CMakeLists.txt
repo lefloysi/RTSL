@@ -26,6 +26,7 @@ add_library(rtsl STATIC
 	src/Serialization/Artifact.cpp
 	src/Sema/Sema.cpp
 )
+set_target_properties(rtsl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(RTSL::rtsl ALIAS rtsl)
 
 target_compile_features(rtsl PUBLIC cxx_std_20)
