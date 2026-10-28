@@ -1,0 +1,51 @@
+fn rtsl_settings(var kiln::Target& target, kiln::Options& options) {
+	@target.option("standard", "c++latest");
+	@target.option("runtime", "MT");
+	@target.option("library_paths", "{root}/vcpkg_installed/windows/x64-windows-static/lib");
+	if (options.profile() == "debug") {
+		@target.option("runtime", "MTd");
+		@target.option("library_paths", "{root}/vcpkg_installed/windows/x64-windows-static/debug/lib");
+	};
+	if (options.profile() != "debug") {
+		@target.option("compile_options", "/DNDEBUG");
+	};
+	@target.option("includes", "include;src;{build}/generated/rtsl;{root}/vcpkg_installed/windows/x64-windows-static/include");
+};
+
+fn build(kiln::Options& options) {
+	var core = kiln::add_target("rtsl-core-source", kiln::TargetType::command);
+	@core.option("executable_target", "leaf-build-tools");
+	@core.option("arguments", "embed-text;src/Frontend/Core.rtsl;{build}/generated/rtsl/rtsl/Frontend/CoreSource.hpp;rtsl::core;source");
+	@core.option("working_directory", ".");
+	@core.option("inputs", "src/Frontend/Core.rtsl");
+	@core.option("outputs", "{build}/generated/rtsl/rtsl/Frontend/CoreSource.hpp");
+
+	var compiler = kiln::add_target("rtsl", kiln::TargetType::static_lib);
+	rtsl_settings(@compiler, options);
+	@compiler.depends_on("rtsl-core-source");
+	@compiler.sources.add("src/AST/ASTContext.cpp");
+	@compiler.sources.add("src/Basic/Diagnostic.cpp");
+	@compiler.sources.add("src/Basic/IdentifierTable.cpp");
+	@compiler.sources.add("src/Basic/SourceManager.cpp");
+	@compiler.sources.add("src/Basic/TokenKinds.cpp");
+	@compiler.sources.add("src/CodeGen/CodeGenerator.cpp");
+	@compiler.sources.add("src/Frontend/CompilerInstance.cpp");
+	@compiler.sources.add("src/Frontend/ModuleInterface.cpp");
+	@compiler.sources.add("src/Frontend/ModuleInterfaceBuilder.cpp");
+	@compiler.sources.add("src/Frontend/ModuleInterfaceImporter.cpp");
+	@compiler.sources.add("src/IR/Builder.cpp");
+	@compiler.sources.add("src/IR/IR.cpp");
+	@compiler.sources.add("src/IR/Verifier.cpp");
+	@compiler.sources.add("src/Lex/Lexer.cpp");
+	@compiler.sources.add("src/Lex/Preprocessor.cpp");
+	@compiler.sources.add("src/Linker/Linker.cpp");
+	@compiler.sources.add("src/Parse/Parser.cpp");
+	@compiler.sources.add("src/Serialization/Artifact.cpp");
+	@compiler.sources.add("src/Sema/Sema.cpp");
+
+	var driver = kiln::add_target("rtslc", kiln::TargetType::executable);
+	rtsl_settings(@driver, options);
+	@driver.sources.add("tools/rtslc/main.cpp");
+	@driver.depends_on("rtsl");
+	@driver.option("libraries", "CLI11.lib;shell32.lib");
+};
