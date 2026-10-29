@@ -1,15 +1,13 @@
 fn rtsl_settings(var kiln::Target& target, kiln::Options& options) {
 	@target.option("standard", "c++latest");
 	@target.option("runtime", "MT");
-	@target.option("library_paths", "{root}/vcpkg_installed/windows/x64-windows-static/lib");
 	if (options.profile() == "debug") {
 		@target.option("runtime", "MTd");
-		@target.option("library_paths", "{root}/vcpkg_installed/windows/x64-windows-static/debug/lib");
 	};
 	if (options.profile() != "debug") {
 		@target.option("compile_options", "/DNDEBUG");
 	};
-	@target.option("includes", "include;src;{build}/generated/rtsl;{root}/vcpkg_installed/windows/x64-windows-static/include");
+	@target.option("includes", "include;src;{build}/generated/rtsl");
 };
 
 fn build(kiln::Options& options) {
@@ -47,5 +45,6 @@ fn build(kiln::Options& options) {
 	rtsl_settings(@driver, options);
 	@driver.sources.add("tools/rtslc/main.cpp");
 	@driver.depends_on("rtsl");
-	@driver.option("libraries", "CLI11.lib;shell32.lib");
+	@driver.package("CLI11");
+	@driver.option("link_options", "shell32.lib");
 };
