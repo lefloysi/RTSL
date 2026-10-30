@@ -1,0 +1,3 @@
+fn main(rt::span<rt::string_view> arguments) -> rt::runtime::result {
+	return rtsl::run_cli(arguments);
+};

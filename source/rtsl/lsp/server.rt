@@ -1,0 +1,121 @@
+namespace rtsl::lsp {
+	fn error_reply(rt::json_value* request_id, i32 code, rt::string_view message) {
+		rt::string body = rt::string("{\"jsonrpc\":\"2.0\",\"id\":") + id(request_id) + ",\"error\":{\"code\":";
+		if (code < 0) { @body.append("-"); cli_number(@body, static_cast<usize>(-code)); }
+		else { cli_number(@body, static_cast<usize>(code)); };
+		@body.append(",\"message\":");
+		@body.append(quote(message));
+		@body.append("}}");
+		send(body);
+	};
+
+	fn initialize_result() -> rt::string_view {
+		return "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"keyword\",\"variable\",\"type\",\"cppFunction\",\"number\",\"string\",\"operator\",\"comment\",\"cppMacro\",\"namespace\",\"rtsl.punctuation\",\"cppEnumerator\"],\"tokenModifiers\":[]},\"full\":true},\"documentFormattingProvider\":true,\"documentOnTypeFormattingProvider\":{\"firstTriggerCharacter\":\"\\n\"},\"completionProvider\":{\"triggerCharacters\":[\".\",\"<\",\":\"]},\"hoverProvider\":true,\"definitionProvider\":true,\"referencesProvider\":true,\"documentSymbolProvider\":true,\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]}}}";
+	};
+
+	fn document_index(rt::buffer<Document>& documents, rt::string_view uri) -> usize {
+		for (usize index = 0; index < documents.size(); @index = index + 1) { if (documents.data()[index].uri == uri) { return index; }; };
+		return documents.size();
+	};
+
+	fn publish_diagnostics(Document& document) {
+		var body = rt::string("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":") + quote(document.uri) + ",\"diagnostics\":" + diagnostics(document) + "}}";
+		send(body);
+	};
+
+	fn dispatch(var rt::buffer<Document>& documents, rt::json_value& request, var bool& shutdown) -> bool {
+		var method = text(request.member("method"));
+		rt::json_value* request_id = request.member("id");
+		rt::json_value* params = request.member("params");
+		if (method == "exit") { return false; };
+		if (method == "shutdown") { @shutdown = true; reply(request_id, "null"); return true; };
+		if (method == "initialize") { reply(request_id, initialize_result()); return true; };
+		if (method == "initialized" || method == "$/cancelRequest" || method == "workspace/didChangeConfiguration") { return true; };
+		if (shutdown) {
+			if (request_id) { error_reply(request_id, -32600, "server has shut down"); };
+			return true;
+		};
+		rt::json_value* description = field(params, "textDocument");
+		var uri = text(field(description, "uri"));
+		usize selected = document_index(documents, uri);
+		if (method == "textDocument/didOpen" || method == "textDocument/didChange") {
+			rt::string_view contents;
+			if (method == "textDocument/didOpen") { @contents = text(field(description, "text")); }
+			else {
+				rt::json_value* changes = field(params, "contentChanges");
+				if (!changes || !changes->size()) { return true; };
+				@contents = text(field(changes->item(changes->size() - 1), "text"));
+			};
+			if (selected == documents.size()) {
+				Document document;
+				@document.uri = rt::string(uri);
+				@document.text = rt::string(contents);
+				@documents.push_back($document);
+			}
+			else { @(@documents).data()[selected].text = rt::string(contents); };
+			publish_diagnostics(documents.data()[selected]);
+			return true;
+		};
+		if (method == "textDocument/didClose") {
+			if (selected < documents.size()) {
+				var body = rt::string("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":") + quote(uri) + ",\"diagnostics\":[]}}";
+				send(body);
+				@(@documents).data()[selected].uri = rt::string();
+				@(@documents).data()[selected].text = rt::string();
+			};
+			return true;
+		};
+		if (!request_id) { return true; };
+		if (selected == documents.size()) { error_reply(request_id, -32602, "document is not open"); return true; };
+		Document& document = documents.data()[selected];
+		rt::json_value* position_value = field(params, "position");
+		usize line = 0;
+		usize character = 0;
+		if (field(position_value, "line")) { @line = number(field(position_value, "line")->text()); };
+		if (field(position_value, "character")) { @character = number(field(position_value, "character")->text()); };
+		usize offset = offset_at(document.text, line, character);
+		if (method == "textDocument/semanticTokens/full") { reply(request_id, semantic_tokens(document)); }
+		else if (method == "textDocument/completion") { reply(request_id, completions(document, offset)); }
+		else if (method == "textDocument/hover") { reply(request_id, hover(document, offset)); }
+		else if (method == "textDocument/definition") { reply(request_id, definition(document, offset)); }
+		else if (method == "textDocument/references") {
+			rt::json_value* include_declaration = field(field(params, "context"), "includeDeclaration");
+			reply(request_id, references(document, offset, include_declaration && include_declaration->boolean()));
+		}
+		else if (method == "textDocument/documentSymbol") { reply(request_id, symbols(document)); }
+		else if (method == "textDocument/signatureHelp") { reply(request_id, signature_help(document, offset)); }
+		else if (method == "textDocument/formatting") { reply(request_id, formatting(document)); }
+		else if (method == "textDocument/onTypeFormatting") { reply(request_id, on_type_formatting(document, offset)); }
+		else { error_reply(request_id, -32601, "method is not supported"); };
+		return true;
+	};
+};
+
+namespace rtsl {
+	export fn run_lsp(rt::span<rt::string_view> arguments) -> rt::runtime::result {
+		if (arguments.size() == 2 && arguments.data()[0] == "--check") {
+			var loaded = rt::fs::read(arguments.data()[1]);
+			if (!loaded.has<rt::string>()) { return cli_error("cannot read input source"); };
+			lsp::Document document;
+			@document.uri = rt::string(arguments.data()[1]);
+			@document.text = rt::string(loaded.get<rt::string>());
+			cli_write(1, lsp::diagnostics(document));
+			cli_write(1, "\n");
+			return;
+		};
+		rtsl_binary_stdio();
+		rt::buffer<lsp::Document> documents;
+		bool shutdown = false;
+		while (true) {
+			var input = lsp::receive();
+			if (input.has<lsp::EndOfInput>()) { break; };
+			if (!input.has<rt::string>()) { return rt::runtime::error("rtsl-lsp: could not read a complete protocol message."); };
+			var parsed = rt::json_parse(input.get<rt::string>());
+			if (!parsed.has<rt::unique<rt::json_value>>()) { lsp::error_reply(nullptr, -32700, "invalid JSON"); continue; };
+			rt::json_value& request = *parsed.get<rt::unique<rt::json_value>>().get();
+			if (!lsp::dispatch(@documents, request, @shutdown)) { break; };
+		};
+		if (shutdown) { return; };
+		return rt::runtime::error("rtsl-lsp: connection closed before the shutdown request.");
+	};
+};
