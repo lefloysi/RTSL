@@ -1,0 +1,111 @@
+[[test]]
+fn shader_codegen_emits_structured_control_flow_and_serializes_ir() {
+	rtsl::SourceFile source;
+	@source.assign("sum.rtsl", "fn sum(i32 count) -> i32 { var result = 0; for (var index = 0; index < count; @index = index + 1) { if (index == 2) { continue; }; @result = result + index; }; return result; };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	rt::test::expect((@parser.parse()).has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	rt::test::expect((@sema.analyze()).has<void>());
+	var generator = rtsl::CodeGenerator(@context, "sum", @diagnostics);
+	@generator.generate();
+	rt::test::expect(rtsl::verify_module(generator.builder.module, @diagnostics));
+	rt::test::expect(!diagnostics.failed());
+	rt::test::expect(generator.builder.module.functions.size() == 1);
+	rt::test::expect(generator.builder.module.functions.data()[0].blocks.size() >= 8);
+	var bytes = rtsl::write_artifact(generator.builder.module, rtsl::artifact_kind::object);
+	rt::test::expect(bytes.size() > 240);
+	rt::test::expect(bytes.data()[0] == 82);
+	rt::test::expect(bytes.data()[16] == 0);
+	rt::test::expect(bytes.data()[17] == 7);
+	rt::test::expect(bytes.data()[20] == 9);
+};
+
+[[test]]
+fn shader_codegen_lowers_specialized_record_members_and_receivers() {
+	rtsl::SourceFile source;
+	@source.assign("record.rtsl", "template<typename T> struct Box { T value; fn get() -> T { return value; }; }; fn read(Box<f32> box) -> f32 { return box.get(); };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	rt::test::expect((@parser.parse()).has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	rt::test::expect((@sema.analyze()).has<void>());
+	var generator = rtsl::CodeGenerator(@context, "record", @diagnostics);
+	@generator.generate();
+	rt::test::expect(rtsl::verify_module(generator.builder.module, @diagnostics));
+	rt::test::expect(!diagnostics.failed());
+};
+
+[[test]]
+fn shader_codegen_preserves_constructor_bodies_inheritance_and_float_literal_values() {
+	rtsl::SourceFile source;
+	@source.assign("construct.rtsl", "struct Base { f32 x; fn Base(var Base& this, f32 value) { @x = value; }; }; struct Derived : Base { f32 y; fn Derived(var Derived& this, f32 value) : Base(value) { @y = value + 1; }; }; fn make() -> Derived { return Derived(2.0); };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	rt::test::expect((@parser.parse()).has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	rt::test::expect((@sema.analyze()).has<void>());
+	var generator = rtsl::CodeGenerator(@context, "construct", @diagnostics);
+	@generator.generate();
+	rt::test::expect(rtsl::verify_module(generator.builder.module, @diagnostics));
+	rt::test::expect(!diagnostics.failed());
+	bool found = false;
+	for (usize i = 0; i < generator.builder.module.functions.size(); @i = i + 1) {
+		var function = &generator.builder.module.functions.data()[i];
+		for (usize j = 0; j < function->blocks.size(); @j = j + 1) {
+			var block = &function->blocks.data()[j];
+			for (usize k = 0; k < block->instructions.size(); @k = k + 1) {
+				var instruction = &block->instructions.data()[k];
+				if (instruction->operation == rtsl::ir::opcode::constant_floating && instruction->immediates.data()[0] == 1065353216) { @found = true; };
+			};
+		};
+	};
+	rt::test::expect(found);
+};
+
+[[test]]
+fn shader_linker_resolves_cross_module_calls_and_remaps_all_ids() {
+	rtsl::SourceFile caller;
+	@caller.assign("caller.rtsl", "fn helper(i32 value) -> i32; fn caller(i32 value) -> i32 { return helper(value); };");
+	rtsl::SourceFile helper;
+	@helper.assign("helper.rtsl", "fn helper(i32 value) -> i32 { return value + 1; };");
+	var first_lexer = rtsl::Lexer(@caller);
+	var second_lexer = rtsl::Lexer(@helper);
+	rt::test::expect((@first_lexer.scan()).has<void>());
+	rt::test::expect((@second_lexer.scan()).has<void>());
+	rtsl::ASTContext first;
+	rtsl::ASTContext second;
+	rtsl::DiagnosticsEngine diagnostics;
+	var first_parser = rtsl::Parser(@caller, @first, @diagnostics);
+	var second_parser = rtsl::Parser(@helper, @second, @diagnostics);
+	rt::test::expect((@first_parser.parse()).has<void>());
+	rt::test::expect((@second_parser.parse()).has<void>());
+	var first_sema = rtsl::Sema(@first, @diagnostics);
+	var second_sema = rtsl::Sema(@second, @diagnostics);
+	rt::test::expect((@first_sema.analyze()).has<void>());
+	rt::test::expect((@second_sema.analyze()).has<void>());
+	var first_codegen = rtsl::CodeGenerator(@first, "caller", @diagnostics);
+	var second_codegen = rtsl::CodeGenerator(@second, "helper", @diagnostics);
+	@first_codegen.generate(); @second_codegen.generate();
+	var rt::buffer<rtsl::ir::Module> modules;
+	@modules.push_back(rtsl::ir::Module(first_codegen.builder.module));
+	@modules.push_back(rtsl::ir::Module(second_codegen.builder.module));
+	var linked = rtsl::link_modules(rt::span<rtsl::ir::Module>(modules.data(), modules.size()), "program", @diagnostics, rtsl::artifact_kind::program);
+	rt::test::expect(linked.has<rtsl::ir::Module>());
+	rt::test::expect(!diagnostics.failed());
+	if (linked.has<rtsl::ir::Module>()) {
+		var module = &linked.get<rtsl::ir::Module>();
+		rt::test::expect(module->functions.size() == 2);
+		rt::test::expect(!module->functions.data()[0].declaration);
+		rt::test::expect(rtsl::verify_module(*module, @diagnostics));
+	};
+};

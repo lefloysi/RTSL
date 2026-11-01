@@ -1,0 +1,53 @@
+namespace rtsl {
+	export struct compilation_error {
+	};
+
+	export using CompilationResult = void | compilation_error;
+
+	export enum diagnostic_level : [u08] {
+		warning;
+		error;
+	};
+
+	export struct Diagnostic {
+		diagnostic_level level;
+		Token location;
+		u32 code = 1;
+		rt::string message;
+	};
+
+	export struct DiagnosticsEngine {
+		fn report(var DiagnosticsEngine& this, diagnostic_level level, Token location, rt::string_view message);
+		fn failed(DiagnosticsEngine& this) -> bool;
+		fn diagnostics(DiagnosticsEngine& this) -> rt::buffer<Diagnostic>&;
+		fn clear(var DiagnosticsEngine& this);
+
+	private:
+		rt::buffer<Diagnostic> entries;
+	};
+
+	export fn DiagnosticsEngine::report(var DiagnosticsEngine& this, diagnostic_level level, Token location, rt::string_view message) {
+		Diagnostic diagnostic;
+		@diagnostic.level = $level;
+		@diagnostic.location = $location;
+		@diagnostic.message = rt::string(message);
+		@this.entries.push_back($diagnostic);
+	};
+
+	export fn DiagnosticsEngine::failed(DiagnosticsEngine& this) -> bool {
+		for (usize index = 0; index < this.entries.size(); @index = index + 1) {
+			if (this.entries.data()[index].level == diagnostic_level::error) {
+				return true;
+			};
+		};
+		return false;
+	};
+
+	export fn DiagnosticsEngine::diagnostics(DiagnosticsEngine& this) -> rt::buffer<Diagnostic>& {
+		return this.entries;
+	};
+
+	export fn DiagnosticsEngine::clear(var DiagnosticsEngine& this) {
+		@this.entries.clear();
+	};
+};

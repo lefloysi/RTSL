@@ -1,0 +1,333 @@
+namespace rtsl {
+	fn CodeGenerator::initialize_base(var CodeGenerator& this, u32 id, u32 value) {
+		var record = this.context->decl_at(id);
+		if (record->base.type) {
+			var type = this.context->type_at(record->base.type);
+			@this.initialize_base(this.record_type(record->base), value);
+		};
+		for (usize i = 0; i < record->members.size(); @i = i + 1) {
+			var field = record->members.data()[i];
+			var declaration = this.context->decl_at(field);
+			if (declaration->kind != decl_kind::field) { continue; };
+			var ir::Instruction extract; @extract.operation = ir::opcode::access; @extract.type = @this.lower_type(declaration->type);
+			@extract.operands.push_back(value); @extract.immediates.push_back(@this.builder.module.strings.intern(declaration->name.text()));
+			@(@this.values).data()[field] = @this.append_instruction($extract);
+		};
+	};
+
+	fn CodeGenerator::constructor_fields(var CodeGenerator& this, var ir::Instruction& result, u32 id) {
+		var record = this.context->decl_at(id);
+		if (record->base.type) {
+			var type = this.context->type_at(record->base.type);
+			@this.constructor_fields(@result, this.record_type(record->base));
+		};
+		for (usize i = 0; i < record->members.size(); @i = i + 1) {
+			var field = record->members.data()[i];
+			if (this.context->decl_at(field)->kind != decl_kind::field) { continue; };
+			if (!this.values.data()[field]) { @this.diagnose(this.context->decl_at(field)->name, "constructor leaves a field uninitialized"); };
+			@result.operands.push_back(this.values.data()[field]);
+		};
+	};
+
+	fn integer_text(u32 value) -> rt::string {
+		var char[10] digits;
+		var usize start = 10;
+		for (;;) {
+			@start = start - 1;
+			@digits[start] = static_cast<char>(48 + value % 10);
+			@value = value / 10;
+			if (!value) { break; };
+		};
+		return rt::string(rt::string_view(&digits[start], 10 - start));
+	};
+
+	fn attribute_integer(Token& token) -> u32 {
+		var text = token.text();
+		var u32 result = 0;
+		for (usize i = 0; i < text.size(); @i = i + 1) {
+			var digit = static_cast<u32>(text.data()[i] - '0');
+			if (digit > 9 || result > 429496729 || (result == 429496729 && digit > 5)) { return 0; };
+			@result = result * 10 + digit;
+		};
+		return result;
+	};
+
+	fn CodeGenerator::declare_function(var CodeGenerator& this, u32 id) {
+		var declaration = this.context->decl_at(id);
+		if (declaration->parameters.size() || declaration->redeclaration) { return; };
+		var parent = this.context->decl_at(declaration->parent);
+		if (parent && parent->kind == decl_kind::record && parent->parameters.size() && !declaration->receiver_type.type) { return; };
+		var ir::Function function;
+		var name = this.qualified_name(id);
+		@name.append("(");
+		if (declaration->implicit_object && parent && !declaration->name.same(parent->name)) {
+			var qualified = QualType(declaration->receiver_type);
+			if (!qualified.type) {
+				var Type receiver;
+				@receiver.kind = type_kind::named; @receiver.name = Token(parent->name);
+				@qualified.type = @this.context->add_type($receiver);
+				@this.types.push_back(0);
+			};
+			var ir::Parameter object;
+			@object.type = @this.lower_type(qualified);
+			@object.value = @this.builder.value();
+			@function.parameters.push_back($object);
+		};
+		for (usize i = 0; i < declaration->members.size(); @i = i + 1) {
+			var parameter = this.context->decl_at(declaration->members.data()[i]);
+			if (parameter->kind != decl_kind::parameter) { continue; };
+			var ir::Parameter value;
+			@value.value = @this.builder.value();
+			@value.type = @this.lower_type(parameter->type);
+			@value.symbol = @this.builder.symbol(rt::string(this.qualified_name(id)) + "::" + parameter->name.text(), false);
+			if (function.parameters.size()) { @name.append(","); };
+			@name.append(this.type_signature(parameter->type));
+			@function.parameters.push_back($value);
+		};
+		@name.append(")");
+		if (declaration->template_arguments.size()) {
+			@name.append("<");
+			for (usize i = 0; i < declaration->template_arguments.size(); @i = i + 1) {
+				if (i) { @name.append(","); };
+				var argument = &declaration->template_arguments.data()[i];
+				if (argument->kind == template_argument_kind::integer) { @name.append("value:"); @name.append(integer_text(argument->integer)); }
+				else { @name.append("type:"); @name.append(this.type_signature(argument->type)); };
+			};
+			@name.append(">");
+		};
+		for (usize i = 0; i < declaration->attributes.size(); @i = i + 1) {
+			var attribute = &declaration->attributes.data()[i];
+			if (attribute->name.is("stage") && attribute->arguments.size()) {
+				for (usize j = 0; j < attribute->arguments.size(); @j = j + 1) {
+					if (attribute->arguments.data()[j].kind == token_kind::identifier) { @name.append("@"); @name.append(attribute->arguments.data()[j].text()); break; };
+				};
+			};
+		};
+		@function.symbol = @this.builder.symbol(name, declaration->exported);
+		@function.return_type = @this.lower_type(declaration->type);
+		@function.declaration = !declaration->body;
+		@function.implicit_decl = declaration->implicit_decl;
+		@function.implicit_emitter = declaration->implicit_emitter;
+		var function_id = @this.builder.add_function($function);
+		@(@this.functions).data()[id] = function_id;
+	};
+
+	fn CodeGenerator::define_function(var CodeGenerator& this, u32 id) {
+		var declaration = this.context->decl_at(id);
+		@this.current_function = this.functions.data()[id];
+		@this.current_block = @this.builder.add_block(this.current_function);
+		for (usize i = 0; i < this.values.size(); @i = i + 1) { @(@this.values).data()[i] = 0; };
+		var function = this.builder.module.find_function(this.current_function);
+		var usize parameter_index = 0;
+		@this.current_object = 0;
+		@this.current_constructor = 0;
+		@this.current_emitter = 0;
+		var parent = this.context->decl_at(declaration->parent);
+		if (parent && parent->kind == decl_kind::record && declaration->implicit_object) {
+			if (declaration->name.same(parent->name)) { @this.current_constructor = declaration->parent; }
+			else { @this.current_object = function->parameters.data()[0].value; @parameter_index = 1; };
+		};
+		for (usize i = 0; i < declaration->members.size(); @i = i + 1) {
+			var parameter_id = declaration->members.data()[i];
+			if (this.context->decl_at(parameter_id)->kind == decl_kind::parameter) {
+				@(@this.values).data()[parameter_id] = function->parameters.data()[parameter_index].value;
+				@parameter_index = parameter_index + 1;
+			};
+		};
+		var result_type = this.builder.module.find_type(function->return_type);
+		if (result_type && result_type->kind == ir::type_kind::primitive) {
+			var ir::Instruction initial; @initial.operation = ir::opcode::construct; @initial.type = result_type->id;
+			@this.current_emitter = @this.append_instruction($initial);
+			@(@this.values).data()[0] = this.current_emitter;
+		};
+		if (this.current_constructor && declaration->initializer) {
+			var base_value = @this.expression(declaration->initializer);
+			var record = this.context->decl_at(this.current_constructor);
+			var base = this.context->type_at(record->base.type);
+			if (base) { @this.initialize_base(this.record_type(record->base), base_value); };
+		};
+		@this.statement(declaration->body);
+		var ir::Block* block = @this.builder.block(this.current_function, this.current_block);
+		if (!block->terminator.has_value()) {
+			var ir::Terminator terminator;
+			@terminator.kind = ir::terminator_kind::return_void;
+			if (this.current_emitter) { @terminator.kind = ir::terminator_kind::return_value; @terminator.operands.push_back(this.current_emitter); };
+			if (this.current_constructor) {
+				var ir::Instruction result; @result.operation = ir::opcode::construct; @result.type = @this.lower_type(declaration->type);
+				@this.constructor_fields(@result, this.current_constructor);
+				@terminator.kind = ir::terminator_kind::return_value;
+				@terminator.operands.push_back(@this.append_instruction($result));
+			};
+			@block->terminator = rt::optional<ir::Terminator>($terminator);
+		};
+		@this.order_blocks();
+	};
+
+	fn CodeGenerator::entry(var CodeGenerator& this, u32 id) {
+		var declaration = this.context->decl_at(id);
+		var ir::EntryPoint entry;
+		var bool found = false;
+		for (usize i = 0; i < declaration->attributes.size(); @i = i + 1) {
+			var attribute = &declaration->attributes.data()[i];
+			var ir::EntryAttribute lowered;
+			@lowered.name = @this.builder.module.strings.intern(attribute->name.text());
+			for (usize j = 0; j < attribute->arguments.size(); @j = j + 1) {
+				@lowered.tokens.push_back(@this.builder.module.strings.intern(attribute->arguments.data()[j].text()));
+			};
+			@entry.attributes.push_back($lowered);
+			if (!attribute->name.is("stage") || !attribute->arguments.size()) { continue; };
+			@found = true;
+			var rt::string_view stage;
+			for (usize j = 0; j < attribute->arguments.size(); @j = j + 1) {
+				if (attribute->arguments.data()[j].kind == token_kind::identifier) { @stage = attribute->arguments.data()[j].text(); break; };
+			};
+			if (stage == "vertex") { @entry.kind = ir::stage::vertex; }
+			else if (stage == "fragment") { @entry.kind = ir::stage::fragment; }
+			else if (stage == "compute") {
+				@entry.kind = ir::stage::compute;
+				var ir::ComputeConfiguration configuration;
+				for (usize axis = 0; axis < 3; @axis = axis + 1) { @configuration.workgroup_size[axis] = 1; };
+				@entry.configuration = $configuration;
+			} else if (stage == "geometry") { @entry.kind = ir::stage::geometry; }
+			else if (stage == "tess_control") { @entry.kind = ir::stage::tessellation_control; }
+			else if (stage == "tess_eval") { @entry.kind = ir::stage::tessellation_evaluation; }
+			else { @this.diagnose(attribute->name, "unknown shader stage"); return; };
+		};
+		if (!found) { return; };
+		if (entry.kind == ir::stage::compute) {
+			var ir::Function* function = (@this.builder.module).find_function(this.functions.data()[id]);
+			if (function->parameters.size() != 3) { @this.diagnose(declaration->name, "compute entry requires three usize global invocation parameters"); return; };
+			for (usize i = 0; i < 3; @i = i + 1) {
+				var parameter_type = this.builder.module.find_type(function->parameters.data()[i].type);
+				if (!parameter_type || parameter_type->kind != ir::type_kind::unsigned_integer || parameter_type->bit_width != 32) { @this.diagnose(declaration->name, "compute invocation parameters must have type usize"); return; };
+				var ir::Parameter& parameter = @(@function->parameters).data()[i];
+				@parameter.kind = rt::optional<ir::builtin>(static_cast<ir::builtin>(static_cast<u32>(i + 1)));
+			};
+			var ir::ComputeConfiguration configuration;
+			for (usize i = 0; i < 3; @i = i + 1) { @configuration.workgroup_size[i] = 1; };
+			for (usize i = 0; i < declaration->attributes.size(); @i = i + 1) {
+				var attribute = &declaration->attributes.data()[i];
+				if (!attribute->name.is("workgroup_size")) { continue; };
+				var usize axis = 0;
+				for (usize j = 0; j < attribute->arguments.size(); @j = j + 1) {
+					var token = &attribute->arguments.data()[j];
+					if (token->kind != token_kind::literal_number) { continue; };
+					if (axis >= 3 || !attribute_integer(*token)) { @this.diagnose(*token, "workgroup_size requires three positive u32 dimensions"); return; };
+					@configuration.workgroup_size[axis] = attribute_integer(*token);
+					@axis = axis + 1;
+				};
+				if (axis != 3) { @this.diagnose(attribute->name, "workgroup_size requires three dimensions"); return; };
+			};
+			@entry.configuration = $configuration;
+		} else if (entry.kind == ir::stage::tessellation_control) {
+			var ir::TessellationControlConfiguration configuration;
+			if (declaration->template_arguments.size() != 1 || declaration->template_arguments.data()[0].kind != template_argument_kind::integer || !declaration->template_arguments.data()[0].integer) {
+				@this.diagnose(declaration->name, "tessellation control requires one positive explicit output count, for example fn main<4>(...)");
+				return;
+			};
+			@configuration.output_control_points = declaration->template_arguments.data()[0].integer;
+			@entry.configuration = $configuration;
+		} else if (entry.kind == ir::stage::geometry) {
+			var result_type = this.builder.module.find_type(@this.lower_type(declaration->type));
+			if (!result_type || result_type->kind != ir::type_kind::primitive || !result_type->element_count) { @this.diagnose(declaration->name, "geometry requires a primitive output with a positive vertex limit"); return; };
+			var ir::GeometryConfiguration configuration;
+			@configuration.input = ir::primitive_topology::triangles;
+			@configuration.output = ir::primitive_topology::triangle_strip;
+			@configuration.maximum_vertices = result_type->element_count;
+			@configuration.invocations = 1;
+			@entry.configuration = $configuration;
+		} else if (entry.kind == ir::stage::tessellation_evaluation) {
+			var ir::TessellationEvaluationConfiguration configuration;
+			@configuration.order = ir::winding::counter_clockwise;
+			for (usize i = 0; i < declaration->members.size(); @i = i + 1) {
+				var parameter = this.context->decl_at(declaration->members.data()[i]);
+				if (parameter->kind != decl_kind::parameter) { continue; };
+				var type = this.context->type_at(parameter->type.type);
+				if (type && (type->kind == type_kind::reference || type->kind == type_kind::pointer)) { @type = this.context->type_at(type->pointee.type); };
+				if (type && type->name.is("quad_patch")) { @configuration.domain = ir::tessellation_domain::quads; }
+				else if (type && type->name.is("isoline_patch")) { @configuration.domain = ir::tessellation_domain::isolines; };
+				break;
+			};
+			for (usize i = 0; i < declaration->type_only_parameters.size(); @i = i + 1) {
+				var type = this.context->type_at(declaration->type_only_parameters.data()[i].type);
+				if (!type || !type->name.is("tessellation")) { continue; };
+				for (usize j = 0; j < type->arguments.size(); @j = j + 1) {
+					var setting = this.context->type_at(type->arguments.data()[j].type.type);
+					if (!setting) { continue; };
+					if (setting->name.is("fractional_even")) { @configuration.spacing = ir::tessellation_spacing::fractional_even; }
+					else if (setting->name.is("fractional_odd")) { @configuration.spacing = ir::tessellation_spacing::fractional_odd; }
+					else if (setting->name.is("cw")) { @configuration.order = ir::winding::clockwise; }
+					else if (setting->name.is("ccw")) { @configuration.order = ir::winding::counter_clockwise; };
+				};
+			};
+			@entry.configuration = $configuration;
+		};
+		@entry.function = this.functions.data()[id];
+		@entry.symbol = this.builder.module.find_function(entry.function)->symbol;
+		@entry.source_name = @this.builder.module.strings.intern(declaration->name.text());
+		for (usize i = 0; i < declaration->contracts.size(); @i = i + 1) {
+			var contract = &declaration->contracts.data()[i];
+			var ir::InterfaceContract lowered;
+			@lowered.parameter_index = contract->parameter;
+			@lowered.contract = @this.builder.module.strings.intern(contract->contract.text());
+			for (usize j = 0; j < contract->member_path.size(); @j = j + 1) { @lowered.member_path.push_back(@this.builder.module.strings.intern(contract->member_path.data()[j].text())); };
+			@entry.parameter_contracts.push_back($lowered);
+		};
+		@this.builder.module.entry_points.push_back($entry);
+	};
+
+	fn CodeGenerator::generate(var CodeGenerator& this) {
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			var declaration = &this.context->declarations.data()[i];
+			if (declaration->kind != decl_kind::variable || declaration->parent != this.context->root || declaration->type.constant) { continue; };
+			var symbol = @this.builder.symbol(this.qualified_name(static_cast<u32>(i + 1)), declaration->exported);
+			@(@this.globals).data()[i + 1] = symbol;
+			var type = @this.lower_type(declaration->type);
+			if (declaration->storage == storage_class::uniform) {
+				var ir::Uniform uniform;
+				@uniform.symbol = symbol; @uniform.type = type;
+				@this.builder.module.uniforms.push_back($uniform);
+			} else {
+				var source_type = this.context->type_at(declaration->type.type);
+				var name = source_type->name.text();
+				if (name == "buffer" || name == "texture_1d" || name == "texture_2d" || name == "texture_3d" || name == "image_1d" || name == "image_2d" || name == "image_3d") {
+					var ir::Resource resource;
+					@resource.symbol = symbol; @resource.type = type;
+					@resource.kind = ir::resource_kind::storage_buffer;
+					@resource.access = ir::access_kind::read_write;
+					if (name == "texture_1d" || name == "texture_2d" || name == "texture_3d") { @resource.kind = ir::resource_kind::sampled_texture; @resource.access = ir::access_kind::read_only; }
+					else if (name == "image_1d" || name == "image_2d" || name == "image_3d") { @resource.kind = ir::resource_kind::storage_texture; };
+					@this.builder.module.resources.push_back($resource);
+					continue;
+				};
+				var ir::StorageObject storage;
+				@storage.symbol = symbol; @storage.type = type;
+				@storage.space = ir::address_space::private_space;
+				if (declaration->storage == storage_class::storage) { @storage.space = ir::address_space::storage; };
+				@this.builder.module.storage_objects.push_back($storage);
+			};
+		};
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			if (this.context->declarations.data()[i].kind == decl_kind::function) { @this.declare_function(static_cast<u32>(i + 1)); };
+		};
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			var canonical = this.context->declarations.data()[i].redeclaration;
+			if (canonical) { @(@this.functions).data()[i + 1] = this.functions.data()[canonical]; };
+		};
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			if (this.functions.data()[i + 1] && this.context->declarations.data()[i].body && !this.context->declarations.data()[i].redeclaration) { @this.define_function(static_cast<u32>(i + 1)); };
+		};
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			if (this.functions.data()[i + 1] && !this.context->declarations.data()[i].redeclaration) { @this.entry(static_cast<u32>(i + 1)); };
+		};
+	};
+
+	export fn compile_program(var ASTContext& context, rt::string_view module_name, artifact_kind output_kind, var DiagnosticsEngine& diagnostics) -> rt::buffer<u08> | compilation_error {
+		var generator = CodeGenerator(@context, module_name, @diagnostics);
+		@generator.generate();
+		if (output_kind == artifact_kind::program) { finalize_program(@generator.builder, @diagnostics); };
+		discard verify_module(generator.builder.module, @diagnostics);
+		if (diagnostics.failed()) { return compilation_error(); };
+		return write_artifact(generator.builder.module, output_kind);
+	};
+};

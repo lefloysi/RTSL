@@ -1,0 +1,77 @@
+namespace rtsl {
+	export fn Sema::declaration(var Sema& this, u32 id) {
+		Decl* original = this.context->decl_at(id);
+		if (!original) {
+			return;
+		};
+		var value = Decl(*original);
+		if (value.initializer) {
+			u32 scope = value.parent;
+			if (value.kind == decl_kind::function) {
+				@scope = id;
+			};
+			var type = @this.expression(value.initializer, scope, value.type);
+			if (!value.type.type) {
+				@value.type = QualType(type);
+				@(@this.context->decl_at(id))->type = $type;
+			};
+		};
+		if (value.kind != decl_kind::function) {
+			return;
+		};
+		if (!value.type.type) {
+			@value.type = this.builtin(builtin_type::void_type);
+			@(@this.context->decl_at(id))->type = QualType(value.type);
+		};
+		if (value.parent && this.context->decl_at(value.parent)->kind == decl_kind::record) {
+			@(@this.context->decl_at(id))->implicit_object = true;
+		};
+		if (value.body) {
+			@this.statement(value.body, value.type);
+		};
+	};
+
+	export fn Sema::statement(var Sema& this, u32 id, QualType result) {
+		Stmt* original = this.context->stmt_at(id);
+		if (!original) {
+			return;
+		};
+		var value = Stmt(*original);
+		if (value.kind == stmt_kind::declaration) {
+			@this.declaration(value.declaration);
+			return;
+		};
+		if (value.kind == stmt_kind::compound) {
+			for (usize index = 0; index < value.body.size(); @index = index + 1) {
+				@this.statement(value.body.data()[index], result);
+			};
+			return;
+		};
+		if (value.kind == stmt_kind::return_value) {
+			var returned = @this.expression(value.value, value.scope, result);
+			if (!this.same_type(returned, result)) {
+				@this.error(value.location, "return type does not match function result");
+			};
+			return;
+		};
+		if (value.initialization) {
+			@this.statement(value.initialization, result);
+		};
+		if (value.value) {
+			discard @this.expression(value.value, value.scope, QualType());
+			Expr* expression = this.context->expr_at(value.value);
+			if (value.kind == stmt_kind::expression && expression->kind == expr_kind::call && this.context->expr_at(expression->left)->location.is("barrier")) {
+				@(@this.context->stmt_at(id))->kind = stmt_kind::barrier;
+			};
+		};
+		if (value.increment) {
+			discard @this.expression(value.increment, value.scope, QualType());
+		};
+		if (value.then_branch) {
+			@this.statement(value.then_branch, result);
+		};
+		if (value.else_branch) {
+			@this.statement(value.else_branch, result);
+		};
+	};
+};

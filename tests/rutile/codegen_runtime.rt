@@ -1,0 +1,116 @@
+fn "C" rtsl_test_execute_scalar(u08* data, u64 size, char* name, f64 argument, f64 expected) -> i32;
+fn puts(char* text) -> i32;
+
+[[test]]
+fn shader_codegen_executes_loops_branches_calls_constructors_and_math() {
+	rtsl::SourceFile source;
+	@source.assign("runtime.rtsl", """
+fn sum(i32 count) -> i32 {
+	var result = 0;
+	for (var index = 0; index < count; @index = index + 1) {
+		if (index == 2) { continue; };
+		if (index == 7) { break; };
+		@result = result + index;
+	};
+	return result;
+};
+fn choose(i32 input) -> i32 {
+	var result = 1;
+	if (input < 0) { @result = 11; } else { @result = 22; };
+	return result + input;
+};
+fn returned_branch(i32 input) -> i32 {
+	if (input < 0) { return 11; } else { return 22; };
+};
+fn countdown(i32 input) -> i32 {
+	var result = 0;
+	while (input > 0) { @result = result + input; @input = input - 1; };
+	return result;
+};
+fn square(i32 input) -> i32 { return input * input; };
+fn composed(i32 input) -> i32 { return square(input) + sum(input); };
+fn noop() {};
+fn after_noop(i32 input) -> i32 { noop(); return input + 1; };
+fn nested(i32 count) -> i32 {
+	var result = 0;
+	for (var outer = 0; outer < count; @outer = outer + 1) {
+		var scaled = outer * 2;
+		for (var inner = 0; inner < 3; @inner = inner + 1) {
+			var term = scaled + inner;
+			@result = result + term;
+		};
+	};
+	for (var next = 0; next < 2; @next = next + 1) {
+		var bonus = next + 1;
+		@result = result + bonus;
+	};
+	return result;
+};
+struct Base { f32 first; };
+struct Pair : Base {
+	f32 second;
+	fn Pair(var Pair& this, f32 value) { @first = value * 2.0; @second = value + 1.0; };
+	fn total() -> f32 { return first + second; };
+};
+fn construct_value(f32 input) -> f32 { var pair = Pair(input); return pair.total(); };
+fn sqrt(f32 value) -> f32;
+fn clamp(f32 value, f32 low, f32 high) -> f32;
+fn maths(f32 input) -> f32 { return clamp(sqrt(input), 2.0, 4.0); };
+fn numeric_cast(f32 input) -> f32 { return f32(i32(input)); };
+""");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	var parsed = @parser.parse();
+	if (!parsed.has<void>()) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) {
+			var diagnostic = &diagnostics.diagnostics().data()[i];
+			discard puts(diagnostic->message.c_str());
+			discard puts(rt::string(source.text().slice(diagnostic->location.begin, source.text().size() - diagnostic->location.begin)).c_str());
+		};
+	};
+	rt::test::expect(parsed.has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	var analyzed = @sema.analyze();
+	if (!analyzed.has<void>()) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) {
+			var diagnostic = &diagnostics.diagnostics().data()[i];
+			discard puts(diagnostic->message.c_str());
+			discard puts(rt::string(source.text().slice(diagnostic->location.begin, source.text().size() - diagnostic->location.begin)).c_str());
+		};
+	};
+	rt::test::expect(analyzed.has<void>());
+	var generator = rtsl::CodeGenerator(@context, "runtime", @diagnostics);
+	@generator.generate();
+	if (diagnostics.failed()) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) { discard puts(diagnostics.diagnostics().data()[i].message.c_str()); };
+	};
+	rt::test::expect(!diagnostics.failed());
+	var verified = rtsl::verify_module(generator.builder.module, @diagnostics);
+	if (!verified) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) { discard puts(diagnostics.diagnostics().data()[i].message.c_str()); };
+	};
+	rt::test::expect(verified);
+	var bytes = rtsl::write_artifact(generator.builder.module, rtsl::artifact_kind::object);
+	var size = static_cast<u64>(bytes.size());
+	for (i32 count = 0; count <= 10; @count = count + 1) {
+		i32 expected = 0;
+		for (i32 index = 0; index < count && index < 7; @index = index + 1) { if (index != 2) { @expected = expected + index; }; };
+		rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "sum\0".data(), static_cast<f64>(count), static_cast<f64>(expected)) == 0);
+		rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "composed\0".data(), static_cast<f64>(count), static_cast<f64>(count * count + expected)) == 0);
+		rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "countdown\0".data(), static_cast<f64>(count), static_cast<f64>(count * (count + 1) / 2)) == 0);
+		rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "nested\0".data(), static_cast<f64>(count), static_cast<f64>(3 * count * count + 3)) == 0);
+	};
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "choose\0".data(), -3.0, 8.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "choose\0".data(), 5.0, 27.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "returned_branch\0".data(), -3.0, 11.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "returned_branch\0".data(), 5.0, 22.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "construct_value\0".data(), 3.0, 10.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "maths\0".data(), 1.0, 2.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "maths\0".data(), 9.0, 3.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "maths\0".data(), 100.0, 4.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "numeric_cast\0".data(), -2.75, -2.0) == 0);
+	rt::test::expect(rtsl_test_execute_scalar(bytes.data(), size, "after_noop\0".data(), 5.0, 6.0) == 0);
+};

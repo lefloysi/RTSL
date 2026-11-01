@@ -1,0 +1,232 @@
+namespace rtsl {
+	export enum artifact_kind : [u08] {
+		object;
+		module;
+		program;
+	};
+
+	struct BinaryWriter {
+		fn byte(var BinaryWriter& this, u08 value) { @this.bytes.push_back(value); };
+		fn word(var BinaryWriter& this, u32 value) {
+			for (u32 shift = 0; shift < 32; @shift = shift + 8) {
+				@this.byte(static_cast<u08>(value >> shift));
+			};
+		};
+		fn wide(var BinaryWriter& this, u64 value) {
+			for (u32 shift = 0; shift < 64; @shift = shift + 8) {
+				@this.byte(static_cast<u08>(value >> static_cast<u64>(shift)));
+			};
+		};
+		fn flag(var BinaryWriter& this, bool value) {
+			if (value) { @this.byte(1); } else { @this.byte(0); };
+		};
+		fn count(var BinaryWriter& this, usize value) { @this.word(static_cast<u32>(value)); };
+		fn words(var BinaryWriter& this, rt::buffer<u32>& values) {
+			@this.count(values.size());
+			for (usize i = 0; i < values.size(); @i = i + 1) { @this.word(values.data()[i]); };
+		};
+		fn optional_word(var BinaryWriter& this, rt::optional<u32>& value) {
+			@this.flag(value.has_value());
+			if (value.has_value()) { @this.word(value.value()); };
+		};
+		fn binding(var BinaryWriter& this, rt::optional<ir::Binding>& value) {
+			@this.flag(value.has_value());
+			if (value.has_value()) {
+				@this.word(value.value().set);
+				@this.word(value.value().binding);
+			};
+		};
+		rt::buffer<u08> bytes;
+	};
+
+	fn write_terminator(var BinaryWriter& writer, ir::Terminator& value) {
+		@writer.word(static_cast<u32>(value.kind));
+		@writer.words(value.operands);
+		@writer.count(value.successors.size());
+		for (usize i = 0; i < value.successors.size(); @i = i + 1) {
+			var successor = &value.successors.data()[i];
+			@writer.word(successor->block);
+			@writer.words(successor->arguments);
+		};
+		@writer.words(value.immediates);
+	};
+
+	export fn write_artifact(ir::Module& module, artifact_kind kind) -> rt::buffer<u08> {
+		var BinaryWriter[9] sections;
+		@sections[0].count(module.strings.values.size());
+		for (usize i = 0; i < module.strings.values.size(); @i = i + 1) {
+			var text = rt::string_view(module.strings.values.data()[i]);
+			@sections[0].count(text.size());
+			for (usize j = 0; j < text.size(); @j = j + 1) {
+				@sections[0].byte(static_cast<u08>(text.data()[j]));
+			};
+		};
+		@sections[1].word(module.name);
+		@sections[2].count(module.types.size());
+		for (usize i = 0; i < module.types.size(); @i = i + 1) {
+			var type = &module.types.data()[i];
+			@sections[2].word(type->id);
+			@sections[2].word(static_cast<u32>(type->kind));
+			@sections[2].word(type->bit_width);
+			@sections[2].word(type->element_type);
+			@sections[2].word(type->element_count);
+			@sections[2].word(static_cast<u32>(type->space));
+			@sections[2].words(type->parameter_types);
+			@sections[2].count(type->members.size());
+			for (usize j = 0; j < type->members.size(); @j = j + 1) {
+				var member = &type->members.data()[j];
+				@sections[2].word(member->name);
+				@sections[2].word(member->type);
+				@sections[2].optional_word(member->offset);
+				@sections[2].optional_word(member->alignment);
+			};
+			@sections[2].count(type->builtin_members.size());
+			for (usize j = 0; j < type->builtin_members.size(); @j = j + 1) {
+				var member = &type->builtin_members.data()[j];
+				@sections[2].word(static_cast<u32>(member->kind));
+				@sections[2].words(member->member_path);
+			};
+			@sections[2].word(type->name);
+		};
+		@sections[3].count(module.symbols.size());
+		for (usize i = 0; i < module.symbols.size(); @i = i + 1) {
+			var symbol = &module.symbols.data()[i];
+			@sections[3].word(symbol->id);
+			@sections[3].word(symbol->name);
+			@sections[3].flag(symbol->exported);
+		};
+		@sections[4].count(module.functions.size());
+		for (usize i = 0; i < module.functions.size(); @i = i + 1) {
+			var function = &module.functions.data()[i];
+			@sections[4].word(function->id);
+			@sections[4].word(function->symbol);
+			@sections[4].word(function->return_type);
+			@sections[4].flag(function->declaration);
+			@sections[4].flag(function->implicit_emitter);
+			@sections[4].flag(function->implicit_decl);
+			@sections[4].count(function->parameters.size());
+			for (usize j = 0; j < function->parameters.size(); @j = j + 1) {
+				var parameter = &function->parameters.data()[j];
+				@sections[4].word(parameter->value);
+				@sections[4].word(parameter->type);
+				@sections[4].word(parameter->symbol);
+				@sections[4].flag(parameter->kind.has_value());
+				if (parameter->kind.has_value()) { @sections[4].word(static_cast<u32>(parameter->kind.value())); };
+			};
+			@sections[4].count(function->blocks.size());
+			for (usize j = 0; j < function->blocks.size(); @j = j + 1) {
+				var block = &function->blocks.data()[j];
+				@sections[4].word(block->id);
+				@sections[4].count(block->arguments.size());
+				for (usize k = 0; k < block->arguments.size(); @k = k + 1) {
+					@sections[4].word(block->arguments.data()[k].value);
+					@sections[4].word(block->arguments.data()[k].type);
+				};
+				@sections[4].count(block->instructions.size());
+				for (usize k = 0; k < block->instructions.size(); @k = k + 1) {
+					var instruction = &block->instructions.data()[k];
+					@sections[4].word(static_cast<u32>(instruction->operation));
+					@sections[4].word(instruction->result);
+					@sections[4].word(instruction->type);
+					@sections[4].word(instruction->callee);
+					@sections[4].words(instruction->operands);
+					@sections[4].words(instruction->immediates);
+				};
+				@sections[4].flag(block->terminator.has_value());
+				if (block->terminator.has_value()) { write_terminator(@sections[4], block->terminator.value()); };
+				@sections[4].word(static_cast<u32>(block->merge.kind));
+				@sections[4].word(block->merge.merge_block);
+				@sections[4].word(block->merge.continue_block);
+			};
+		};
+		@sections[5].count(module.entry_points.size());
+		for (usize i = 0; i < module.entry_points.size(); @i = i + 1) {
+			var entry = &module.entry_points.data()[i];
+			@sections[5].word(entry->symbol);
+			@sections[5].word(entry->function);
+			@sections[5].word(entry->source_name);
+			@sections[5].word(static_cast<u32>(entry->kind));
+			if (entry->configuration.has<ir::TessellationControlConfiguration>()) {
+				@sections[5].byte(1);
+				@sections[5].word(entry->configuration.get<ir::TessellationControlConfiguration>().output_control_points);
+			} else if (entry->configuration.has<ir::TessellationEvaluationConfiguration>()) {
+				@sections[5].byte(2);
+				var value = &entry->configuration.get<ir::TessellationEvaluationConfiguration>();
+				@sections[5].word(static_cast<u32>(value->domain));
+				@sections[5].word(static_cast<u32>(value->spacing));
+				@sections[5].word(static_cast<u32>(value->order));
+			} else if (entry->configuration.has<ir::GeometryConfiguration>()) {
+				@sections[5].byte(3);
+				var value = &entry->configuration.get<ir::GeometryConfiguration>();
+				@sections[5].word(static_cast<u32>(value->input));
+				@sections[5].word(static_cast<u32>(value->output));
+				@sections[5].word(value->maximum_vertices);
+				@sections[5].word(value->invocations);
+			} else if (entry->configuration.has<ir::ComputeConfiguration>()) {
+				@sections[5].byte(4);
+				var value = &entry->configuration.get<ir::ComputeConfiguration>();
+				for (usize j = 0; j < 3; @j = j + 1) { @sections[5].word(value->workgroup_size[j]); };
+			} else { @sections[5].byte(0); };
+			@sections[5].count(entry->attributes.size());
+			for (usize j = 0; j < entry->attributes.size(); @j = j + 1) {
+				@sections[5].word(entry->attributes.data()[j].name);
+				@sections[5].words(entry->attributes.data()[j].tokens);
+			};
+			@sections[5].count(entry->parameter_contracts.size());
+			for (usize j = 0; j < entry->parameter_contracts.size(); @j = j + 1) {
+				var contract = &entry->parameter_contracts.data()[j];
+				@sections[5].word(contract->parameter_index);
+				@sections[5].words(contract->member_path);
+				@sections[5].word(contract->contract);
+			};
+		};
+		@sections[6].count(module.resources.size());
+		for (usize i = 0; i < module.resources.size(); @i = i + 1) {
+			var value = &module.resources.data()[i];
+			@sections[6].word(value->symbol);
+			@sections[6].word(static_cast<u32>(value->kind));
+			@sections[6].word(value->type);
+			@sections[6].word(static_cast<u32>(value->access));
+			@sections[6].binding(value->binding);
+			@sections[6].words(value->users);
+		};
+		@sections[7].count(module.uniforms.size());
+		for (usize i = 0; i < module.uniforms.size(); @i = i + 1) {
+			var value = &module.uniforms.data()[i];
+			@sections[7].word(value->symbol);
+			@sections[7].word(value->type);
+			@sections[7].binding(value->binding);
+			@sections[7].optional_word(value->offset);
+			@sections[7].optional_word(value->size);
+			@sections[7].optional_word(value->alignment);
+		};
+		@sections[8].count(module.storage_objects.size());
+		for (usize i = 0; i < module.storage_objects.size(); @i = i + 1) {
+			var value = &module.storage_objects.data()[i];
+			@sections[8].word(value->symbol);
+			@sections[8].word(value->type);
+			@sections[8].word(static_cast<u32>(value->space));
+			@sections[8].word(static_cast<u32>(value->access));
+			@sections[8].binding(value->binding);
+			@sections[8].optional_word(value->initializer);
+		};
+		var BinaryWriter writer;
+		var rt::string_view magic = "RTSLRTIR";
+		for (usize i = 0; i < magic.size(); @i = i + 1) { @writer.byte(static_cast<u08>(magic.data()[i])); };
+		@writer.byte(0); @writer.byte(0);
+		@writer.byte(1); @writer.byte(0);
+		@writer.word(16909060);
+		@writer.byte(static_cast<u08>(kind)); @writer.byte(7); @writer.byte(0); @writer.byte(0);
+		@writer.word(9);
+		var u64 offset = 240;
+		for (usize i = 0; i < 9; @i = i + 1) {
+			@writer.word(static_cast<u32>(i + 1)); @writer.word(0);
+			@writer.wide(offset); @writer.wide(static_cast<u64>(sections[i].bytes.size()));
+			@offset = offset + static_cast<u64>(sections[i].bytes.size());
+		};
+		for (usize i = 0; i < 9; @i = i + 1) {
+			for (usize j = 0; j < sections[i].bytes.size(); @j = j + 1) { @writer.byte(sections[i].bytes.data()[j]); };
+		};
+		return rt::buffer<u08>(writer.bytes);
+	};
+};

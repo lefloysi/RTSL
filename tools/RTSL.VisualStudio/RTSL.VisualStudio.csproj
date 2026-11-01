@@ -21,6 +21,9 @@
     <StartAction>Program</StartAction>
     <StartProgram>$(DevEnvDir)devenv.exe</StartProgram>
     <StartArguments>/rootsuffix Exp</StartArguments>
+    <RtslBuildDirectory Condition="'$(RtslBuildDirectory)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\..\build\release</RtslBuildDirectory>
+    <RtslLanguageServerPath Condition="'$(RtslLanguageServerPath)' == ''">$(RtslBuildDirectory)\target-7274736c2d6c7370\rtsl-lsp.exe</RtslLanguageServerPath>
+    <RtslLexerPath Condition="'$(RtslLexerPath)' == ''">$(RtslBuildDirectory)\target-7274736c2d6c65786572\rtsl-lexer.dll</RtslLexerPath>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.0.32112.339" />
@@ -33,12 +36,10 @@
   <ItemGroup><Reference Include="System.ComponentModel.Composition" /><Reference Include="PresentationCore" /></ItemGroup>
   <ItemGroup>
     <None Include="source.extension.vsixmanifest" />
-    <Content Include="..\rtsl-lsp\x64\Release\rtsl-lsp.exe"><Link>rtsl-lsp.exe</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
-    <Content Include="..\rtsl-lexer\x64\Release\rtsl-lexer.dll"><Link>rtsl-lexer.dll</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
+    <Content Include="$(RtslLanguageServerPath)"><Link>rtsl-lsp.exe</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
+    <Content Include="$(RtslLexerPath)"><Link>rtsl-lexer.dll</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
+    <Content Include="..\..\std\**\*.rtsl"><Link>std\%(RecursiveDir)%(Filename)%(Extension)</Link><IncludeInVSIX>true</IncludeInVSIX></Content>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets" Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\VSSDK\Microsoft.VsSDK.targets')" />
-  <Target Name="BuildRtslLexer" BeforeTargets="CreateVsixContainer">
-    <MSBuild Projects="$(MSBuildProjectDirectory)\..\rtsl-lexer\rtsl-lexer.vcxproj" Targets="Build" Properties="Configuration=Release;Platform=x64" />
-  </Target>
   <Target Name="CreateDebugVsix" AfterTargets="Build" DependsOnTargets="CreateVsixContainer" Condition="'$(Configuration)' == 'Debug'" />
 </Project>

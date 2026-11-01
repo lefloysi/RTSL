@@ -1,0 +1,108 @@
+fn "C" rtsl_read(i32 file, var void* bytes, u32 count) -> i32;
+fn "C" rtsl_binary_stdio();
+
+namespace rtsl::lsp {
+	struct EndOfInput {};
+	struct TransportError {};
+
+	fn quote(rt::string_view text) -> rt::string {
+		rt::string result = rt::string("\"");
+		for (usize index = 0; index < text.size(); @index = index + 1) {
+			char value = text.data()[index];
+			if (value == '"') { @result.append("\\\""); }
+			else if (value == '\\') { @result.append("\\\\"); }
+			else if (value == '\n') { @result.append("\\n"); }
+			else if (value == '\r') { @result.append("\\r"); }
+			else if (value == '\t') { @result.append("\\t"); }
+			else if (static_cast<u08>(value) < 32) {
+				@result.append("\\u00");
+				var digits = rt::string_view("0123456789abcdef");
+				@result.append(digits.slice(static_cast<usize>(static_cast<u08>(value) / 16), 1));
+				@result.append(digits.slice(static_cast<usize>(static_cast<u08>(value) % 16), 1));
+			}
+			else { @result.append(text.slice(index, 1)); };
+		};
+		@result.append("\"");
+		return $result;
+	};
+
+	fn number(rt::string_view text) -> usize {
+		usize result = 0;
+		for (usize index = 0; index < text.size(); @index = index + 1) {
+			char value = text.data()[index];
+			if (value < '0' || value > '9') { return 0; };
+			usize digit = static_cast<usize>(value - '0');
+			if (result > (usize::max - digit) / 10) { return 0; };
+			@result = result * 10 + digit;
+		};
+		return result;
+	};
+
+	fn read_line() -> rt::string | EndOfInput | TransportError {
+		rt::string line;
+		while (line.size() < 8192) {
+			char byte;
+			i32 read = rtsl_read(0, reinterpret_cast<var void*>(&@byte), 1);
+			if (!read) { return EndOfInput(); };
+			if (read < 0) { return TransportError(); };
+			if (byte == '\n') { return $line; };
+			@line.append(rt::string_view(&@byte, 1));
+		};
+		return TransportError();
+	};
+
+	fn receive() -> rt::string | EndOfInput | TransportError {
+		usize length = 0;
+		while (true) {
+			var read = read_line();
+			if (read.has<EndOfInput>()) { return EndOfInput(); };
+			if (!read.has<rt::string>()) { return TransportError(); };
+			var line = read.get<rt::string>().trim();
+			if (line.empty()) { break; };
+			if (line.size() >= 15 && line.slice(0, 15) == "Content-Length:") {
+				@length = number(line.slice(15, line.size() - 15).trim());
+			};
+		};
+		if (!length || length > 33554432) { return TransportError(); };
+		rt::string body;
+		while (body.size() < length) {
+			char[4096] bytes;
+			usize remaining = length - body.size();
+			if (remaining > 4096) { @remaining = 4096; };
+			i32 count = rtsl_read(0, reinterpret_cast<var void*>(&@bytes[0]), static_cast<u32>(remaining));
+			if (count <= 0) { return TransportError(); };
+			@body.append(rt::string_view(&@bytes[0], static_cast<usize>(count)));
+		};
+		return $body;
+	};
+
+	fn send(rt::string_view body) {
+		rt::string header = rt::string("Content-Length: ");
+		cli_number(@header, body.size());
+		@header.append("\r\n\r\n");
+		cli_write(1, header);
+		cli_write(1, body);
+	};
+
+	fn field(rt::json_value* value, rt::string_view key) -> rt::json_value* {
+		if (!value) { return nullptr; };
+		return value->member(key);
+	};
+
+	fn text(rt::json_value* value) -> rt::string_view {
+		if (!value || value->kind() != rt::json_kind::string) { return rt::string_view(); };
+		return value->text();
+	};
+
+	fn id(rt::json_value* value) -> rt::string {
+		if (!value) { return rt::string("null"); };
+		if (value->kind() == rt::json_kind::string) { return quote(value->text()); };
+		if (value->kind() == rt::json_kind::number) { return rt::string(value->text()); };
+		return rt::string("null");
+	};
+
+	fn reply(rt::json_value* request_id, rt::string_view result) {
+		var body = rt::string("{\"jsonrpc\":\"2.0\",\"id\":") + id(request_id) + ",\"result\":" + result + "}";
+		send(body);
+	};
+};

@@ -1,0 +1,360 @@
+namespace rtsl {
+	export struct Sema {
+		fn Sema(var Sema& this, var ASTContext& context, var DiagnosticsEngine& diagnostics);
+		fn analyze(var Sema& this) -> CompilationResult;
+		fn builtin(Sema& this, builtin_type kind) -> QualType;
+		fn resolve_type(var Sema& this, QualType value, u32 scope, usize depth) -> QualType;
+		fn same_type(Sema& this, QualType left, QualType right) -> bool;
+		fn lookup(Sema& this, Token& name, u32 scope, bool types) -> u32;
+		fn record_for(Sema& this, QualType type) -> u32;
+		fn member(Sema& this, QualType type, Token& name) -> u32;
+		fn expression(var Sema& this, u32 id, u32 scope, QualType expected) -> QualType;
+		fn finish_expression(var Sema& this, u32 id, Expr value) -> QualType;
+		fn statement(var Sema& this, u32 id, QualType result);
+		fn declaration(var Sema& this, u32 id);
+		fn signature(var Sema& this, u32 id);
+		fn contextual(var Sema& this, u32 id, QualType type);
+		fn substitute(var Sema& this, QualType type, u32 owner, rt::buffer<TemplateArgument>& arguments) -> QualType;
+		fn receiver_type(var Sema& this, QualType type, QualType receiver) -> QualType;
+		fn infer_type(var Sema& this, QualType pattern, QualType actual, u32 owner, var rt::buffer<TemplateArgument>& arguments);
+		fn instantiate(var Sema& this, u32 pattern, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32;
+		fn instantiate_record(var Sema& this, u32 type, u32 pattern, rt::buffer<TemplateArgument>& arguments, usize depth) -> u32;
+		fn clone_expression(var Sema& this, u32 id, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32;
+		fn clone_statement(var Sema& this, u32 id, u32 scope, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32;
+		fn error(var Sema& this, Token location, rt::string_view message);
+
+		var ASTContext* context;
+		var DiagnosticsEngine* diagnostics;
+		rt::buffer<QualType> builtins;
+	};
+
+	export fn Sema::Sema(var Sema& this, var ASTContext& context, var DiagnosticsEngine& diagnostics) {
+		@this.context = &@context;
+		@this.diagnostics = &@diagnostics;
+		for (u32 index = 0; index < 6; @index = index + 1) {
+			Type value;
+			@value.kind = type_kind::builtin;
+			@value.builtin = static_cast<builtin_type>(index);
+			QualType type;
+			@type.type = @context.add_type($value);
+			@this.builtins.push_back($type);
+		};
+	};
+
+	export fn Sema::builtin(Sema& this, builtin_type kind) -> QualType {
+		return QualType(this.builtins.data()[static_cast<usize>(kind)]);
+	};
+
+	export fn Sema::error(var Sema& this, Token location, rt::string_view message) {
+		@this.diagnostics->report(diagnostic_level::error, $location, message);
+	};
+
+	export fn Sema::lookup(Sema& this, Token& name, u32 scope, bool types) -> u32 {
+		while (scope) {
+			u32 found = 0;
+			for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+				Decl& candidate = this.context->declarations.data()[index];
+				bool is_type = candidate.kind == decl_kind::record || candidate.kind == decl_kind::type_alias;
+				if (candidate.parent != scope || is_type != types || !candidate.name.same(name)) {
+					continue;
+				};
+				if (!types && candidate.kind == decl_kind::variable && candidate.name.source == name.source && candidate.name.begin > name.begin) {
+					continue;
+				};
+				@found = static_cast<u32>(index + 1);
+			};
+			if (found) {
+				return found;
+			};
+			Decl& owner = *this.context->decl_at(scope);
+			if (!types && owner.kind == decl_kind::record && owner.base.type) {
+				u32 inherited = this.member(owner.base, name);
+				if (inherited) {
+					return inherited;
+				};
+			};
+			@scope = this.context->decl_at(scope)->parent;
+		};
+		return 0;
+	};
+
+	export fn Sema::resolve_type(var Sema& this, QualType value, u32 scope, usize depth) -> QualType {
+		if (!value.type) {
+			return $value;
+		};
+		if (depth > 128) {
+			@this.error(this.context->type_at(value.type)->name, "recursive type definition");
+			return QualType();
+		};
+		var Type* type = @this.context->type_at(value.type);
+		if (type->kind == type_kind::builtin || type->kind == type_kind::template_parameter) {
+			return $value;
+		};
+		if (type->kind == type_kind::pointer || type->kind == type_kind::reference) {
+			var pointee = @this.resolve_type(type->pointee, scope, depth + 1);
+			@type->pointee = $pointee;
+			return $value;
+		};
+		var name = Token(type->name);
+		if (type->kind == type_kind::specialization) {
+			for (usize index = 0; index < type->arguments.size(); @index = index + 1) {
+				var TemplateArgument& argument = @(@type->arguments).data()[index];
+				if (argument.kind == template_argument_kind::type) {
+					Token parameter_name;
+					Type* argument_type = this.context->type_at(argument.type.type);
+					if (argument_type) {
+						@parameter_name = Token(argument_type->name);
+					};
+					u32 owner = scope;
+					while (owner) {
+						Decl& declaration = *this.context->decl_at(owner);
+						for (usize parameter = 0; parameter < declaration.parameters.size(); @parameter = parameter + 1) {
+							TemplateParameter& candidate = declaration.parameters.data()[parameter];
+							if (!candidate.is_type && candidate.name.same(parameter_name)) {
+								@argument.kind = template_argument_kind::parameter;
+								@argument.parameter = Token(candidate.name);
+								@argument.type = QualType(candidate.type);
+							};
+						};
+						@owner = declaration.parent;
+					};
+					if (argument.kind == template_argument_kind::parameter) {
+						continue;
+					};
+					var resolved = @this.resolve_type(argument.type, scope, depth + 1);
+					@argument.type = $resolved;
+				};
+			};
+			u32 declaration = this.lookup(name, scope, true);
+			if (!declaration) {
+				@this.error(name, "unknown template type");
+			};
+			if (declaration && this.context->decl_at(declaration)->parameters.size() && this.context->decl_at(declaration)->parameters.size() != type->arguments.size()) {
+				@this.error(name, "template argument count does not match");
+			};
+			if (name.is("buffer") && type->arguments.size() == 2) {
+				Type* header = this.context->type_at(type->arguments.data()[0].type.type);
+				Type* element = this.context->type_at(type->arguments.data()[1].type.type);
+				if (header && element && header->kind == type_kind::builtin && element->kind == type_kind::builtin && header->builtin == builtin_type::void_type && element->builtin == builtin_type::void_type) {
+					@this.error(name, "buffer<void, void> has neither header nor repeated storage");
+				};
+			};
+			if (declaration && this.context->decl_at(declaration)->kind == decl_kind::record && this.context->decl_at(declaration)->parameters.size() && !type->declaration) {
+				var arguments = rt::buffer<TemplateArgument>(type->arguments);
+				discard @this.instantiate_record(value.type, declaration, arguments, depth + 1);
+			};
+			return $value;
+		};
+		builtin_type kind = builtin_type::void_type;
+		bool primitive = true;
+		if (name.is("void") || name.is("__void")) {
+			@kind = builtin_type::void_type;
+		}
+		else if (name.is("bool") || name.is("__bool")) {
+			@kind = builtin_type::boolean;
+		}
+		else if (name.is("i32") || name.is("__i32")) {
+			@kind = builtin_type::signed_integer;
+		}
+		else if (name.is("u32") || name.is("__u32")) {
+			@kind = builtin_type::unsigned_integer;
+		}
+		else if (name.is("usize") || name.is("__usize")) {
+			@kind = builtin_type::size;
+		}
+		else if (name.is("f32") || name.is("__f32")) {
+			@kind = builtin_type::floating;
+		}
+		else {
+			@primitive = false;
+		};
+		if (primitive) {
+			@value.type = this.builtin(kind).type;
+			return $value;
+		};
+		u32 owner = scope;
+		while (owner) {
+			Decl& declaration = *this.context->decl_at(owner);
+			for (usize index = 0; index < declaration.parameters.size(); @index = index + 1) {
+				TemplateParameter& parameter = declaration.parameters.data()[index];
+				if (parameter.name.same(name)) {
+					@type->kind = type_kind::template_parameter;
+					return $value;
+				};
+			};
+			@owner = declaration.parent;
+		};
+		u32 found = this.lookup(name, scope, true);
+		if (!found) {
+			if (!name.is("__vec2") && !name.is("__vec3") && !name.is("__vec4") && !name.is("__mat2") && !name.is("__mat3") && !name.is("__mat4")) {
+				@this.error(name, "unknown type name");
+			};
+			return $value;
+		};
+		Decl& declaration = *this.context->decl_at(found);
+		if (declaration.kind == decl_kind::type_alias) {
+			var resolved = @this.resolve_type(declaration.type, declaration.parent, depth + 1);
+			@resolved.constant = resolved.constant || value.constant;
+			return $resolved;
+		};
+		return $value;
+	};
+
+	export fn Sema::same_type(Sema& this, QualType left, QualType right) -> bool {
+		if (left.type == right.type) {
+			return true;
+		};
+		Type* first = this.context->type_at(left.type);
+		Type* second = this.context->type_at(right.type);
+		if (!first || !second || first->kind != second->kind) {
+			return false;
+		};
+		if (first->kind == type_kind::builtin) {
+			return first->builtin == second->builtin;
+		};
+		if (first->kind == type_kind::pointer || first->kind == type_kind::reference) {
+			return this.same_type(first->pointee, second->pointee);
+		};
+		if (!first->name.same(second->name) || first->arguments.size() != second->arguments.size()) {
+			return false;
+		};
+		for (usize index = 0; index < first->arguments.size(); @index = index + 1) {
+			TemplateArgument& a = first->arguments.data()[index];
+			TemplateArgument& b = second->arguments.data()[index];
+			if (a.kind != b.kind || a.integer != b.integer || !this.same_type(a.type, b.type)) {
+				return false;
+			};
+		};
+		return true;
+	};
+
+	export fn Sema::record_for(Sema& this, QualType type) -> u32 {
+		Type* value = this.context->type_at(type.type);
+		while (value && (value->kind == type_kind::pointer || value->kind == type_kind::reference)) {
+			@value = this.context->type_at(value->pointee.type);
+		};
+		if (!value) {
+			return 0;
+		};
+		if (value->declaration) {
+			return value->declaration;
+		};
+		u32 result = this.lookup(value->name, this.context->root, true);
+		if (result && this.context->decl_at(result)->kind == decl_kind::type_alias) {
+			return this.record_for(this.context->decl_at(result)->type);
+		};
+		return result;
+	};
+
+	export fn Sema::member(Sema& this, QualType type, Token& name) -> u32 {
+		u32 record = this.record_for(type);
+		usize depth = 0;
+		while (record && depth < 128) {
+			Decl& declaration = *this.context->decl_at(record);
+			for (usize index = 0; index < declaration.members.size(); @index = index + 1) {
+				u32 member = declaration.members.data()[index];
+				if (this.context->decl_at(member)->name.same(name)) {
+					return member;
+				};
+			};
+			@record = this.record_for(declaration.base);
+			@depth = depth + 1;
+		};
+		return 0;
+	};
+
+	export fn Sema::contextual(var Sema& this, u32 id, QualType type) {
+		var Expr* value = @this.context->expr_at(id);
+		if (!value || !type.type) {
+			return;
+		};
+		Type* target = this.context->type_at(type.type);
+		if (!target || target->kind != type_kind::builtin) {
+			return;
+		};
+		if (value->kind == expr_kind::integer || value->kind == expr_kind::floating) {
+			@value->type = QualType(type);
+		};
+	};
+
+	export fn Sema::signature(var Sema& this, u32 id) {
+		var value = Decl(*this.context->decl_at(id));
+		if (value.kind == decl_kind::function && !value.type.type) {
+			@value.type = this.builtin(builtin_type::void_type);
+			if (value.parent && this.context->decl_at(value.parent)->kind == decl_kind::record && this.context->decl_at(value.parent)->name.same(value.name)) {
+				Type record;
+				@record.kind = type_kind::named;
+				@record.name = Token(this.context->decl_at(value.parent)->name);
+				@value.type.type = @this.context->add_type($record);
+			};
+		};
+		for (usize index = 0; index < value.parameters.size(); @index = index + 1) {
+			var TemplateParameter& parameter = @(@value.parameters).data()[index];
+			if (parameter.type.type) {
+				@parameter.type = @this.resolve_type(parameter.type, id, 0);
+			};
+		};
+		for (usize index = 0; index < value.type_only_parameters.size(); @index = index + 1) {
+			var QualType& parameter = @(@value.type_only_parameters).data()[index];
+			@parameter = @this.resolve_type(parameter, id, 0);
+		};
+		for (usize index = 0; index < value.template_arguments.size(); @index = index + 1) {
+			var TemplateArgument& argument = @(@value.template_arguments).data()[index];
+			if (argument.kind == template_argument_kind::type) {
+				@argument.type = @this.resolve_type(argument.type, id, 0);
+			};
+		};
+		if (value.type.type) {
+			var type = @this.resolve_type(value.type, id, 0);
+			@value.type = $type;
+		};
+		if (value.base.type) {
+			var base = @this.resolve_type(value.base, id, 0);
+			@value.base = $base;
+		};
+
+		@(@this.context->declarations).data()[static_cast<usize>(id) - 1] = $value;
+	};
+
+	export fn Sema::analyze(var Sema& this) -> CompilationResult {
+		usize declaration_count = this.context->declarations.size();
+		for (usize index = 0; index < declaration_count; @index = index + 1) {
+			@this.signature(static_cast<u32>(index + 1));
+		};
+		for (usize index = 0; index < declaration_count; @index = index + 1) {
+			@this.declaration(static_cast<u32>(index + 1));
+		};
+		for (usize index = 0; index < declaration_count; @index = index + 1) {
+			var Decl* declaration = @this.context->decl_at(static_cast<u32>(index + 1));
+			if (declaration->kind != decl_kind::function || declaration->body) {
+				continue;
+			};
+			for (usize candidate = 0; candidate < declaration_count; @candidate = candidate + 1) {
+				Decl& other = this.context->declarations.data()[candidate];
+				if (other.kind != decl_kind::function || !other.body || other.template_pattern || other.parent != declaration->parent || !other.name.same(declaration->name) || other.members.size() != declaration->members.size() || other.parameters.size() != declaration->parameters.size() || other.template_arguments.size() != declaration->template_arguments.size()) {
+					continue;
+				};
+				bool same = true;
+				for (usize argument = 0; argument < other.template_arguments.size(); @argument = argument + 1) {
+					TemplateArgument& first = other.template_arguments.data()[argument];
+					TemplateArgument& second = declaration->template_arguments.data()[argument];
+					if (first.kind != second.kind || first.integer != second.integer || !this.same_type(first.type, second.type)) {
+						@same = false;
+					};
+				};
+				for (usize parameter = 0; parameter < other.members.size(); @parameter = parameter + 1) {
+					if (!this.same_type(this.context->decl_at(other.members.data()[parameter])->type, this.context->decl_at(declaration->members.data()[parameter])->type)) {
+						@same = false;
+					};
+				};
+				if (same) {
+					@declaration->redeclaration = static_cast<u32>(candidate + 1);
+					break;
+				};
+			};
+		};
+		if (this.diagnostics->failed()) {
+			return compilation_error();
+		};
+	};
+};

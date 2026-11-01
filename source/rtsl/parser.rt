@@ -1,0 +1,239 @@
+namespace rtsl {
+	export struct Parser {
+		fn Parser(var Parser& this, var SourceFile& source, var ASTContext& context, var DiagnosticsEngine& diagnostics);
+		fn parse(var Parser& this) -> CompilationResult;
+		fn token(Parser& this, usize distance) -> Token;
+		fn consume(var Parser& this) -> Token;
+		fn take(var Parser& this, token_kind kind) -> bool;
+		fn require(var Parser& this, token_kind kind, rt::string_view message) -> bool;
+		fn error(var Parser& this, rt::string_view message);
+		fn attributes(var Parser& this) -> rt::buffer<Attribute>;
+		fn type(var Parser& this) -> QualType;
+		fn template_arguments(var Parser& this) -> rt::buffer<TemplateArgument>;
+		fn explicit_call_arguments(Parser& this) -> bool;
+		fn declaration(var Parser& this, u32 parent, decl_kind ordinary) -> u32;
+		fn record(var Parser& this, Decl value) -> u32;
+		fn function(var Parser& this, Decl value) -> u32;
+		fn statement(var Parser& this, u32 scope) -> u32;
+		fn expression(var Parser& this, u32 precedence) -> u32;
+		fn primary(var Parser& this) -> u32;
+		fn binary_precedence(token_kind kind) -> u32;
+		fn type_start(Parser& this) -> bool;
+
+		var SourceFile* source;
+		var ASTContext* context;
+		var DiagnosticsEngine* diagnostics;
+		usize cursor;
+		bool has_pending_angle;
+		Token pending_angle;
+	};
+
+	export fn Parser::Parser(var Parser& this, var SourceFile& source, var ASTContext& context, var DiagnosticsEngine& diagnostics) {
+		@this.source = &@source;
+		@this.context = &@context;
+		@this.diagnostics = &@diagnostics;
+	};
+
+	export fn Parser::token(Parser& this, usize distance) -> Token {
+		if (this.has_pending_angle) {
+			if (!distance) {
+				return Token(this.pending_angle);
+			};
+			@distance = distance - 1;
+		};
+		usize count = this.source->tokens().size();
+		if (this.cursor >= count || distance >= count - this.cursor) {
+			Token result;
+			@result.kind = token_kind::eof;
+			return $result;
+		};
+		return Token(this.source->tokens().data()[this.cursor + distance]);
+	};
+
+	export fn Parser::consume(var Parser& this) -> Token {
+		var result = this.token(0);
+		if (this.has_pending_angle) {
+			@this.has_pending_angle = false;
+			return $result;
+		};
+		if (result.kind != token_kind::eof) {
+			@this.cursor = this.cursor + 1;
+		};
+		return $result;
+	};
+
+	export fn Parser::take(var Parser& this, token_kind kind) -> bool {
+		if (kind == token_kind::op_greater && this.token(0).kind == token_kind::op_shift_right) {
+			@this.pending_angle = @this.consume();
+			@this.pending_angle.kind = token_kind::op_greater;
+			@this.pending_angle.begin = this.pending_angle.begin + 1;
+			@this.pending_angle.length = 1;
+			@this.has_pending_angle = true;
+			return true;
+		};
+		if (this.token(0).kind != kind) {
+			return false;
+		};
+		discard @this.consume();
+		return true;
+	};
+
+	export fn Parser::error(var Parser& this, rt::string_view message) {
+		@this.diagnostics->report(diagnostic_level::error, this.token(0), message);
+	};
+
+	export fn Parser::require(var Parser& this, token_kind kind, rt::string_view message) -> bool {
+		if (@this.take(kind)) {
+			return true;
+		};
+		@this.error(message);
+		return false;
+	};
+
+	export fn Parser::attributes(var Parser& this) -> rt::buffer<Attribute> {
+		rt::buffer<Attribute> result;
+		while (this.token(0).kind == token_kind::punct_left_bracket && this.token(1).kind == token_kind::punct_left_bracket) {
+			discard @this.consume();
+			discard @this.consume();
+			Attribute attribute;
+			@attribute.name = @this.consume();
+			if (attribute.name.kind != token_kind::identifier) {
+				@this.error("expected attribute name");
+			};
+			if (attribute.name.is("output_vertices")) {
+				@this.error("output count belongs in explicit function arguments, for example fn main<4>(...)");
+			};
+			if (attribute.name.is("stage")) {
+				discard @this.require(token_kind::punct_colon, "expected ':' after stage attribute name");
+				if (this.token(0).kind != token_kind::identifier) {
+					@this.error("expected shader stage after ':'");
+				}
+				else {
+					@attribute.arguments.push_back(@this.consume());
+				};
+				if (this.token(0).kind != token_kind::punct_right_bracket || this.token(1).kind != token_kind::punct_right_bracket) {
+					@this.error("expected ']]' after shader stage");
+				};
+			};
+			usize depth = 0;
+			while (this.token(0).kind != token_kind::eof) {
+				if (!depth && this.token(0).kind == token_kind::punct_right_bracket && this.token(1).kind == token_kind::punct_right_bracket) {
+					break;
+				};
+				var token = @this.consume();
+				if (token.kind == token_kind::punct_left_paren || token.kind == token_kind::punct_left_brace || token.kind == token_kind::punct_left_bracket) {
+					@depth = depth + 1;
+				};
+				if (depth && (token.kind == token_kind::punct_right_paren || token.kind == token_kind::punct_right_brace || token.kind == token_kind::punct_right_bracket)) {
+					@depth = depth - 1;
+				};
+				@attribute.arguments.push_back($token);
+			};
+			discard @this.require(token_kind::punct_right_bracket, "expected ']]' after attribute");
+			discard @this.require(token_kind::punct_right_bracket, "expected ']]' after attribute");
+			@result.push_back($attribute);
+		};
+		return $result;
+	};
+
+	export fn Parser::template_arguments(var Parser& this) -> rt::buffer<TemplateArgument> {
+		rt::buffer<TemplateArgument> result;
+		discard @this.require(token_kind::op_less, "expected '<' before template arguments");
+			while (this.token(0).kind != token_kind::op_greater && this.token(0).kind != token_kind::op_shift_right && this.token(0).kind != token_kind::eof) {
+				TemplateArgument argument;
+				if (this.token(0).kind == token_kind::literal_number) {
+					@argument.kind = template_argument_kind::integer;
+					var literal = @this.consume();
+					for (usize digit = 0; digit < literal.length; @digit = digit + 1) {
+						char character = literal.text().data()[digit];
+						if (character < '0' || character > '9') {
+							@this.error("expected unsigned integer template argument");
+							break;
+						};
+						u32 value = static_cast<u32>(character - '0');
+						if (argument.integer > (u32::max - value) / 10) {
+							@this.error("integer template argument exceeds u32 range");
+							break;
+						};
+						@argument.integer = argument.integer * 10 + value;
+					};
+				}
+				else {
+					@argument.kind = template_argument_kind::type;
+					@argument.type = @this.type();
+				};
+				@result.push_back($argument);
+				if (!@this.take(token_kind::punct_comma)) {
+					break;
+				};
+			};
+			discard @this.require(token_kind::op_greater, "expected '>' after template arguments");
+
+		return $result;
+	};
+
+	export fn Parser::type(var Parser& this) -> QualType {
+		QualType result;
+		if (@this.take(token_kind::kw_const)) {
+			@result.constant = true;
+		};
+		discard @this.take(token_kind::kw_var);
+		Type value;
+		@value.kind = type_kind::named;
+		if (this.token(0).kind != token_kind::identifier) {
+			@this.error("expected type name");
+			return $result;
+		};
+		@value.name = @this.consume();
+		if (this.token(0).kind == token_kind::op_less) {
+			@value.kind = type_kind::specialization;
+			@value.arguments = @this.template_arguments();
+		};
+		@result.type = @this.context->add_type($value);
+		while (this.token(0).kind == token_kind::op_star || this.token(0).kind == token_kind::op_ampersand) {
+			var token = @this.consume();
+			Type indirect;
+			@indirect.kind = type_kind::pointer;
+			if (token.kind == token_kind::op_ampersand) {
+				@indirect.kind = type_kind::reference;
+			};
+			@indirect.pointee = QualType(result);
+			@result.type = @this.context->add_type($indirect);
+		};
+		return $result;
+	};
+
+	export fn Parser::type_start(Parser& this) -> bool {
+		var first = this.token(0);
+		if (first.kind == token_kind::kw_var || first.kind == token_kind::kw_const) {
+			return true;
+		};
+		if (first.kind != token_kind::identifier) {
+			return false;
+		};
+		var second = this.token(1);
+		return second.kind == token_kind::identifier || second.kind == token_kind::op_star || second.kind == token_kind::op_ampersand;
+	};
+
+	export fn Parser::parse(var Parser& this) -> CompilationResult {
+		if (!this.context->root) {
+			Decl root;
+			@root.kind = decl_kind::translation_unit;
+			@this.context->root = @this.context->add_decl($root);
+		};
+		while (this.token(0).kind != token_kind::eof) {
+			if (@this.take(token_kind::punct_semicolon)) {
+				continue;
+			};
+			usize before = this.cursor;
+			discard @this.declaration(this.context->root, decl_kind::variable);
+			if (this.cursor == before) {
+				@this.error("expected declaration");
+				discard @this.consume();
+			};
+		};
+		if (this.diagnostics->failed()) {
+			return compilation_error();
+		};
+	};
+};

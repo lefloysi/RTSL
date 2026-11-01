@@ -1,52 +1,25 @@
 cmake_minimum_required(VERSION 3.28)
 project(RTSL VERSION 0.1.0 LANGUAGES CXX)
 
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/Frontend/Core.rtsl")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/Frontend/Core.rtsl" RTSL_CORE_SOURCE)
-configure_file(src/Frontend/CoreSource.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/rtsl/Frontend/CoreSource.hpp" @ONLY)
-
+# Graphics backends still consume the stable C++ IR/artifact reader.
+# The compiler, tools and direct tests are built by Kiln from Rutile sources.
 add_library(rtsl STATIC
-	src/AST/ASTContext.cpp
-	src/Basic/Diagnostic.cpp
-	src/Basic/IdentifierTable.cpp
-	src/Basic/SourceManager.cpp
-	src/Basic/TokenKinds.cpp
-	src/CodeGen/CodeGenerator.cpp
-	src/Frontend/CompilerInstance.cpp
-	src/Frontend/ModuleInterface.cpp
-	src/Frontend/ModuleInterfaceBuilder.cpp
-	src/Frontend/ModuleInterfaceImporter.cpp
-	src/IR/Builder.cpp
-	src/IR/IR.cpp
-	src/IR/Verifier.cpp
-	src/Lex/Lexer.cpp
-	src/Lex/Preprocessor.cpp
-	src/Linker/Linker.cpp
-	src/Parse/Parser.cpp
-	src/Serialization/Artifact.cpp
-	src/Sema/Sema.cpp
+ src/IR/IR.cpp
+ src/IR/Verifier.cpp
+ src/Serialization/Artifact.cpp
 )
 set_target_properties(rtsl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(RTSL::rtsl ALIAS rtsl)
-
 target_compile_features(rtsl PUBLIC cxx_std_20)
 target_compile_options(rtsl PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/EHsc>)
 target_include_directories(rtsl PUBLIC
-	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-	$<INSTALL_INTERFACE:include>
+ $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+ $<INSTALL_INTERFACE:include>
 )
-target_include_directories(rtsl PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
-option(RTSL_BUILD_CLI "Build the rtslc command-line driver" ${PROJECT_IS_TOP_LEVEL})
-if(RTSL_BUILD_CLI)
-	add_subdirectory(tools/rtslc)
+# CMake consumers may use a compiler already built with Kiln.
+set(RTSLC_EXECUTABLE "" CACHE FILEPATH "Kiln-built Rutile RTSL compiler executable")
+if(RTSLC_EXECUTABLE)
+ add_executable(rtslc IMPORTED GLOBAL)
+ set_target_properties(rtslc PROPERTIES IMPORTED_LOCATION "${RTSLC_EXECUTABLE}")
 endif()
-add_subdirectory(tools/rtsl-lsp)
-add_subdirectory(tools/rtsl-lexer)
-
-option(RTSL_BUILD_TESTS "Build RTSL tests" ${PROJECT_IS_TOP_LEVEL})
-if(RTSL_BUILD_TESTS)
-	include(CTest)
-	add_subdirectory(tests)
-endif()
-

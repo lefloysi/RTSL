@@ -1,0 +1,279 @@
+namespace rtsl {
+	fn ir_issue(var DiagnosticsEngine& diagnostics, rt::string_view message) {
+		@diagnostics.report(diagnostic_level::error, Token(), message);
+	};
+
+	fn ir_block(ir::Function& function, ir::BlockID id) -> ir::Block* {
+		for (usize i = 0; i < function.blocks.size(); @i = i + 1) {
+			if (function.blocks.data()[i].id == id) { return &function.blocks.data()[i]; };
+		};
+		return nullptr;
+	};
+
+	fn ir_resource(ir::Module& module, ir::SymbolID id) -> ir::Resource* {
+		for (usize i = 0; i < module.resources.size(); @i = i + 1) {
+			if (module.resources.data()[i].symbol == id) { return &module.resources.data()[i]; };
+		};
+		return nullptr;
+	};
+
+	fn ir_global(ir::Module& module, ir::SymbolID id) -> bool {
+		if (ir_resource(module, id)) { return true; };
+		for (usize i = 0; i < module.uniforms.size(); @i = i + 1) {
+			if (module.uniforms.data()[i].symbol == id) { return true; };
+		};
+		for (usize i = 0; i < module.storage_objects.size(); @i = i + 1) {
+			if (module.storage_objects.data()[i].symbol == id) { return true; };
+		};
+		return false;
+	};
+
+	fn ir_entry_stage(ir::Module& module, ir::FunctionID function, ir::stage kind) -> bool {
+		for (usize i = 0; i < module.entry_points.size(); @i = i + 1) {
+			var entry = &module.entry_points.data()[i];
+			if (entry->function == function && entry->kind == kind) { return true; };
+		};
+		return false;
+	};
+
+	fn ir_define(var rt::unordered_map<u32, u32>& values, u32 id, u32 type, var DiagnosticsEngine& diagnostics) {
+		if (!id || values.find(id)) {
+			ir_issue(@diagnostics, "value id is zero or duplicated");
+			return;
+		};
+		discard @values.insert(id, type);
+	};
+
+	fn ir_value_type(rt::unordered_map<u32, u32>& values, u32 id) -> u32 {
+		var type = values.find(id);
+		if (type) { return *type; };
+		return 0;
+	};
+
+	fn ir_verify_instruction(ir::Module& module, ir::Function& function, ir::Instruction& instruction, rt::unordered_map<u32, u32>& values, var DiagnosticsEngine& diagnostics) {
+		for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+			if (!values.find(instruction.operands.data()[i])) { ir_issue(@diagnostics, "instruction references an undefined or forward value"); };
+		};
+		var operation = instruction.operation;
+		if (operation == ir::opcode::resource_load) {
+			if (instruction.immediates.size() != 1 || !ir_global(module, instruction.immediates.data()[0])) {
+				ir_issue(@diagnostics, "resource load requires one declared global symbol immediate");
+			};
+		};
+		if (operation == ir::opcode::resource_store || operation == ir::opcode::resource_query || operation == ir::opcode::resource_sample) {
+			ir::Resource* resource = nullptr;
+			if (instruction.immediates.size() != 1) { ir_issue(@diagnostics, "resource instruction requires exactly one resource symbol immediate"); }
+			else {
+				@resource = ir_resource(module, instruction.immediates.data()[0]);
+				if (!resource) { ir_issue(@diagnostics, "resource instruction references an unknown resource symbol"); };
+			};
+			if (operation == ir::opcode::resource_store) {
+				if (instruction.operands.size() < 2) { ir_issue(@diagnostics, "resource store requires coordinates and a stored value"); };
+				if (resource && resource->access == ir::access_kind::read_only) { ir_issue(@diagnostics, "resource store targets a read-only resource"); };
+			} else if (operation == ir::opcode::resource_query) {
+				if (instruction.operands.size()) { ir_issue(@diagnostics, "resource query takes no dynamic operands"); };
+				if (resource && resource->kind != ir::resource_kind::storage_texture) { ir_issue(@diagnostics, "resource query requires a storage image"); };
+			} else {
+				if (instruction.operands.size() != 1) { ir_issue(@diagnostics, "resource sample requires exactly one coordinate operand"); };
+				if (resource && resource->kind != ir::resource_kind::sampled_texture && resource->kind != ir::resource_kind::storage_texture) { ir_issue(@diagnostics, "resource sample requires a sampled texture or image"); };
+			};
+		};
+		if (operation == ir::opcode::sqrt || operation == ir::opcode::clamp) {
+			var type = module.find_type(instruction.type);
+			usize count = 1;
+			if (operation == ir::opcode::clamp) { @count = 3; };
+			bool valid = instruction.result && type && type->kind == ir::type_kind::floating && type->bit_width == 32 && instruction.operands.size() == count && !instruction.immediates.size();
+			for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+				@valid = valid && ir_value_type(values, instruction.operands.data()[i]) == instruction.type;
+			};
+			if (!valid) { ir_issue(@diagnostics, "floating-point intrinsic operands do not match the result type"); };
+		};
+		if (operation == ir::opcode::construct) {
+			var type = module.find_type(instruction.type);
+			bool valid = type != nullptr;
+			for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+				@valid = valid && values.find(instruction.operands.data()[i]) != nullptr;
+			};
+			if (valid && type->kind == ir::type_kind::structure) {
+				@valid = instruction.operands.size() == type->members.size();
+				for (usize i = 0; valid && i < instruction.operands.size(); @i = i + 1) {
+					@valid = ir_value_type(values, instruction.operands.data()[i]) == type->members.data()[i].type;
+				};
+			} else if (valid && type->kind == ir::type_kind::vector) {
+				u64 components = 0;
+				for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+					var operand = module.find_type(ir_value_type(values, instruction.operands.data()[i]));
+					if (!operand) { @valid = false; }
+					else if (operand->id == type->element_type) { @components = components + 1; }
+					else if (operand->kind == ir::type_kind::vector && operand->element_type == type->element_type) { @components = components + static_cast<u64>(operand->element_count); }
+					else { @valid = false; };
+				};
+				@valid = valid && components == static_cast<u64>(type->element_count);
+			} else if (valid && type->kind == ir::type_kind::primitive) {
+				@valid = instruction.operands.size() <= static_cast<usize>(type->element_count);
+				for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+					@valid = valid && ir_value_type(values, instruction.operands.data()[i]) == type->element_type;
+				};
+			} else { @valid = false; };
+			if (!valid) { ir_issue(@diagnostics, "construct operands do not match the constructed type"); };
+		};
+		if (operation == ir::opcode::call) {
+			var callee = module.find_function(instruction.callee);
+			if (!callee) { ir_issue(@diagnostics, "call target does not exist"); }
+			else {
+				if (callee->implicit_emitter && !function.implicit_emitter && !ir_entry_stage(module, function.id, ir::stage::geometry)) { ir_issue(@diagnostics, "call requires an implicit emitter"); };
+				if (instruction.operands.size() != callee->parameters.size()) { ir_issue(@diagnostics, "call argument count does not match the callee parameters"); }
+				else {
+					for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+						if (ir_value_type(values, instruction.operands.data()[i]) != callee->parameters.data()[i].type) { ir_issue(@diagnostics, "call argument type does not match the callee parameter"); };
+					};
+				};
+				if (!instruction.result || instruction.type != callee->return_type) { ir_issue(@diagnostics, "call result type does not match the callee return type"); };
+			};
+		} else if (instruction.callee) { ir_issue(@diagnostics, "non-call instruction has a call target"); };
+		if (operation == ir::opcode::insert) {
+			var type = module.find_type(instruction.type);
+			bool valid = instruction.result && type && type->kind == ir::type_kind::primitive && instruction.operands.size() == 2;
+			if (valid) {
+				@valid = ir_value_type(values, instruction.operands.data()[0]) == instruction.type && ir_value_type(values, instruction.operands.data()[1]) == type->element_type;
+			};
+			if (!valid) { ir_issue(@diagnostics, "insert operands do not match the aggregate object"); };
+		};
+	};
+
+	fn ir_verify_function(ir::Module& module, ir::Function& function, var DiagnosticsEngine& diagnostics) {
+		if (!module.find_symbol(function.symbol)) { ir_issue(@diagnostics, "function symbol does not exist"); };
+		if (!module.find_type(function.return_type)) { ir_issue(@diagnostics, "function return type does not exist"); };
+		rt::unordered_map<u32, u32> values;
+		rt::unordered_map<u32, u32> blocks;
+		bool[3] components;
+		for (usize i = 0; i < function.parameters.size(); @i = i + 1) {
+			var parameter = &function.parameters.data()[i];
+			ir_define(@values, parameter->value, parameter->type, @diagnostics);
+			if (!module.find_type(parameter->type)) { ir_issue(@diagnostics, "parameter type does not exist"); };
+			if (parameter->symbol && !module.find_symbol(parameter->symbol)) { ir_issue(@diagnostics, "parameter symbol does not exist"); };
+			if (parameter->kind.has_value() && parameter->kind.value() != ir::builtin::position) {
+				u32 component = static_cast<u32>(parameter->kind.value()) - 1;
+				if (component > 2) { ir_issue(@diagnostics, "parameter builtin is invalid"); }
+				else {
+					if (components[component]) { ir_issue(@diagnostics, "compute entry function has duplicate global invocation components"); };
+					@components[component] = true;
+				};
+				if (!ir_entry_stage(module, function.id, ir::stage::compute)) { ir_issue(@diagnostics, "global invocation parameter belongs only to a compute entry function"); };
+			};
+		};
+		for (usize i = 0; i < function.blocks.size(); @i = i + 1) {
+			var block = &function.blocks.data()[i];
+			ir_define(@blocks, block->id, 0, @diagnostics);
+			for (usize j = 0; j < block->arguments.size(); @j = j + 1) {
+				var argument = &block->arguments.data()[j];
+				ir_define(@values, argument->value, argument->type, @diagnostics);
+				if (!module.find_type(argument->type)) { ir_issue(@diagnostics, "block argument type does not exist"); };
+			};
+			for (usize j = 0; j < block->instructions.size(); @j = j + 1) {
+				var instruction = &block->instructions.data()[j];
+				if (instruction->result) {
+					if (!module.find_type(instruction->type)) { ir_issue(@diagnostics, "result instruction has no valid result type"); };
+					ir_define(@values, instruction->result, instruction->type, @diagnostics);
+				} else if (instruction->type) { ir_issue(@diagnostics, "resultless instruction has a result type"); };
+				ir_verify_instruction(module, function, *instruction, values, @diagnostics);
+			};
+		};
+		if (function.declaration) {
+			if (function.blocks.size()) { ir_issue(@diagnostics, "function declaration has blocks"); };
+			return;
+		};
+		if (!function.blocks.size()) { ir_issue(@diagnostics, "function definition has no blocks"); };
+		for (usize i = 0; i < function.blocks.size(); @i = i + 1) {
+			var block = &function.blocks.data()[i];
+			if (!block->terminator.has_value()) { ir_issue(@diagnostics, "block has no terminator"); continue; };
+			var terminator = &block->terminator.value();
+			for (usize j = 0; j < terminator->operands.size(); @j = j + 1) {
+				if (!values.find(terminator->operands.data()[j])) { ir_issue(@diagnostics, "terminator references an unknown value"); };
+			};
+			for (usize j = 0; j < terminator->successors.size(); @j = j + 1) {
+				var successor = &terminator->successors.data()[j];
+				var target = ir_block(function, successor->block);
+				if (!target) { ir_issue(@diagnostics, "successor block does not exist"); continue; };
+				if (successor->arguments.size() != target->arguments.size()) { ir_issue(@diagnostics, "successor argument count does not match target block arguments"); continue; };
+				for (usize k = 0; k < successor->arguments.size(); @k = k + 1) {
+					u32 type = ir_value_type(values, successor->arguments.data()[k]);
+					if (!type) { ir_issue(@diagnostics, "successor references an unknown value"); }
+					else if (type != target->arguments.data()[k].type) { ir_issue(@diagnostics, "successor argument type does not match target block argument"); };
+				};
+			};
+			bool branches = terminator->kind == ir::terminator_kind::branch || terminator->kind == ir::terminator_kind::conditional_branch || terminator->kind == ir::terminator_kind::switch_value;
+			if (branches && !terminator->successors.size() || !branches && terminator->successors.size()) { ir_issue(@diagnostics, "terminator successor shape is invalid"); };
+			if (terminator->kind == ir::terminator_kind::conditional_branch && (terminator->operands.size() != 1 || terminator->successors.size() != 2)) { ir_issue(@diagnostics, "conditional branch requires one condition and two successors"); };
+			if (terminator->kind == ir::terminator_kind::return_value && terminator->operands.size() != 1) { ir_issue(@diagnostics, "value return requires one operand"); };
+			if (block->merge.kind != ir::merge_kind::none) {
+				if (!ir_block(function, block->merge.merge_block)) { ir_issue(@diagnostics, "merge block does not exist"); };
+				if (block->merge.kind == ir::merge_kind::loop && !ir_block(function, block->merge.continue_block)) { ir_issue(@diagnostics, "loop continue block does not exist"); };
+			};
+		};
+	};
+
+	export fn verify_module(ir::Module& module, var DiagnosticsEngine& diagnostics) -> bool {
+		usize before = diagnostics.diagnostics().size();
+		rt::unordered_map<u32, u32> ids;
+		for (usize i = 0; i < module.types.size(); @i = i + 1) {
+			var type = &module.types.data()[i];
+			ir_define(@ids, type->id, 0, @diagnostics);
+			if (type->element_type && !module.find_type(type->element_type)) { ir_issue(@diagnostics, "element type references an unknown type"); };
+			for (usize j = 0; j < type->parameter_types.size(); @j = j + 1) {
+				if (type->parameter_types.data()[j] && !module.find_type(type->parameter_types.data()[j])) { ir_issue(@diagnostics, "parameter type references an unknown type"); };
+			};
+			for (usize j = 0; j < type->members.size(); @j = j + 1) {
+				if (type->members.data()[j].type && !module.find_type(type->members.data()[j].type)) { ir_issue(@diagnostics, "member type references an unknown type"); };
+			};
+			for (usize j = 0; j < type->builtin_members.size(); @j = j + 1) {
+				var member = &type->builtin_members.data()[j];
+				if (type->kind != ir::type_kind::structure || !member->member_path.size() || static_cast<usize>(member->member_path.data()[0]) >= type->members.size()) { ir_issue(@diagnostics, "builtin member path does not identify a structure member"); };
+			};
+		};
+		@ids.clear();
+		for (usize i = 0; i < module.symbols.size(); @i = i + 1) {
+			var symbol = &module.symbols.data()[i];
+			ir_define(@ids, symbol->id, 0, @diagnostics);
+			if (!module.strings.get(symbol->name).size()) { ir_issue(@diagnostics, "symbol name is empty"); };
+		};
+		@ids.clear();
+		for (usize i = 0; i < module.functions.size(); @i = i + 1) {
+			var function = &module.functions.data()[i];
+			ir_define(@ids, function->id, 0, @diagnostics);
+			ir_verify_function(module, *function, @diagnostics);
+		};
+		for (usize i = 0; i < module.entry_points.size(); @i = i + 1) {
+			var entry = &module.entry_points.data()[i];
+			if (!module.find_symbol(entry->symbol)) { ir_issue(@diagnostics, "entry symbol does not exist"); };
+			if (!module.find_function(entry->function)) { ir_issue(@diagnostics, "entry function does not exist"); };
+			bool valid = (entry->kind == ir::stage::vertex || entry->kind == ir::stage::fragment) && entry->configuration.has<void>() || entry->kind == ir::stage::tessellation_control && entry->configuration.has<ir::TessellationControlConfiguration>() || entry->kind == ir::stage::tessellation_evaluation && entry->configuration.has<ir::TessellationEvaluationConfiguration>() || entry->kind == ir::stage::geometry && entry->configuration.has<ir::GeometryConfiguration>() || entry->kind == ir::stage::compute && entry->configuration.has<ir::ComputeConfiguration>();
+			if (!valid) { ir_issue(@diagnostics, "stage configuration does not match the entry stage"); };
+			if (entry->configuration.has<ir::TessellationControlConfiguration>() && !entry->configuration.get<ir::TessellationControlConfiguration>().output_control_points) { ir_issue(@diagnostics, "tessellation control output size is zero"); };
+			if (entry->configuration.has<ir::GeometryConfiguration>()) {
+				var value = &entry->configuration.get<ir::GeometryConfiguration>();
+				if (!value->maximum_vertices || !value->invocations) { ir_issue(@diagnostics, "geometry output limit or invocation count is zero"); };
+			};
+			if (entry->configuration.has<ir::ComputeConfiguration>()) {
+				var value = &entry->configuration.get<ir::ComputeConfiguration>();
+				if (!value->workgroup_size[0] || !value->workgroup_size[1] || !value->workgroup_size[2]) { ir_issue(@diagnostics, "compute workgroup dimension is zero"); };
+			};
+		};
+		for (usize i = 0; i < module.resources.size(); @i = i + 1) {
+			var value = &module.resources.data()[i];
+			if (!module.find_symbol(value->symbol) || !module.find_type(value->type)) { ir_issue(@diagnostics, "resource symbol or type does not exist"); };
+			for (usize j = 0; j < value->users.size(); @j = j + 1) {
+				if (!module.find_function(value->users.data()[j])) { ir_issue(@diagnostics, "resource user does not exist"); };
+			};
+		};
+		for (usize i = 0; i < module.uniforms.size(); @i = i + 1) {
+			var value = &module.uniforms.data()[i];
+			if (!module.find_symbol(value->symbol) || !module.find_type(value->type)) { ir_issue(@diagnostics, "uniform symbol or type does not exist"); };
+		};
+		for (usize i = 0; i < module.storage_objects.size(); @i = i + 1) {
+			var value = &module.storage_objects.data()[i];
+			if (!module.find_symbol(value->symbol) || !module.find_type(value->type)) { ir_issue(@diagnostics, "storage object symbol or type does not exist"); };
+		};
+		return diagnostics.diagnostics().size() == before;
+	};
+};

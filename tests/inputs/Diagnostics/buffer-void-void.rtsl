@@ -1,1 +1,3 @@
+import <std>;
+
 var buffer<void, void> invalid_buffer;

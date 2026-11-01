@@ -1,0 +1,198 @@
+namespace rtsl {
+	fn imported_token(var ASTContext& context, rt::string_view path, rt::string_view spelling) -> Token {
+		var source = @context.generated_names.add(path, spelling);
+		var lexer = Lexer(@*source);
+		discard @lexer.scan();
+		if (source->token_count()) {
+			return source->tokens().data()[0];
+		};
+		return Token();
+	};
+
+	fn imported_attributes(var ASTContext& context, rt::string_view path, rt::buffer<InterfaceAttribute>& attributes) -> rt::buffer<Attribute> {
+		rt::buffer<Attribute> result;
+		for (usize i = 0; i < attributes.size(); @i = i + 1) {
+			InterfaceAttribute& original = attributes.data()[i];
+			Attribute value;
+			@value.name = imported_token(@context, path, original.name.view());
+			for (usize j = 0; j < original.tokens.size(); @j = j + 1) {
+				@value.arguments.push_back(imported_token(@context, path, original.tokens.data()[j].spelling.view()));
+			};
+			@result.push_back($value);
+		};
+		return $result;
+	};
+
+	fn imported_type(var ASTContext& context, rt::string_view path, InterfaceType& original) -> QualType {
+		Type value;
+		@value.name = imported_token(@context, path, original.name.view());
+		if (static_cast<u08>(original.kind) <= static_cast<u08>(interface_type_kind::floating)) {
+			@value.kind = type_kind::builtin;
+			@value.builtin = static_cast<builtin_type>(static_cast<u08>(original.kind));
+		}
+		else if (original.kind == interface_type_kind::named) {
+			@value.kind = type_kind::named;
+		}
+		else if (original.kind == interface_type_kind::template_parameter) {
+			@value.kind = type_kind::template_parameter;
+		}
+		else if (original.kind == interface_type_kind::pointer || original.kind == interface_type_kind::reference) {
+			@value.kind = type_kind::pointer;
+			if (original.kind == interface_type_kind::reference) {
+				@value.kind = type_kind::reference;
+			};
+			@value.pointee = imported_type(@context, path, original.arguments.data()[0]);
+		}
+		else {
+			@value.kind = type_kind::specialization;
+			for (usize i = 0; i < original.arguments.size(); @i = i + 1) {
+				InterfaceType& argument = original.arguments.data()[i];
+				TemplateArgument item;
+				if (argument.integer.has_value()) {
+					@item.kind = template_argument_kind::integer;
+					@item.integer = *argument.integer.get();
+				}
+				else {
+					@item.kind = template_argument_kind::type;
+					@item.type = imported_type(@context, path, argument);
+				};
+				@value.arguments.push_back($item);
+			};
+		};
+		QualType result;
+		@result.constant = original.constant;
+		@result.type = @context.add_type($value);
+		return $result;
+	};
+
+	fn imported_field(var ASTContext& context, rt::string_view path, InterfaceField& original, u32 parent, decl_kind kind) -> u32 {
+		Decl value;
+		@value.kind = kind;
+		@value.name = imported_token(@context, path, original.name.view());
+		@value.source = value.name.source;
+		@value.parent = parent;
+		@value.type = imported_type(@context, path, original.type);
+		@value.attributes = imported_attributes(@context, path, original.attributes);
+		return @context.add_decl($value);
+	};
+
+	fn imported_contracts(var ASTContext& context, u32 function, u32 parameter, usize index) {
+		var attributes = rt::buffer<Attribute>(context.decl_at(parameter)->attributes);
+		for (usize i = 0; i < attributes.size(); @i = i + 1) {
+			Attribute& attribute = attributes.data()[i];
+			if (!attribute.name.is("smooth") && !attribute.name.is("flat") && !attribute.name.is("noperspective")) {
+				continue;
+			};
+			ParameterContract contract;
+			@contract.parameter = static_cast<u32>(index);
+			@contract.contract = Token(attribute.name);
+			for (usize j = 0; j < attribute.arguments.size(); @j = j + 1) {
+				Token& token = attribute.arguments.data()[j];
+				if (token.kind == token_kind::identifier) {
+					@contract.member_path.push_back(Token(token));
+				};
+				if (token.kind == token_kind::punct_comma && contract.member_path.size()) {
+					@(@context.decl_at(function))->contracts.push_back(ParameterContract(contract));
+					@contract.member_path.clear();
+				};
+			};
+			@(@context.decl_at(function))->contracts.push_back($contract);
+		};
+	};
+
+	export fn import_interface(var ASTContext& context, ModuleInterface& module, var DiagnosticsEngine& diagnostics) -> CompilationResult {
+		if (!context.root) {
+			Decl root;
+			@root.kind = decl_kind::translation_unit;
+			@context.root = @context.add_decl($root);
+		};
+		for (usize i = 0; i < module.units.size(); @i = i + 1) {
+			InterfaceUnit& unit = module.units.data()[i];
+			for (usize j = 0; j < unit.declarations.size(); @j = j + 1) {
+				InterfaceDeclaration& original = unit.declarations.data()[j];
+				if (original.generic_definition.size()) {
+					var text = rt::string_view(reinterpret_cast<char*>(original.generic_definition.data()), original.generic_definition.size());
+					var source = @context.generated_names.add(unit.import_path.view(), text);
+					var lexer = Lexer(@*source);
+					if (!(@lexer.scan()).has<void>()) {
+						@diagnostics.report(diagnostic_level::error, lexer.error_token(), lexer.error());
+						return compilation_error();
+					};
+					var parser = Parser(@*source, @context, @diagnostics);
+					if (!(@parser.parse()).has<void>()) {
+						return compilation_error();
+					};
+					continue;
+				};
+				Decl value;
+				@value.parent = context.root;
+				@value.name = imported_token(@context, unit.import_path.view(), original.name.view());
+				@value.source = value.name.source;
+				@value.attributes = imported_attributes(@context, unit.import_path.view(), original.attributes);
+				@value.exported = true;
+				@value.type = imported_type(@context, unit.import_path.view(), original.type);
+				@value.storage = original.storage;
+				if (original.kind == interface_decl_kind::record) {
+					@value.kind = decl_kind::record;
+					@value.complete = true;
+					if (original.base.has_value()) {
+						@value.base = imported_type(@context, unit.import_path.view(), *original.base.get());
+					};
+				}
+				else if (original.kind == interface_decl_kind::alias) {
+					@value.kind = decl_kind::type_alias;
+				}
+				else if (original.kind == interface_decl_kind::variable) {
+					@value.kind = decl_kind::variable;
+					@value.type.constant = original.constant;
+				}
+				else {
+					@value.kind = decl_kind::function;
+					@value.implicit_emitter = original.implicit_emitter;
+					for (usize k = 0; k < original.template_arguments.size(); @k = k + 1) {
+						InterfaceType& argument = original.template_arguments.data()[k];
+						TemplateArgument item;
+						if (argument.integer.has_value()) {
+							@item.kind = template_argument_kind::integer;
+							@item.integer = *argument.integer.get();
+						}
+						else if (argument.kind == interface_type_kind::template_parameter) {
+							@item.kind = template_argument_kind::parameter;
+							@item.parameter = imported_token(@context, unit.import_path.view(), argument.name.view());
+						}
+						else {
+							@item.kind = template_argument_kind::type;
+							@item.type = imported_type(@context, unit.import_path.view(), argument);
+						};
+						@value.template_arguments.push_back($item);
+					};
+					for (usize k = 0; k < original.type_only_parameters.size(); @k = k + 1) {
+						@value.type_only_parameters.push_back(imported_type(@context, unit.import_path.view(), original.type_only_parameters.data()[k]));
+					};
+					for (usize k = 0; k < original.template_parameters.size(); @k = k + 1) {
+						TemplateParameter parameter;
+						@parameter.name = imported_token(@context, unit.import_path.view(), original.template_parameters.data()[k].view());
+						@parameter.is_type = true;
+						@value.parameters.push_back($parameter);
+					};
+				};
+				u32 id = @context.add_decl($value);
+				var fields = &original.fields;
+				decl_kind field_kind = decl_kind::field;
+				if (original.kind == interface_decl_kind::function) {
+					@fields = &original.parameters;
+					@field_kind = decl_kind::parameter;
+				};
+				for (usize k = 0; k < fields->size(); @k = k + 1) {
+					u32 field = imported_field(@context, unit.import_path.view(), fields->data()[k], id, field_kind);
+					@(@context.decl_at(id))->members.push_back(field);
+					if (field_kind == decl_kind::parameter) {
+						imported_contracts(@context, id, field, k);
+					};
+				};
+				@(@context.decl_at(context.root))->members.push_back(id);
+			};
+		};
+		return;
+	};
+};

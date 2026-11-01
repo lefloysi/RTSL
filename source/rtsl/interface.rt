@@ -1,0 +1,80 @@
+namespace rtsl {
+	export enum interface_type_kind : [u08] {
+		void_type;
+		boolean;
+		signed_integer;
+		unsigned_integer;
+		size;
+		floating;
+		named;
+		template_parameter;
+		specialization;
+		pointer;
+		reference;
+	};
+
+	export struct InterfaceImport {
+		import_kind kind;
+		rt::string name;
+	};
+
+	export struct InterfaceToken {
+		u16 kind;
+		rt::string spelling;
+	};
+
+	export struct InterfaceAttribute {
+		rt::string name;
+		rt::buffer<InterfaceToken> tokens;
+	};
+
+	export struct InterfaceType {
+		interface_type_kind kind;
+		bool constant;
+		rt::string name;
+		rt::buffer<InterfaceType> arguments;
+		rt::optional<u32> integer;
+	};
+
+	export struct InterfaceField {
+		rt::string name;
+		rt::buffer<InterfaceAttribute> attributes;
+		InterfaceType type;
+	};
+
+	export enum interface_decl_kind : [u08] {
+		record;
+		alias;
+		variable;
+		function;
+	};
+
+	export struct InterfaceDeclaration {
+		interface_decl_kind kind;
+		rt::string name;
+		rt::buffer<InterfaceAttribute> attributes;
+		InterfaceType type;
+		rt::optional<InterfaceType> base;
+		rt::buffer<InterfaceField> fields;
+		storage_class storage;
+		bool constant;
+		rt::buffer<InterfaceField> parameters;
+		rt::buffer<InterfaceType> type_only_parameters;
+		rt::buffer<rt::string> template_parameters;
+		rt::buffer<InterfaceType> template_arguments;
+		bool implicit_emitter;
+		bool declaration;
+		rt::buffer<u08> generic_definition;
+	};
+
+	export struct InterfaceUnit {
+		rt::string import_path;
+		rt::buffer<InterfaceImport> imports;
+		rt::buffer<InterfaceDeclaration> declarations;
+	};
+
+	export struct ModuleInterface {
+		rt::optional<rt::string> library_name;
+		rt::buffer<InterfaceUnit> units;
+	};
+};

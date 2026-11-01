@@ -1,0 +1,220 @@
+namespace rtsl {
+	export fn Sema::substitute(var Sema& this, QualType type, u32 owner, rt::buffer<TemplateArgument>& arguments) -> QualType {
+		if (!type.type || !owner) {
+			return $type;
+		};
+		var value = Type(*this.context->type_at(type.type));
+		Decl& declaration = *this.context->decl_at(owner);
+		if (value.kind == type_kind::template_parameter || value.kind == type_kind::named) {
+			for (usize index = 0; index < declaration.parameters.size() && index < arguments.size(); @index = index + 1) {
+				if (declaration.parameters.data()[index].name.same(value.name)) {
+					return QualType(arguments.data()[index].type);
+				};
+			};
+			return $type;
+		};
+		if (value.kind == type_kind::pointer || value.kind == type_kind::reference) {
+			@value.pointee = @this.substitute(value.pointee, owner, arguments);
+			@type.type = @this.context->add_type($value);
+			return $type;
+		};
+		if (value.kind == type_kind::specialization) {
+			for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+				var TemplateArgument& argument = @(@value.arguments).data()[index];
+				if (argument.kind == template_argument_kind::parameter) {
+					for (usize parameter = 0; parameter < declaration.parameters.size() && parameter < arguments.size(); @parameter = parameter + 1) {
+						if (declaration.parameters.data()[parameter].name.same(argument.parameter)) {
+							@argument = TemplateArgument(arguments.data()[parameter]);
+							break;
+						};
+					};
+				}
+				else if (argument.kind == template_argument_kind::type) {
+					@argument.type = @this.substitute(argument.type, owner, arguments);
+				};
+			};
+			@type.type = @this.context->add_type($value);
+		};
+		return $type;
+	};
+
+	export fn Sema::receiver_type(var Sema& this, QualType type, QualType receiver) -> QualType {
+		Type* value = this.context->type_at(receiver.type);
+		while (value && (value->kind == type_kind::pointer || value->kind == type_kind::reference)) {
+			@receiver = QualType(value->pointee);
+			@value = this.context->type_at(receiver.type);
+		};
+		if (!value || value->kind != type_kind::specialization) {
+			return $type;
+		};
+		u32 owner = this.record_for(receiver);
+		if (owner && this.context->decl_at(owner)->template_pattern) {
+			@owner = this.context->decl_at(owner)->template_pattern;
+		};
+		var arguments = rt::buffer<TemplateArgument>(value->arguments);
+		return @this.substitute(type, owner, arguments);
+	};
+
+	export fn Sema::infer_type(var Sema& this, QualType pattern, QualType actual, u32 owner, var rt::buffer<TemplateArgument>& arguments) {
+		Type* first = this.context->type_at(pattern.type);
+		Type* second = this.context->type_at(actual.type);
+		if (!first || !second) {
+			return;
+		};
+		if (first->kind == type_kind::template_parameter) {
+			Decl& declaration = *this.context->decl_at(owner);
+			for (usize index = 0; index < declaration.parameters.size() && index < arguments.size(); @index = index + 1) {
+				if (declaration.parameters.data()[index].name.same(first->name)) {
+					var TemplateArgument& argument = @(@arguments).data()[index];
+					if (argument.kind == template_argument_kind::parameter) {
+						@argument.kind = template_argument_kind::type;
+						@argument.type = QualType(actual);
+					};
+				};
+			};
+			return;
+		};
+		if (first->kind != second->kind) {
+			return;
+		};
+		if (first->kind == type_kind::pointer || first->kind == type_kind::reference) {
+			@this.infer_type(first->pointee, second->pointee, owner, @arguments);
+		};
+		if (first->kind == type_kind::specialization && first->name.same(second->name) && first->arguments.size() == second->arguments.size()) {
+			for (usize index = 0; index < first->arguments.size(); @index = index + 1) {
+				@this.infer_type(first->arguments.data()[index].type, second->arguments.data()[index].type, owner, @arguments);
+			};
+		};
+	};
+
+	export fn Sema::clone_expression(var Sema& this, u32 id, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32 {
+		if (!id) {
+			return 0;
+		};
+		var value = Expr(*this.context->expr_at(id));
+		@value.type = @this.substitute(value.type, owner, arguments);
+		if (value.kind == expr_kind::declaration || value.kind == expr_kind::member || value.kind == expr_kind::call) {
+			@value.declaration = 0;
+		};
+		@value.left = @this.clone_expression(value.left, owner, arguments);
+		@value.right = @this.clone_expression(value.right, owner, arguments);
+		for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+			u32 cloned = @this.clone_expression(value.arguments.data()[index], owner, arguments);
+			@(@value.arguments).data()[index] = cloned;
+		};
+		return @this.context->add_expr($value);
+	};
+
+	export fn Sema::clone_statement(var Sema& this, u32 id, u32 scope, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32 {
+		if (!id) {
+			return 0;
+		};
+		var value = Stmt(*this.context->stmt_at(id));
+		if (value.kind == stmt_kind::compound || value.kind == stmt_kind::for_loop) {
+			Decl nested;
+			@nested.kind = decl_kind::scope;
+			@nested.parent = scope;
+			@scope = @this.context->add_decl($nested);
+		};
+		@value.scope = scope;
+		if (value.declaration) {
+			var declaration = Decl(*this.context->decl_at(value.declaration));
+			@declaration.parent = scope;
+			@declaration.type = @this.substitute(declaration.type, owner, arguments);
+			@declaration.initializer = @this.clone_expression(declaration.initializer, owner, arguments);
+			@value.declaration = @this.context->add_decl($declaration);
+		};
+		@value.value = @this.clone_expression(value.value, owner, arguments);
+		@value.increment = @this.clone_expression(value.increment, owner, arguments);
+		@value.initialization = @this.clone_statement(value.initialization, scope, owner, arguments);
+		@value.then_branch = @this.clone_statement(value.then_branch, scope, owner, arguments);
+		@value.else_branch = @this.clone_statement(value.else_branch, scope, owner, arguments);
+		for (usize index = 0; index < value.body.size(); @index = index + 1) {
+			u32 cloned = @this.clone_statement(value.body.data()[index], scope, owner, arguments);
+			@(@value.body).data()[index] = cloned;
+		};
+		return @this.context->add_stmt($value);
+	};
+
+	export fn Sema::instantiate(var Sema& this, u32 pattern, u32 owner, rt::buffer<TemplateArgument>& arguments) -> u32 {
+		for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+			Decl& candidate = this.context->declarations.data()[index];
+			if (candidate.template_pattern != pattern || candidate.template_arguments.size() != arguments.size()) {
+				continue;
+			};
+			bool same = true;
+			for (usize argument = 0; argument < arguments.size(); @argument = argument + 1) {
+				TemplateArgument& first = candidate.template_arguments.data()[argument];
+				TemplateArgument& second = arguments.data()[argument];
+				if (first.kind != second.kind || first.integer != second.integer || !this.same_type(first.type, second.type)) {
+					@same = false;
+				};
+			};
+			if (same) {
+				return static_cast<u32>(index + 1);
+			};
+		};
+		var original = Decl(*this.context->decl_at(pattern));
+		var value = Decl(original);
+		@value.parameters.clear();
+		@value.members.clear();
+		@value.template_arguments = rt::buffer<TemplateArgument>(arguments);
+		@value.template_pattern = pattern;
+		@value.redeclaration = 0;
+		@value.type = @this.substitute(original.type, owner, arguments);
+		if (this.context->decl_at(owner)->kind == decl_kind::record) {
+			Type receiver;
+			@receiver.kind = type_kind::specialization;
+			@receiver.name = Token(this.context->decl_at(owner)->name);
+			@receiver.arguments = rt::buffer<TemplateArgument>(arguments);
+			@value.receiver_type.type = @this.context->add_type($receiver);
+			discard @this.instantiate_record(value.receiver_type.type, owner, arguments, 0);
+		};
+		@value.body = 0;
+		u32 result = @this.context->add_decl($value);
+		for (usize index = 0; index < original.members.size(); @index = index + 1) {
+			var parameter = Decl(*this.context->decl_at(original.members.data()[index]));
+			@parameter.parent = result;
+			@parameter.type = @this.substitute(parameter.type, owner, arguments);
+			u32 id = @this.context->add_decl($parameter);
+			@(@this.context->decl_at(result))->members.push_back(id);
+		};
+		u32 body = @this.clone_statement(original.body, result, owner, arguments);
+		@(@this.context->decl_at(result))->body = body;
+		u32 initializer = @this.clone_expression(original.initializer, owner, arguments);
+		@(@this.context->decl_at(result))->initializer = initializer;
+		@this.declaration(result);
+		return result;
+	};
+
+	export fn Sema::instantiate_record(var Sema& this, u32 type, u32 pattern, rt::buffer<TemplateArgument>& arguments, usize depth) -> u32 {
+		if (this.context->type_at(type)->declaration) {
+			return this.context->type_at(type)->declaration;
+		};
+		if (depth > 128) {
+			@this.error(this.context->decl_at(pattern)->name, "recursive record specialization");
+			return 0;
+		};
+		var original = Decl(*this.context->decl_at(pattern));
+		var value = Decl(original);
+		@value.parameters.clear();
+		@value.members.clear();
+		@value.template_pattern = pattern;
+		@value.template_arguments = rt::buffer<TemplateArgument>(arguments);
+		@value.base = @this.substitute(original.base, pattern, arguments);
+		u32 result = @this.context->add_decl($value);
+		@(@this.context->type_at(type))->declaration = result;
+		for (usize index = 0; index < original.members.size(); @index = index + 1) {
+			u32 member = original.members.data()[index];
+			if (this.context->decl_at(member)->kind == decl_kind::field) {
+				var field = Decl(*this.context->decl_at(member));
+				@field.parent = result;
+				@field.type = @this.substitute(field.type, pattern, arguments);
+				@field.type = @this.resolve_type(field.type, result, depth + 1);
+				@member = @this.context->add_decl($field);
+			};
+			@(@this.context->decl_at(result))->members.push_back(member);
+		};
+		return result;
+	};
+};

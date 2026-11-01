@@ -1,0 +1,139 @@
+namespace rtsl {
+	fn interface_count(var BinaryWriter& writer, usize count) {
+		if (count > 16777216) {
+			artifact_error error;
+			@error.code = artifact_error_code::invalid_count;
+			@error.message = rt::string("module interface count exceeds its limit");
+			throw $error;
+		};
+		@writer.count(count);
+	};
+
+	fn interface_string(var BinaryWriter& writer, rt::string_view text) {
+		interface_count(@writer, text.size());
+		for (usize index = 0; index < text.size(); @index = index + 1) {
+			@writer.byte(static_cast<u08>(text.data()[index]));
+		};
+	};
+
+	fn write_interface_type(var BinaryWriter& writer, InterfaceType& type, usize depth) {
+		if (depth > 128) {
+			artifact_error error;
+			@error.code = artifact_error_code::invalid_count;
+			@error.message = rt::string("module interface type nesting exceeds its limit");
+			throw $error;
+		};
+		@writer.byte(static_cast<u08>(type.kind));
+		@writer.flag(type.constant);
+		interface_string(@writer, type.name);
+		@writer.optional_word(type.integer);
+		interface_count(@writer, type.arguments.size());
+		for (usize index = 0; index < type.arguments.size(); @index = index + 1) {
+			write_interface_type(@writer, type.arguments.data()[index], depth + 1);
+		};
+	};
+
+	fn write_interface_attributes(var BinaryWriter& writer, rt::buffer<InterfaceAttribute>& attributes) {
+		interface_count(@writer, attributes.size());
+		for (usize index = 0; index < attributes.size(); @index = index + 1) {
+			InterfaceAttribute& attribute = attributes.data()[index];
+			interface_string(@writer, attribute.name);
+			interface_count(@writer, attribute.tokens.size());
+			for (usize token = 0; token < attribute.tokens.size(); @token = token + 1) {
+				InterfaceToken& value = attribute.tokens.data()[token];
+				@writer.byte(static_cast<u08>(value.kind));
+				@writer.byte(static_cast<u08>(value.kind >> 8));
+				interface_string(@writer, value.spelling);
+			};
+		};
+	};
+
+	fn write_interface_field(var BinaryWriter& writer, InterfaceField& field) {
+		interface_string(@writer, field.name);
+		write_interface_attributes(@writer, field.attributes);
+		write_interface_type(@writer, field.type, 0);
+	};
+
+	fn write_interface_declaration(var BinaryWriter& writer, InterfaceDeclaration& declaration) {
+		@writer.byte(static_cast<u08>(declaration.kind));
+		interface_string(@writer, declaration.name);
+		write_interface_attributes(@writer, declaration.attributes);
+		if (declaration.kind == interface_decl_kind::record) {
+			@writer.flag(declaration.base.has_value());
+			if (declaration.base.has_value()) {
+				write_interface_type(@writer, declaration.base.value(), 0);
+			};
+			interface_count(@writer, declaration.fields.size());
+			for (usize index = 0; index < declaration.fields.size(); @index = index + 1) {
+				write_interface_field(@writer, declaration.fields.data()[index]);
+			};
+			return;
+		};
+		write_interface_type(@writer, declaration.type, 0);
+		if (declaration.kind == interface_decl_kind::alias) {
+			return;
+		};
+		if (declaration.kind == interface_decl_kind::variable) {
+			@writer.byte(static_cast<u08>(declaration.storage));
+			@writer.flag(declaration.constant);
+			return;
+		};
+		interface_count(@writer, declaration.parameters.size());
+		for (usize index = 0; index < declaration.parameters.size(); @index = index + 1) {
+			write_interface_field(@writer, declaration.parameters.data()[index]);
+		};
+		interface_count(@writer, declaration.type_only_parameters.size());
+		for (usize index = 0; index < declaration.type_only_parameters.size(); @index = index + 1) {
+			write_interface_type(@writer, declaration.type_only_parameters.data()[index], 0);
+		};
+		interface_count(@writer, declaration.template_parameters.size());
+		for (usize index = 0; index < declaration.template_parameters.size(); @index = index + 1) {
+			interface_string(@writer, declaration.template_parameters.data()[index]);
+		};
+		@writer.flag(declaration.implicit_emitter);
+		interface_count(@writer, declaration.template_arguments.size());
+		for (usize index = 0; index < declaration.template_arguments.size(); @index = index + 1) {
+			write_interface_type(@writer, declaration.template_arguments.data()[index], 0);
+		};
+		@writer.flag(declaration.declaration);
+		interface_count(@writer, declaration.generic_definition.size());
+		for (usize index = 0; index < declaration.generic_definition.size(); @index = index + 1) {
+			@writer.byte(declaration.generic_definition.data()[index]);
+		};
+	};
+
+	export fn write_interface(ModuleInterface& value) -> rt::buffer<u08> | artifact_error {
+		try {
+			BinaryWriter writer;
+			for (usize index = 0; index < 7; @index = index + 1) {
+				@writer.byte(static_cast<u08>("RTSLMOD".data()[index]));
+			};
+			@writer.byte(0);
+			@writer.byte(4);
+			@writer.byte(0);
+			@writer.flag(value.library_name.has_value());
+			if (value.library_name.has_value()) {
+				interface_string(@writer, value.library_name.value());
+			};
+			interface_count(@writer, value.units.size());
+			for (usize index = 0; index < value.units.size(); @index = index + 1) {
+				InterfaceUnit& unit = value.units.data()[index];
+				interface_string(@writer, unit.import_path);
+				interface_count(@writer, unit.imports.size());
+				for (usize item = 0; item < unit.imports.size(); @item = item + 1) {
+					InterfaceImport& dependency = unit.imports.data()[item];
+					@writer.byte(static_cast<u08>(dependency.kind));
+					interface_string(@writer, dependency.name);
+				};
+				interface_count(@writer, unit.declarations.size());
+				for (usize item = 0; item < unit.declarations.size(); @item = item + 1) {
+					write_interface_declaration(@writer, unit.declarations.data()[item]);
+				};
+			};
+			return rt::buffer<u08>(writer.bytes);
+		}
+		catch (artifact_error error) {
+			return $error;
+		};
+	};
+};

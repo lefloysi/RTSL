@@ -1,0 +1,101 @@
+namespace rtsl {
+	export fn Parser::statement(var Parser& this, u32 scope) -> u32 {
+		Stmt value;
+		@value.location = this.token(0);
+		@value.scope = scope;
+		if (@this.take(token_kind::punct_left_brace)) {
+			@value.kind = stmt_kind::compound;
+			Decl nested;
+			@nested.kind = decl_kind::scope;
+			@nested.parent = scope;
+			@value.scope = @this.context->add_decl($nested);
+			while (this.token(0).kind != token_kind::punct_right_brace && this.token(0).kind != token_kind::eof) {
+				usize before = this.cursor;
+				@value.body.push_back(@this.statement(value.scope));
+				if (this.cursor == before) {
+					@this.error("unable to parse statement");
+					discard @this.consume();
+				};
+			};
+			discard @this.require(token_kind::punct_right_brace, "expected '}' after block");
+			discard @this.take(token_kind::punct_semicolon);
+		}
+		else if (@this.take(token_kind::kw_if)) {
+			@value.kind = stmt_kind::condition;
+			discard @this.require(token_kind::punct_left_paren, "expected '(' after if");
+			@value.value = @this.expression(1);
+			discard @this.require(token_kind::punct_right_paren, "expected ')' after condition");
+			@value.then_branch = @this.statement(scope);
+			if (@this.take(token_kind::kw_else)) {
+				@value.else_branch = @this.statement(scope);
+			};
+		}
+		else if (@this.take(token_kind::kw_while)) {
+			@value.kind = stmt_kind::while_loop;
+			discard @this.require(token_kind::punct_left_paren, "expected '(' after while");
+			@value.value = @this.expression(1);
+			discard @this.require(token_kind::punct_right_paren, "expected ')' after condition");
+			@value.then_branch = @this.statement(scope);
+		}
+		else if (@this.take(token_kind::kw_for)) {
+			@value.kind = stmt_kind::for_loop;
+			Decl nested;
+			@nested.kind = decl_kind::scope;
+			@nested.parent = scope;
+			@value.scope = @this.context->add_decl($nested);
+			discard @this.require(token_kind::punct_left_paren, "expected '(' after for");
+			@value.initialization = @this.statement(value.scope);
+			if (this.token(0).kind != token_kind::punct_semicolon) {
+				@value.value = @this.expression(1);
+			};
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after loop condition");
+			if (this.token(0).kind != token_kind::punct_right_paren) {
+				@value.increment = @this.expression(1);
+			};
+			discard @this.require(token_kind::punct_right_paren, "expected ')' after loop increment");
+			@value.then_branch = @this.statement(value.scope);
+		}
+		else if (this.token(0).is("emit")) {
+			discard @this.consume();
+			@value.kind = stmt_kind::expression;
+			Expr emitter;
+			@emitter.kind = expr_kind::emitter;
+			@emitter.location = Token(value.location);
+			Expr emission;
+			@emission.kind = expr_kind::binary;
+			@emission.location = Token(value.location);
+			@emission.opcode = token_kind::op_emit;
+			@emission.left = @this.context->add_expr($emitter);
+			@emission.right = @this.expression(1);
+			@value.value = @this.context->add_expr($emission);
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after emit statement");
+		}
+		else if (@this.take(token_kind::kw_return)) {
+			@value.kind = stmt_kind::return_value;
+			if (this.token(0).kind != token_kind::punct_semicolon) {
+				@value.value = @this.expression(1);
+			};
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after return");
+		}
+		else if (this.token(0).kind == token_kind::kw_break || this.token(0).kind == token_kind::kw_continue) {
+			@value.kind = stmt_kind::break_loop;
+			if ((@this.consume()).kind == token_kind::kw_continue) {
+				@value.kind = stmt_kind::continue_loop;
+			};
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after loop control");
+		}
+		else if (this.type_start()) {
+			@value.kind = stmt_kind::declaration;
+			@value.declaration = @this.declaration(scope, decl_kind::variable);
+		}
+		else {
+			@value.kind = stmt_kind::expression;
+			discard @this.take(token_kind::kw_discard);
+			if (this.token(0).kind != token_kind::punct_semicolon) {
+				@value.value = @this.expression(1);
+			};
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after expression");
+		};
+		return @this.context->add_stmt($value);
+	};
+};

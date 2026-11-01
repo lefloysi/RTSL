@@ -1,0 +1,191 @@
+namespace rtsl {
+	fn read_interface_string(var BinaryReader& reader) -> rt::string {
+		usize size = @reader.count();
+		if (size > reader.remaining()) {
+			reader.fail(artifact_error_code::truncated, "string exceeds module interface");
+		};
+		var result = rt::string(rt::string_view(reinterpret_cast<char*>(reader.bytes.data() + reader.position), size));
+		@reader.position = reader.position + size;
+		return $result;
+	};
+
+	fn read_interface_type(var BinaryReader& reader, u16 version, usize depth) -> InterfaceType {
+		if (depth > 128) {
+			reader.fail(artifact_error_code::invalid_count, "module interface type nesting exceeds its limit");
+		};
+		InterfaceType type;
+		u08 kind = @reader.byte();
+		if (kind > 10) {
+			reader.fail(artifact_error_code::invalid_enum, "unknown module interface type kind");
+		};
+		@type.kind = static_cast<interface_type_kind>(kind);
+		@type.constant = @reader.flag();
+		@type.name = read_interface_string(@reader);
+		if (version >= 3 && @reader.flag()) {
+			@type.integer = rt::optional<u32>(@reader.word());
+		};
+		usize count = @reader.records();
+		for (usize index = 0; index < count; @index = index + 1) {
+			@type.arguments.push_back(read_interface_type(@reader, version, depth + 1));
+		};
+		if ((type.kind == interface_type_kind::pointer || type.kind == interface_type_kind::reference) && type.arguments.size() != 1) {
+			reader.fail(artifact_error_code::invalid_reference, "indirect interface type requires one pointee type");
+		};
+		return $type;
+	};
+
+	fn read_interface_attributes(var BinaryReader& reader) -> rt::buffer<InterfaceAttribute> {
+		rt::buffer<InterfaceAttribute> result;
+		usize count = @reader.records();
+		for (usize index = 0; index < count; @index = index + 1) {
+			InterfaceAttribute attribute;
+			@attribute.name = read_interface_string(@reader);
+			usize tokens = @reader.records();
+			for (usize token = 0; token < tokens; @token = token + 1) {
+				InterfaceToken value;
+				u16 low = static_cast<u16>(@reader.byte());
+				u16 high = static_cast<u16>(@reader.byte());
+				@value.kind = low + (high << 8);
+				@value.spelling = read_interface_string(@reader);
+				@attribute.tokens.push_back($value);
+			};
+			@result.push_back($attribute);
+		};
+		return $result;
+	};
+
+	fn read_interface_field(var BinaryReader& reader, u16 version) -> InterfaceField {
+		InterfaceField result;
+		@result.name = read_interface_string(@reader);
+		@result.attributes = read_interface_attributes(@reader);
+		@result.type = read_interface_type(@reader, version, 0);
+		return $result;
+	};
+
+	fn read_interface_declaration(var BinaryReader& reader, u16 version) -> InterfaceDeclaration {
+		InterfaceDeclaration result;
+		u08 kind = @reader.byte();
+		if (kind > 3) {
+			reader.fail(artifact_error_code::invalid_enum, "unknown module interface declaration kind");
+		};
+		@result.kind = static_cast<interface_decl_kind>(kind);
+		@result.name = read_interface_string(@reader);
+		@result.attributes = read_interface_attributes(@reader);
+		if (result.kind == interface_decl_kind::record) {
+			if (@reader.flag()) {
+				@result.base = rt::optional<InterfaceType>(read_interface_type(@reader, version, 0));
+			};
+			usize count = @reader.records();
+			for (usize index = 0; index < count; @index = index + 1) {
+				@result.fields.push_back(read_interface_field(@reader, version));
+			};
+			return $result;
+		};
+		@result.type = read_interface_type(@reader, version, 0);
+		if (result.kind == interface_decl_kind::alias) {
+			return $result;
+		};
+		if (result.kind == interface_decl_kind::variable) {
+			u08 storage = @reader.byte();
+			if (storage > 2) {
+				reader.fail(artifact_error_code::invalid_enum, "unknown module interface storage class");
+			};
+			@result.storage = static_cast<storage_class>(storage);
+			@result.constant = @reader.flag();
+			return $result;
+		};
+		usize count = @reader.records();
+		for (usize index = 0; index < count; @index = index + 1) {
+			@result.parameters.push_back(read_interface_field(@reader, version));
+		};
+		if (version >= 2) {
+			@count = @reader.records();
+			for (usize index = 0; index < count; @index = index + 1) {
+				@result.type_only_parameters.push_back(read_interface_type(@reader, version, 0));
+			};
+		};
+		@count = @reader.records();
+		for (usize index = 0; index < count; @index = index + 1) {
+			@result.template_parameters.push_back(read_interface_string(@reader));
+		};
+		@result.implicit_emitter = @reader.flag();
+		if (version >= 4) {
+			@count = @reader.records();
+			for (usize index = 0; index < count; @index = index + 1) {
+				@result.template_arguments.push_back(read_interface_type(@reader, version, 0));
+			};
+		};
+		@result.declaration = @reader.flag();
+		@count = @reader.count();
+		if (count > reader.remaining()) {
+			reader.fail(artifact_error_code::truncated, "generic definition exceeds module interface");
+		};
+		for (usize index = 0; index < count; @index = index + 1) {
+			@result.generic_definition.push_back(@reader.byte());
+		};
+		return $result;
+	};
+
+	fn decode_interface(rt::span<u08> bytes) -> ModuleInterface {
+		var reader = BinaryReader(bytes, 0, 0);
+		for (usize index = 0; index < 8; @index = index + 1) {
+			u08 expected = 0;
+			if (index < 7) {
+				@expected = static_cast<u08>("RTSLMOD".data()[index]);
+			};
+			if (@reader.byte() != expected) {
+				reader.fail(artifact_error_code::invalid_magic, "invalid module interface magic");
+			};
+		};
+		u16 low = static_cast<u16>(@reader.byte());
+		u16 high = static_cast<u16>(@reader.byte());
+		u16 version = low + (high << 8);
+		if (!version || version > 4) {
+			reader.fail(artifact_error_code::unsupported_version, "unsupported module interface version");
+		};
+		ModuleInterface result;
+		if (@reader.flag()) {
+			@result.library_name = rt::optional<rt::string>(read_interface_string(@reader));
+		};
+		usize count = @reader.records();
+		for (usize index = 0; index < count; @index = index + 1) {
+			InterfaceUnit unit;
+			@unit.import_path = read_interface_string(@reader);
+			usize imports = @reader.records();
+			for (usize dependency = 0; dependency < imports; @dependency = dependency + 1) {
+				InterfaceImport value;
+				u08 kind = @reader.byte();
+				if (kind > 1) {
+					reader.fail(artifact_error_code::invalid_enum, "unknown module interface import kind");
+				};
+				@value.kind = static_cast<import_kind>(kind);
+				@value.name = read_interface_string(@reader);
+				@unit.imports.push_back($value);
+			};
+			usize declarations = @reader.records();
+			for (usize declaration = 0; declaration < declarations; @declaration = declaration + 1) {
+				@unit.declarations.push_back(read_interface_declaration(@reader, version));
+			};
+			@result.units.push_back($unit);
+		};
+		if (reader.remaining()) {
+			reader.fail(artifact_error_code::invalid_directory, "module interface contains trailing data");
+		};
+		return $result;
+	};
+
+	export fn read_interface(rt::span<u08> bytes) -> ModuleInterface | artifact_error {
+		try {
+			return decode_interface(bytes);
+		}
+		catch (artifact_error error) {
+			return $error;
+		}
+		catch (rt::allocation_error error) {
+			artifact_error failure;
+			@failure.code = artifact_error_code::allocation_failure;
+			@failure.message = rt::string("allocation failed while reading module interface");
+			return $failure;
+		};
+	};
+};

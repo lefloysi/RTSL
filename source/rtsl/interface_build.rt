@@ -1,0 +1,180 @@
+namespace rtsl {
+	fn interface_attributes(rt::buffer<Attribute>& attributes) -> rt::buffer<InterfaceAttribute> {
+		rt::buffer<InterfaceAttribute> result;
+		for (usize i = 0; i < attributes.size(); @i = i + 1) {
+			Attribute& attribute = attributes.data()[i];
+			InterfaceAttribute value;
+			@value.name = rt::string(attribute.name.text());
+			for (usize j = 0; j < attribute.arguments.size(); @j = j + 1) {
+				InterfaceToken token;
+				@token.kind = interface_token_kind(attribute.arguments.data()[j]);
+				@token.spelling = rt::string(attribute.arguments.data()[j].text());
+				@value.tokens.push_back($token);
+			};
+			@result.push_back($value);
+		};
+		return $result;
+	};
+
+	fn interface_type(ASTContext& context, QualType qualified) -> InterfaceType {
+		InterfaceType result;
+		@result.constant = qualified.constant;
+		Type* type = context.type_at(qualified.type);
+		if (!type) {
+			return $result;
+		};
+		@result.name = rt::string(type->name.text());
+		switch (type->kind) {
+			case type_kind::builtin:
+				@result.kind = static_cast<interface_type_kind>(static_cast<u08>(type->builtin));
+				break;
+			case type_kind::named:
+				@result.kind = interface_type_kind::named;
+				break;
+			case type_kind::template_parameter:
+				@result.kind = interface_type_kind::template_parameter;
+				break;
+			case type_kind::pointer:
+			case type_kind::reference:
+				@result.kind = interface_type_kind::pointer;
+				if (type->kind == type_kind::reference) {
+					@result.kind = interface_type_kind::reference;
+				};
+				@result.arguments.push_back(interface_type(context, type->pointee));
+				break;
+			case type_kind::specialization:
+				@result.kind = interface_type_kind::specialization;
+				for (usize i = 0; i < type->arguments.size(); @i = i + 1) {
+					TemplateArgument& argument = type->arguments.data()[i];
+					InterfaceType item;
+					if (argument.kind == template_argument_kind::type) {
+						@item = interface_type(context, argument.type);
+					}
+					else if (argument.kind == template_argument_kind::integer) {
+						@item.integer = rt::optional<u32>(argument.integer);
+					}
+					else {
+						@item.kind = interface_type_kind::template_parameter;
+						@item.name = rt::string(argument.parameter.text());
+					};
+					@result.arguments.push_back($item);
+				};
+				break;
+		};
+		return $result;
+	};
+
+	fn interface_field(ASTContext& context, Decl& declaration) -> InterfaceField {
+		InterfaceField result;
+		@result.name = rt::string(declaration.name.text());
+		@result.attributes = interface_attributes(declaration.attributes);
+		@result.type = interface_type(context, declaration.type);
+		return $result;
+	};
+
+	export fn build_interface_unit(ASTContext& context, SourceFile& source, rt::string_view import_path, var DiagnosticsEngine& diagnostics) -> InterfaceUnit | compilation_error {
+		InterfaceUnit result;
+		@result.import_path = rt::string(import_path);
+		Decl* root = context.decl_at(context.root);
+		if (!root) {
+			return $result;
+		};
+		for (usize i = 0; i < root->members.size(); @i = i + 1) {
+			Decl* declaration = context.decl_at(root->members.data()[i]);
+			if (declaration->source != &source || declaration->internal || declaration->template_pattern || declaration->redeclaration) {
+				continue;
+			};
+			if (declaration->kind == decl_kind::import) {
+				InterfaceImport item;
+				@item.kind = declaration->import_type;
+				var name = declaration->name.text();
+				if (item.kind == import_kind::file && name.size() >= 2) {
+					@name = rt::string_view(name.data() + 1, name.size() - 2);
+				};
+				@item.name = rt::string(name);
+				@result.imports.push_back($item);
+				continue;
+			};
+			if (!declaration->exported) {
+				continue;
+			};
+			InterfaceDeclaration value;
+			@value.name = rt::string(declaration->name.text());
+			@value.attributes = interface_attributes(declaration->attributes);
+			@value.type = interface_type(context, declaration->type);
+			if (declaration->kind == decl_kind::record) {
+				if (declaration->parameters.size()) {
+					@diagnostics.report(diagnostic_level::error, declaration->name, "module interfaces cannot represent exported generic records");
+					return compilation_error();
+				};
+				@value.kind = interface_decl_kind::record;
+				if (declaration->base.type) {
+					@value.base = rt::optional<InterfaceType>(interface_type(context, declaration->base));
+				};
+				for (usize j = 0; j < declaration->members.size(); @j = j + 1) {
+					Decl* member = context.decl_at(declaration->members.data()[j]);
+					if (member->kind == decl_kind::field) {
+						@value.fields.push_back(interface_field(context, *member));
+					};
+				};
+			}
+			else if (declaration->kind == decl_kind::type_alias) {
+				@value.kind = interface_decl_kind::alias;
+			}
+			else if (declaration->kind == decl_kind::variable) {
+				@value.kind = interface_decl_kind::variable;
+				@value.storage = declaration->storage;
+				@value.constant = declaration->type.constant;
+			}
+			else if (declaration->kind == decl_kind::function) {
+				@value.kind = interface_decl_kind::function;
+				@value.declaration = !declaration->body;
+				@value.implicit_emitter = declaration->implicit_emitter;
+				for (usize j = 0; j < declaration->template_arguments.size(); @j = j + 1) {
+					TemplateArgument& argument = declaration->template_arguments.data()[j];
+					InterfaceType item;
+					if (argument.kind == template_argument_kind::integer) {
+						@item.integer = rt::optional<u32>(argument.integer);
+					}
+					else if (argument.kind == template_argument_kind::type) {
+						@item = interface_type(context, argument.type);
+					}
+					else {
+						@item.kind = interface_type_kind::template_parameter;
+						@item.name = rt::string(argument.parameter.text());
+					};
+					@value.template_arguments.push_back($item);
+				};
+				for (usize j = 0; j < declaration->members.size(); @j = j + 1) {
+					Decl* parameter = context.decl_at(declaration->members.data()[j]);
+					if (parameter->kind == decl_kind::parameter) {
+						@value.parameters.push_back(interface_field(context, *parameter));
+					};
+				};
+				for (usize j = 0; j < declaration->type_only_parameters.size(); @j = j + 1) {
+					@value.type_only_parameters.push_back(interface_type(context, declaration->type_only_parameters.data()[j]));
+				};
+				for (usize j = 0; j < declaration->parameters.size(); @j = j + 1) {
+					@value.template_parameters.push_back(rt::string(declaration->parameters.data()[j].name.text()));
+				};
+				if (declaration->parameters.size() && declaration->body) {
+					usize begin = declaration->source_begin;
+					usize end = declaration->source_end;
+					var text = source.text();
+					if (end <= begin || end > text.size()) {
+						@diagnostics.report(diagnostic_level::error, declaration->name, "generic function source range is unavailable for module export");
+						return compilation_error();
+					};
+					for (usize j = begin; j < end; @j = j + 1) {
+						@value.generic_definition.push_back(u08(text.data()[j]));
+					};
+				};
+			}
+			else {
+				continue;
+			};
+			@result.declarations.push_back($value);
+		};
+		return $result;
+	};
+};

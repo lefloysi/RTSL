@@ -1,0 +1,104 @@
+namespace rtsl::ir {
+	fn same_optional(rt::optional<u32>& left, rt::optional<u32>& right) -> bool {
+		if (left.has_value() != right.has_value()) { return false; };
+		return !left.has_value() || left.value() == right.value();
+	};
+
+	fn same_words(rt::buffer<u32>& left, rt::buffer<u32>& right) -> bool {
+		if (left.size() != right.size()) { return false; };
+		for (usize i = 0; i < left.size(); @i = i + 1) {
+			if (left.data()[i] != right.data()[i]) { return false; };
+		};
+		return true;
+	};
+
+	fn same_type(Type& left, Type& right) -> bool {
+		if (left.kind != right.kind || left.bit_width != right.bit_width || left.element_type != right.element_type ||
+			left.element_count != right.element_count || left.space != right.space || left.name != right.name ||
+			!same_words(left.parameter_types, right.parameter_types) || left.members.size() != right.members.size() ||
+			left.builtin_members.size() != right.builtin_members.size()) { return false; };
+		for (usize i = 0; i < left.members.size(); @i = i + 1) {
+			var a = &left.members.data()[i];
+			var b = &right.members.data()[i];
+			if (a->name != b->name || a->type != b->type || !same_optional(a->offset, b->offset) || !same_optional(a->alignment, b->alignment)) { return false; };
+		};
+		for (usize i = 0; i < left.builtin_members.size(); @i = i + 1) {
+			if (left.builtin_members.data()[i].kind != right.builtin_members.data()[i].kind ||
+				!same_words(left.builtin_members.data()[i].member_path, right.builtin_members.data()[i].member_path)) { return false; };
+		};
+		return true;
+	};
+
+	struct ModuleBuilder {
+		fn ModuleBuilder(var ModuleBuilder& this) : [default];
+		fn ModuleBuilder(var ModuleBuilder& this, rt::string_view name) {
+			@this.module.name = @this.module.strings.intern(name);
+			@this.next_value = 1;
+			@this.next_block = 1;
+		};
+		fn symbol(var ModuleBuilder& this, rt::string_view name, bool exported) -> SymbolID {
+			var spelling = @this.module.strings.intern(name);
+			for (usize i = 0; i < this.module.symbols.size(); @i = i + 1) {
+				var Symbol* candidate = &@(@this.module.symbols).data()[i];
+				if (candidate->name == spelling) {
+					@candidate->exported = candidate->exported || exported;
+					return candidate->id;
+				};
+			};
+			var Symbol value;
+			@value.id = static_cast<u32>(this.module.symbols.size() + 1);
+			@value.name = spelling;
+			@value.exported = exported;
+			var id = value.id;
+			@this.module.symbols.push_back($value);
+			return id;
+		};
+		fn intern_type(var ModuleBuilder& this, Type value) -> TypeID {
+			for (usize i = 0; i < this.module.types.size(); @i = i + 1) {
+				if (same_type(this.module.types.data()[i], value)) { return this.module.types.data()[i].id; };
+			};
+			@value.id = static_cast<u32>(this.module.types.size() + 1);
+			var id = value.id;
+			@this.module.types.push_back($value);
+			return id;
+		};
+		fn value(var ModuleBuilder& this) -> ValueID {
+			var result = this.next_value;
+			@this.next_value = this.next_value + 1;
+			return result;
+		};
+		fn add_function(var ModuleBuilder& this, Function function) -> FunctionID {
+			@function.id = static_cast<u32>(this.module.functions.size() + 1);
+			var id = function.id;
+			@this.module.functions.push_back($function);
+			return id;
+		};
+		fn add_block(var ModuleBuilder& this, FunctionID function) -> BlockID {
+			var Function* parent = (@this.module).find_function(function);
+			var Block block;
+			@block.id = this.next_block;
+			@this.next_block = this.next_block + 1;
+			var id = block.id;
+			@parent->blocks.push_back($block);
+			return id;
+		};
+		fn block(var ModuleBuilder& this, FunctionID function, BlockID id) -> var Block* {
+			var Function* parent = (@this.module).find_function(function);
+			if (!parent) { return nullptr; };
+			for (usize i = 0; i < parent->blocks.size(); @i = i + 1) {
+				if (parent->blocks.data()[i].id == id) { return &@(@parent->blocks).data()[i]; };
+			};
+			return nullptr;
+		};
+		fn append(var ModuleBuilder& this, FunctionID function, BlockID block, Instruction instruction) -> ValueID {
+			if (instruction.type) { @instruction.result = @this.value(); };
+			var result = instruction.result;
+			var Block* target = @this.block(function, block);
+			@target->instructions.push_back($instruction);
+			return result;
+		};
+		Module module;
+		ValueID next_value = 1;
+		BlockID next_block = 1;
+	};
+};

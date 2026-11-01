@@ -1,0 +1,176 @@
+namespace rtsl::lsp {
+	struct Document {
+		rt::string uri;
+		rt::string text;
+	};
+
+	fn uri_path(rt::string_view uri) -> rt::string {
+		usize begin = 0;
+		if (uri.size() >= 8 && uri.slice(0, 8) == "file:///") {
+			@begin = 7;
+			if (uri.size() >= 10 && uri.data()[9] == ':') { @begin = 8; };
+		};
+		rt::string path;
+		for (usize index = begin; index < uri.size(); @index = index + 1) {
+			if (uri.data()[index] == '%' && index + 2 < uri.size()) {
+				usize value = 0;
+				bool valid = true;
+				for (usize digit = 1; digit <= 2; @digit = digit + 1) {
+					char character = uri.data()[index + digit];
+					if (character >= '0' && character <= '9') { @value = value * 16 + static_cast<usize>(character - '0'); }
+					else if (character >= 'a' && character <= 'f') { @value = value * 16 + static_cast<usize>(character - 'a' + 10); }
+					else if (character >= 'A' && character <= 'F') { @value = value * 16 + static_cast<usize>(character - 'A' + 10); }
+					else { @valid = false; };
+				};
+				if (valid) {
+					char byte = static_cast<char>(value);
+					@path.append(rt::string_view(&@byte, 1));
+					@index = index + 2;
+					continue;
+				};
+			};
+			@path.append(uri.slice(index, 1));
+		};
+		return $path;
+	};
+
+	fn parent(rt::string_view path) -> rt::string_view {
+		usize end = path.size();
+		while (end) {
+			if (path.data()[end - 1] == '/' || path.data()[end - 1] == '\\') { return path.slice(0, end); };
+			@end = end - 1;
+		};
+		return rt::string_view();
+	};
+
+	fn load_imports(var CompilerInstance& compiler, rt::string_view directory, rt::string_view source_text, var rt::buffer<rt::string>& loaded, usize depth) {
+		if (depth > 128) { return; };
+		if (imports_standard_library(source_text)) {
+			bool found = false;
+			for (usize index = 0; index < loaded.size(); @index = index + 1) {
+				if (loaded.data()[index] == "std") { @found = true; };
+			};
+			if (!found) {
+				@loaded.push_back(rt::string("std"));
+				discard load_standard_library(@compiler, rt::string_view());
+			};
+		};
+		SourceFile source;
+		@source.assign("<imports>", source_text);
+		var lexer = Lexer(@source);
+		discard @lexer.scan();
+		rt::buffer<Token>& tokens = source.tokens();
+		for (usize index = 0; index + 1 < tokens.size(); @index = index + 1) {
+			if (!tokens.data()[index].is("import")) { continue; };
+			Token& token = tokens.data()[index + 1];
+			if (token.kind != token_kind::literal_string || token.length < 2) { continue; };
+			var name = token.text().slice(1, token.length - 2);
+			bool found = false;
+			for (usize previous = 0; previous < loaded.size(); @previous = previous + 1) {
+				if (loaded.data()[previous] == name) { @found = true; };
+			};
+			if (found) { continue; };
+			@loaded.push_back(rt::string(name));
+			var path = rt::string(directory) + name;
+			var file = rt::fs::read(path);
+			if (!file.has<rt::string>()) { continue; };
+			@compiler.add_source(name, file.get<rt::string>());
+			load_imports(@compiler, directory, file.get<rt::string>(), @loaded, depth + 1);
+		};
+	};
+
+	fn prepare(var CompilerInstance& compiler, Document& document) {
+		@compiler.add_source(document.uri, document.text);
+		rt::buffer<rt::string> loaded;
+		var path = uri_path(document.uri);
+		load_imports(@compiler, parent(path), document.text, @loaded, 0);
+		discard @compiler.analyze();
+	};
+
+	fn utf16_length(rt::string_view text) -> usize {
+		usize length = 0;
+		for (usize index = 0; index < text.size(); @index = index + 1) {
+			u08 byte = static_cast<u08>(text.data()[index]);
+			if (byte >= 128 && byte < 192) { continue; };
+			@length = length + 1;
+			if (byte >= 240) { @length = length + 1; };
+		};
+		return length;
+	};
+
+	fn offset_at(rt::string_view text, usize line, usize character) -> usize {
+		usize offset = 0;
+		usize row = 0;
+		while (offset < text.size() && row < line) {
+			if (text.data()[offset] == '\n') { @row = row + 1; };
+			@offset = offset + 1;
+		};
+		usize column = 0;
+		while (offset < text.size() && text.data()[offset] != '\n' && column < character) {
+			u08 byte = static_cast<u08>(text.data()[offset]);
+			if (byte < 128 || byte >= 192) { @column = column + 1; };
+			if (byte >= 240) { @column = column + 1; };
+			@offset = offset + 1;
+		};
+		while (offset < text.size() && static_cast<u08>(text.data()[offset]) >= 128 && static_cast<u08>(text.data()[offset]) < 192) { @offset = offset + 1; };
+		return offset;
+	};
+
+	fn position(rt::string_view text, usize offset) -> rt::string {
+		if (offset > text.size()) { @offset = text.size(); };
+		usize line = 0;
+		usize begin = 0;
+		for (usize index = 0; index < offset; @index = index + 1) {
+			if (text.data()[index] == '\n') { @line = line + 1; @begin = index + 1; };
+		};
+		rt::string result = rt::string("{\"line\":");
+		cli_number(@result, line);
+		@result.append(",\"character\":");
+		cli_number(@result, utf16_length(text.slice(begin, offset - begin)));
+		@result.append("}");
+		return $result;
+	};
+
+	fn range(Token& token) -> rt::string {
+		if (!token.source) { return rt::string("{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}"); };
+		return rt::string("{\"start\":") + position(token.source->text(), token.begin) + ",\"end\":" + position(token.source->text(), token.begin + token.length) + "}";
+	};
+
+	fn source_uri(Document& document, Token& token) -> rt::string {
+		if (!token.source) { return rt::string(document.uri); };
+		var source = token.source->path();
+		if (source.size() >= 7 && source.slice(0, 7) == "file://") { return rt::string(source); };
+		if (!source.empty() && (source.data()[0] == '/' || (source.size() > 1 && source.data()[1] == ':'))) {
+			var uri = rt::string("file://");
+			if (source.data()[0] != '/') { @uri.append("/"); };
+			for (usize index = 0; index < source.size(); @index = index + 1) {
+				if (source.data()[index] == '\\') { @uri.append("/"); }
+				else if (source.data()[index] == ' ') { @uri.append("%20"); }
+				else { @uri.append(source.slice(index, 1)); };
+			};
+			return $uri;
+		};
+		return rt::string(parent(document.uri)) + source;
+	};
+
+	fn diagnostics(Document& document) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		rt::string result = rt::string("[");
+		rt::buffer<Diagnostic>& messages = compiler.diagnostics();
+		for (usize index = 0; index < messages.size(); @index = index + 1) {
+			Diagnostic& message = messages.data()[index];
+			if (index) { @result.append(","); };
+			@result.append("{\"range\":");
+			@result.append(range(message.location));
+			@result.append(",\"severity\":");
+			if (message.level == diagnostic_level::error) { @result.append("1"); }
+			else { @result.append("2"); };
+			@result.append(",\"source\":\"rtsl\",\"message\":");
+			@result.append(quote(message.message));
+			@result.append("}");
+		};
+		@result.append("]");
+		return $result;
+	};
+};

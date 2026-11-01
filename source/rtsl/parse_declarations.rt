@@ -1,0 +1,271 @@
+namespace rtsl {
+	export fn Parser::declaration(var Parser& this, u32 parent, decl_kind ordinary) -> u32 {
+		Decl value;
+		@value.source = this.source;
+		@value.source_begin = this.token(0).begin;
+		@value.parent = parent;
+		@value.kind = $ordinary;
+		@value.attributes = @this.attributes();
+		while (true) {
+			if (@this.take(token_kind::kw_export)) {
+				@value.exported = true;
+			}
+			else if (this.token(0).is("static")) {
+				@value.internal = true;
+				discard @this.consume();
+			}
+			else {
+				break;
+			};
+		};
+		if (@this.take(token_kind::kw_template)) {
+			discard @this.require(token_kind::op_less, "expected '<' after template");
+			while (this.token(0).kind != token_kind::op_greater && this.token(0).kind != token_kind::eof) {
+				TemplateParameter parameter;
+				@parameter.is_type = @this.take(token_kind::kw_typename);
+				if (!parameter.is_type) {
+					@parameter.type = @this.type();
+				};
+				@parameter.name = @this.consume();
+				if (parameter.name.kind != token_kind::identifier) {
+					@this.error("expected template parameter name");
+				};
+				if (@this.take(token_kind::punct_colon)) {
+					var constraint = @this.consume();
+					if (constraint.is("true")) {
+						@parameter.constraint = template_constraint::true_value;
+					}
+					else if (constraint.is("false")) {
+						@parameter.constraint = template_constraint::false_value;
+					}
+					else {
+						@this.error("template constraint requires true or false");
+					};
+				};
+				@value.parameters.push_back($parameter);
+				if (!@this.take(token_kind::punct_comma)) {
+					break;
+				};
+			};
+			discard @this.require(token_kind::op_greater, "expected '>' after template parameters");
+			if (@this.take(token_kind::kw_export)) {
+				@value.exported = true;
+			};
+		};
+		if (@this.take(token_kind::kw_struct)) {
+			u32 result = @this.record($value);
+			@(@this.context->decl_at(result))->source_end = this.token(0).begin;
+			return result;
+		};
+		if (@this.take(token_kind::kw_fn)) {
+			u32 result = @this.function($value);
+			@(@this.context->decl_at(result))->source_end = this.token(0).begin;
+			return result;
+		};
+		if (this.token(0).is("import")) {
+			discard @this.consume();
+			@value.kind = decl_kind::import;
+			if (@this.take(token_kind::op_less)) {
+				@value.import_type = import_kind::library;
+				@value.name = @this.consume();
+				discard @this.require(token_kind::op_greater, "expected '>' after library import");
+			}
+			else {
+				@value.name = @this.consume();
+				if (value.name.kind != token_kind::literal_string) {
+					@this.error("expected quoted source import");
+				};
+			};
+		}
+		else if (@this.take(token_kind::kw_using)) {
+			@value.kind = decl_kind::type_alias;
+			@value.name = @this.consume();
+			discard @this.require(token_kind::op_assign, "expected '=' after alias name");
+			@value.type = @this.type();
+		}
+		else {
+			if (this.token(0).is("uniform")) {
+				@value.storage = storage_class::uniform;
+				discard @this.consume();
+			}
+			else if (this.token(0).is("storage")) {
+				@value.storage = storage_class::storage;
+				discard @this.consume();
+			};
+			if (this.token(0).kind == token_kind::kw_var && this.token(1).kind == token_kind::identifier && this.token(2).kind == token_kind::op_assign) {
+				discard @this.consume();
+				@value.name = @this.consume();
+			}
+			else {
+				@value.type = @this.type();
+				@value.name = @this.consume();
+			};
+			if (value.name.kind != token_kind::identifier) {
+				@this.error("expected declaration name");
+			};
+			if (@this.take(token_kind::op_assign)) {
+				@value.initializer = @this.expression(1);
+			};
+		};
+		discard @this.require(token_kind::punct_semicolon, "expected ';' after declaration");
+		@value.source_end = this.token(0).begin;
+		u32 result = @this.context->add_decl($value);
+		if (parent) {
+			@(@this.context->decl_at(parent))->members.push_back(result);
+		};
+		return result;
+	};
+
+	export fn Parser::record(var Parser& this, Decl value) -> u32 {
+		@value.kind = decl_kind::record;
+		@value.name = @this.consume();
+		if (value.name.kind != token_kind::identifier) {
+			@this.error("expected structure name");
+		};
+		if (@this.take(token_kind::punct_colon)) {
+			@value.base = @this.type();
+		};
+		u32 parent = value.parent;
+		u32 result = @this.context->add_decl($value);
+		if (parent) {
+			@(@this.context->decl_at(parent))->members.push_back(result);
+		};
+		if (@this.take(token_kind::punct_left_brace)) {
+			@(@this.context->decl_at(result))->complete = true;
+			while (this.token(0).kind != token_kind::punct_right_brace && this.token(0).kind != token_kind::eof) {
+				usize before = this.cursor;
+				discard @this.declaration(result, decl_kind::field);
+				if (this.cursor == before) {
+					discard @this.consume();
+				};
+			};
+			discard @this.require(token_kind::punct_right_brace, "expected '}' after structure");
+		};
+		discard @this.require(token_kind::punct_semicolon, "expected ';' after structure");
+		return result;
+	};
+
+	export fn Parser::function(var Parser& this, Decl value) -> u32 {
+		@value.kind = decl_kind::function;
+		@value.name = @this.consume();
+		if (value.name.kind != token_kind::identifier) {
+			@this.error("expected function name");
+		};
+		if (value.name.is("operator")) {
+			if (@this.take(token_kind::op_emit)) {
+				@value.name = @this.context->identifier("operator<-");
+			}
+			else if (@this.take(token_kind::punct_left_bracket)) {
+				discard @this.require(token_kind::punct_right_bracket, "expected ']' after operator[");
+				@value.name = @this.context->identifier("operator[]");
+			}
+			else {
+				@this.error("expected supported operator name");
+			};
+		};
+		if (@this.take(token_kind::op_scope)) {
+			var owner = Token(value.name);
+			@value.name = @this.consume();
+			for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+				Decl& candidate = this.context->declarations.data()[index];
+				if (candidate.kind == decl_kind::record && candidate.name.same(owner)) {
+					@value.parent = static_cast<u32>(index + 1);
+					break;
+				};
+			};
+		};
+		u32 parent = value.parent;
+		u32 result = @this.context->add_decl($value);
+		if (parent) {
+			@(@this.context->decl_at(parent))->members.push_back(result);
+		};
+		if (this.token(0).kind == token_kind::op_less) {
+			var arguments = @this.template_arguments();
+			@(@this.context->decl_at(result))->template_arguments = $arguments;
+		};
+		discard @this.require(token_kind::punct_left_paren, "expected '(' after function name");
+		while (this.token(0).kind != token_kind::punct_right_paren && this.token(0).kind != token_kind::eof) {
+			Decl parameter;
+			@parameter.kind = decl_kind::parameter;
+			@parameter.parent = result;
+			@parameter.attributes = @this.attributes();
+			@parameter.type = @this.type();
+			if (this.token(0).kind == token_kind::identifier) {
+				@parameter.name = @this.consume();
+				u32 parameter_index = static_cast<u32>((@this.context->decl_at(result))->members.size());
+				for (usize index = 0; index < parameter.attributes.size(); @index = index + 1) {
+					Attribute& attribute = parameter.attributes.data()[index];
+					if (!attribute.name.is("smooth") && !attribute.name.is("flat") && !attribute.name.is("noperspective")) {
+						continue;
+					};
+					ParameterContract contract;
+					@contract.parameter = parameter_index;
+					@contract.contract = Token(attribute.name);
+					for (usize item = 0; item < attribute.arguments.size(); @item = item + 1) {
+						Token& token = attribute.arguments.data()[item];
+						if (token.kind == token_kind::identifier) {
+							@contract.member_path.push_back(Token(token));
+						};
+						if (token.kind == token_kind::punct_comma && contract.member_path.size()) {
+							@(@this.context->decl_at(result))->contracts.push_back(ParameterContract(contract));
+							@contract.member_path.clear();
+							@contract.parameter = parameter_index;
+							@contract.contract = Token(attribute.name);
+						};
+					};
+					@(@this.context->decl_at(result))->contracts.push_back(ParameterContract(contract));
+				};
+				u32 parameter_id = @this.context->add_decl($parameter);
+				Decl& function = *this.context->decl_at(result);
+				Decl* owner = this.context->decl_at(function.parent);
+				Decl& stored_parameter = *this.context->decl_at(parameter_id);
+				if (owner && owner->kind == decl_kind::record && function.name.same(owner->name) && stored_parameter.name.is("this")) {
+					Type* receiver = this.context->type_at(stored_parameter.type.type);
+					if (function.members.size() || !receiver || receiver->kind != type_kind::reference || !this.context->type_at(receiver->pointee.type)->name.same(owner->name)) {
+						@this.error("constructor receiver must be the first parameter with type 'var Record& this'");
+					};
+				}
+				else {
+					@(@this.context->decl_at(result))->members.push_back(parameter_id);
+				};
+			}
+			else {
+				@(@this.context->decl_at(result))->type_only_parameters.push_back(QualType(parameter.type));
+			};
+			if (!@this.take(token_kind::punct_comma)) {
+				break;
+			};
+		};
+		discard @this.require(token_kind::punct_right_paren, "expected ')' after parameters");
+		Decl& parsed_function = *this.context->decl_at(result);
+		Decl* parsed_owner = this.context->decl_at(parsed_function.parent);
+		if (parsed_owner && parsed_owner->kind == decl_kind::record && parsed_function.name.same(parsed_owner->name)) {
+			bool receiver_found = false;
+			for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+				Decl& parameter = this.context->declarations.data()[index];
+				if (parameter.kind == decl_kind::parameter && parameter.parent == result && parameter.name.is("this")) { @receiver_found = true; };
+			};
+			if (!receiver_found) { @this.error("constructor requires an explicit 'var Record& this' receiver"); };
+		};
+		if (this.token(0).is("emit")) {
+			discard @this.consume();
+			@(@this.context->decl_at(result))->implicit_emitter = true;
+		};
+		if (@this.take(token_kind::op_arrow)) {
+			var type = @this.type();
+			@(@this.context->decl_at(result))->type = $type;
+		};
+		if (@this.take(token_kind::punct_colon)) {
+			u32 initializer = @this.expression(1);
+			@(@this.context->decl_at(result))->initializer = initializer;
+		};
+		if (this.token(0).kind == token_kind::punct_left_brace) {
+			u32 body = @this.statement(result);
+			@(@this.context->decl_at(result))->body = body;
+		}
+		else {
+			discard @this.require(token_kind::punct_semicolon, "expected ';' after function declaration");
+		};
+		return result;
+	};
+};

@@ -1,0 +1,88 @@
+namespace rtsl::lsp {
+	fn semantic_kind(ASTContext& context, Token& token) -> usize {
+		if (token.kind >= token_kind::kw_fn && token.kind <= token_kind::kw_sizeof) {
+			if (token.kind == token_kind::kw_if || token.kind == token_kind::kw_else || token.kind == token_kind::kw_for || token.kind == token_kind::kw_while || token.kind == token_kind::kw_return || token.kind == token_kind::kw_break || token.kind == token_kind::kw_continue || token.kind == token_kind::kw_switch || token.kind == token_kind::kw_case || token.kind == token_kind::kw_default) { return 11; };
+			return 0;
+		};
+		if (token.kind == token_kind::literal_number) { return 4; };
+		if (token.kind == token_kind::literal_string) { return 5; };
+		if (token.kind != token_kind::identifier) {
+			if ((token.kind >= token_kind::punct_left_paren && token.kind <= token_kind::punct_colon) || token.kind == token_kind::op_scope || token.kind == token_kind::op_dot) { return 10; };
+			return 6;
+		};
+		if (token.is("emit")) { return 11; };
+		if (token.is("uniform") || token.is("storage") || token.is("import") || token.is("static") || token.is("true") || token.is("false")) { return 0; };
+		u32 declaration = declaration_at(context, token.source->path(), token.begin);
+		if (declaration) {
+			decl_kind kind = context.decl_at(declaration)->kind;
+			if (kind == decl_kind::function) { return 3; };
+			if (kind == decl_kind::record || kind == decl_kind::type_alias) { return 2; };
+		};
+		for (usize index = 0; index < context.declarations.size(); @index = index + 1) {
+			Decl& candidate = context.declarations.data()[index];
+			if ((candidate.kind == decl_kind::record || candidate.kind == decl_kind::type_alias) && candidate.name.same(token)) { return 2; };
+		};
+		return 1;
+	};
+
+	fn semantic_tokens(Document& document) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		SourceFile source;
+		@source.assign(document.uri, document.text);
+		var lexer = Lexer(@source);
+		discard @lexer.scan();
+		rt::buffer<Token>& tokens = source.tokens();
+		rt::buffer<Token>& comments = source.comments();
+		usize token_index = 0;
+		usize comment_index = 0;
+		usize previous_line = 0;
+		usize previous_column = 0;
+		bool previous = false;
+		rt::string result = rt::string("{\"data\":[");
+		while (token_index < tokens.size() || comment_index < comments.size()) {
+			Token token;
+			usize kind = 7;
+			if (comment_index < comments.size() && (token_index == tokens.size() || comments.data()[comment_index].begin < tokens.data()[token_index].begin)) {
+				@token = Token(comments.data()[comment_index]);
+				@comment_index = comment_index + 1;
+			}
+			else {
+				@token = Token(tokens.data()[token_index]);
+				if (token.kind == token_kind::eof) { @token_index = token_index + 1; continue; };
+				@kind = semantic_kind(compiler.context(), token);
+				if (token.kind == token_kind::identifier && token_index >= 2 && tokens.data()[token_index - 1].kind == token_kind::punct_left_bracket && tokens.data()[token_index - 2].kind == token_kind::punct_left_bracket) { @kind = 8; };
+				@token_index = token_index + 1;
+			};
+			usize begin = token.begin;
+			usize end = token.begin + token.length;
+			while (begin < end) {
+				usize stop = begin;
+				while (stop < end && document.text.data()[stop] != '\n' && document.text.data()[stop] != '\r') { @stop = stop + 1; };
+				if (stop > begin) {
+					usize line = 0;
+					usize start = 0;
+					for (usize index = 0; index < begin; @index = index + 1) { if (document.text.data()[index] == '\n') { @line = line + 1; @start = index + 1; }; };
+					usize column = utf16_length(document.text.view().slice(start, begin - start));
+					if (previous) { @result.append(","); };
+					cli_number(@result, line - previous_line);
+					@result.append(",");
+					if (line == previous_line) { cli_number(@result, column - previous_column); }
+					else { cli_number(@result, column); };
+					@result.append(",");
+					cli_number(@result, utf16_length(document.text.view().slice(begin, stop - begin)));
+					@result.append(",");
+					cli_number(@result, kind);
+					@result.append(",0");
+					@previous = true;
+					@previous_line = line;
+					@previous_column = column;
+				};
+				@begin = stop;
+				while (begin < end && (document.text.data()[begin] == '\n' || document.text.data()[begin] == '\r')) { @begin = begin + 1; };
+			};
+		};
+		@result.append("]}");
+		return $result;
+	};
+};

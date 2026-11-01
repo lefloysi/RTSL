@@ -1,0 +1,82 @@
+[[test]]
+fn module_interface_reads_legacy_versions_and_rejects_trailing_bytes() {
+	rtsl::ModuleInterface module;
+	var encoded = rtsl::write_interface(module);
+	rt::test::expect(encoded.has<rt::buffer<u08>>());
+	var bytes = rt::buffer<u08>(encoded.get<rt::buffer<u08>>());
+	rt::test::expect(bytes.size() == 15);
+	for (u08 version = 1; version <= 3; @version = version + 1) {
+		@(@bytes).data()[8] = version;
+		var decoded = rtsl::read_interface(rt::span<u08>(bytes.data(), bytes.size()));
+		rt::test::expect(decoded.has<rtsl::ModuleInterface>());
+	};
+	@bytes.push_back(0);
+	rt::test::expect(rtsl::read_interface(rt::span<u08>(bytes.data(), bytes.size())).has<rtsl::artifact_error>());
+};
+
+[[test]]
+fn module_interface_preserves_exports_resources_and_generic_source() {
+	rtsl::SourceFile source;
+	@source.assign("exports.rtsl", "import \"shared.rtsl\"; export struct Vertex { f32 x; }; export uniform f32 scale; export template<typename T> fn identity(T value) -> T { return value; }; [[stage : fragment]] export fn shade([[smooth(x)]] Vertex point) -> f32 { return point.x; };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	rt::test::expect((@parser.parse()).has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	rt::test::expect((@sema.analyze()).has<void>());
+	var built = rtsl::build_interface_unit(context, source, "exports.rtsl", @diagnostics);
+	rt::test::expect(built.has<rtsl::InterfaceUnit>());
+	var unit = rtsl::InterfaceUnit(built.get<rtsl::InterfaceUnit>());
+	rt::test::expect(unit.imports.size() == 1);
+	rt::test::expect(unit.imports.data()[0].name.view() == "shared.rtsl");
+	rt::test::expect(unit.declarations.size() == 4);
+	rt::test::expect(unit.declarations.data()[0].fields.size() == 1);
+	rt::test::expect(unit.declarations.data()[1].storage == rtsl::storage_class::uniform);
+	rt::test::expect(unit.declarations.data()[2].generic_definition.size() > 0);
+	rtsl::ModuleInterface module;
+	@module.units.push_back($unit);
+	var encoded = rtsl::write_interface(module);
+	rt::test::expect(encoded.has<rt::buffer<u08>>());
+	var bytes = rt::buffer<u08>(encoded.get<rt::buffer<u08>>());
+	var decoded = rtsl::read_interface(rt::span<u08>(bytes.data(), bytes.size()));
+	rt::test::expect(decoded.has<rtsl::ModuleInterface>());
+	for (usize size = 0; size < bytes.size(); @size = size + 1) {
+		rt::test::expect(rtsl::read_interface(rt::span<u08>(bytes.data(), size)).has<rtsl::artifact_error>());
+	};
+	var imported = rtsl::ModuleInterface(decoded.get<rtsl::ModuleInterface>());
+	rtsl::ASTContext consumer;
+	rt::test::expect(rtsl::import_interface(@consumer, imported, @diagnostics).has<void>());
+	rt::test::expect(consumer.decl_at(consumer.decl_at(consumer.root)->members.data()[3])->contracts.size() == 1);
+	var consumer_source = @consumer.generated_names.add("consumer.rtsl", "fn use() -> f32 { return identity<f32>(2.5); };");
+	var consumer_lexer = rtsl::Lexer(@*consumer_source);
+	rt::test::expect((@consumer_lexer.scan()).has<void>());
+	var consumer_parser = rtsl::Parser(@*consumer_source, @consumer, @diagnostics);
+	rt::test::expect((@consumer_parser.parse()).has<void>());
+	var consumer_sema = rtsl::Sema(@consumer, @diagnostics);
+	rt::test::expect((@consumer_sema.analyze()).has<void>());
+	bool instantiated = false;
+	for (usize i = 0; i < consumer.declarations.size(); @i = i + 1) {
+		if (consumer.declarations.data()[i].template_pattern) {
+			@instantiated = true;
+		};
+	};
+	rt::test::expect(instantiated);
+};
+
+[[test]]
+fn module_interface_diagnoses_unrepresentable_generic_records() {
+	rtsl::SourceFile source;
+	@source.assign("generic-record.rtsl", "export template<typename T> struct Box { T value; };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	rt::test::expect((@parser.parse()).has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	rt::test::expect((@sema.analyze()).has<void>());
+	rt::test::expect(rtsl::build_interface_unit(context, source, "generic-record.rtsl", @diagnostics).has<rtsl::compilation_error>());
+	rt::test::expect(diagnostics.failed());
+};

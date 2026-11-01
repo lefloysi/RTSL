@@ -1,0 +1,184 @@
+namespace rtsl {
+	fn compile_program(var ASTContext& context, rt::string_view module_name, artifact_kind output_kind, var DiagnosticsEngine& diagnostics) -> rt::buffer<u08> | compilation_error;
+	enum source_kind : [u08] {
+		translation_unit;
+		library;
+	};
+
+	struct CompilationInput {
+		rt::string import_path;
+		var SourceFile* source;
+		u08 state;
+		source_kind kind;
+	};
+
+	export struct CompilerInstance {
+		fn report_error(var CompilerInstance& this, rt::string_view message);
+		fn add_source(var CompilerInstance& this, rt::string_view path, rt::string_view text);
+		fn add_source(var CompilerInstance& this, rt::string_view path, rt::string_view text, rt::string_view import_path);
+		fn add_interface(var CompilerInstance& this, ModuleInterface& module) -> CompilationResult;
+		fn emit_interface(var CompilerInstance& this, rt::string_view module_name) -> rt::buffer<u08> | compilation_error;
+		fn analyze(var CompilerInstance& this) -> CompilationResult;
+		fn compile(var CompilerInstance& this, rt::string_view module_name, artifact_kind kind) -> rt::buffer<u08> | compilation_error;
+		fn diagnostics(CompilerInstance& this) -> rt::buffer<Diagnostic>&;
+		fn context(CompilerInstance& this) -> ASTContext&;
+
+	private:
+		fn visit(var CompilerInstance& this, usize index) -> CompilationResult;
+		fn find_source(CompilerInstance& this, rt::string_view path) -> usize;
+
+		SourceManager source_manager;
+		ASTContext syntax;
+		DiagnosticsEngine messages;
+		rt::buffer<CompilationInput> inputs;
+		rt::buffer<rt::string> interface_imports;
+		rt::buffer<InterfaceImport> interface_dependencies;
+		bool analyzed;
+	};
+
+	export fn CompilerInstance::report_error(var CompilerInstance& this, rt::string_view message) {
+		@this.messages.report(diagnostic_level::error, Token(), message);
+	};
+
+	export fn CompilerInstance::add_interface(var CompilerInstance& this, ModuleInterface& module) -> CompilationResult {
+		if (this.analyzed) { @this.messages.report(diagnostic_level::error, Token(), "cannot add interfaces after compilation has started"); return compilation_error(); };
+		if (module.library_name.has_value()) { @this.interface_imports.push_back(rt::string(*module.library_name.get())); };
+		for (usize index = 0; index < module.units.size(); @index = index + 1) {
+			InterfaceUnit& unit = module.units.data()[index];
+			@this.interface_imports.push_back(rt::string(unit.import_path));
+			for (usize dependency = 0; dependency < unit.imports.size(); @dependency = dependency + 1) { @this.interface_dependencies.push_back(InterfaceImport(unit.imports.data()[dependency])); };
+		};
+		return import_interface(@this.syntax, module, @this.messages);
+	};
+
+	export fn CompilerInstance::emit_interface(var CompilerInstance& this, rt::string_view module_name) -> rt::buffer<u08> | compilation_error {
+		if (!(@this.analyze()).has<void>()) { return compilation_error(); };
+		ModuleInterface result;
+		if (!module_name.empty()) { @result.library_name = rt::optional<rt::string>(rt::string(module_name)); };
+		for (usize index = 0; index < this.inputs.size(); @index = index + 1) {
+			CompilationInput& input = this.inputs.data()[index];
+			if (input.kind == source_kind::library) { continue; };
+			var unit = build_interface_unit(this.syntax, *input.source, input.import_path.view(), @this.messages);
+			if (!unit.has<InterfaceUnit>()) { return compilation_error(); };
+			@result.units.push_back(InterfaceUnit(unit.get<InterfaceUnit>()));
+		};
+		var encoded = write_interface(result);
+		if (!encoded.has<rt::buffer<u08>>()) { @this.messages.report(diagnostic_level::error, Token(), encoded.get<artifact_error>().message); return compilation_error(); };
+		return rt::buffer<u08>(encoded.get<rt::buffer<u08>>());
+	};
+
+	export fn CompilerInstance::add_source(var CompilerInstance& this, rt::string_view path, rt::string_view text) {
+		@this.add_source(path, text, path);
+	};
+
+	export fn CompilerInstance::add_source(var CompilerInstance& this, rt::string_view path, rt::string_view text, rt::string_view import_path) {
+		if (this.analyzed) {
+			@this.messages.report(diagnostic_level::error, Token(), "cannot add sources after compilation has started");
+			return;
+		};
+		if (this.find_source(import_path) != this.inputs.size()) {
+			@this.messages.report(diagnostic_level::error, Token(), "source path was supplied more than once");
+			return;
+		};
+		CompilationInput input;
+		@input.import_path = rt::string(import_path);
+		@input.source = @this.source_manager.add(path, text);
+		@this.inputs.push_back($input);
+	};
+
+	fn CompilerInstance::find_source(CompilerInstance& this, rt::string_view path) -> usize {
+		for (usize index = 0; index < this.inputs.size(); @index = index + 1) {
+			if (this.inputs.data()[index].import_path == path) { return index; };
+		};
+		return this.inputs.size();
+	};
+
+	fn CompilerInstance::visit(var CompilerInstance& this, usize index) -> CompilationResult {
+		var CompilationInput& input = @(@this.inputs).data()[index];
+		if (input.state == 2) { return; };
+		if (input.state == 1) {
+			@this.messages.report(diagnostic_level::error, Token(), "recursive source import is not supported");
+			return compilation_error();
+		};
+		@input.state = 1;
+		var lexer = Lexer(@*input.source);
+		var scanned = @lexer.scan();
+		if (scanned.has<compilation_error>()) {
+			@this.messages.report(diagnostic_level::error, lexer.error_token(), lexer.error());
+			return compilation_error();
+		};
+		rt::buffer<Token>& tokens = input.source->tokens();
+		for (usize token_index = 0; token_index + 1 < tokens.size(); @token_index = token_index + 1) {
+			Token& token = tokens.data()[token_index];
+			if (!token.is("import")) { continue; };
+			usize path_index = token_index + 1;
+			if (tokens.data()[path_index].kind == token_kind::op_less && path_index + 1 < tokens.size()) { @path_index = path_index + 1; };
+			Token& path = tokens.data()[path_index];
+			var import_name = path.text();
+			if (path.kind == token_kind::literal_string && path.length >= 2) { @import_name = path.text().slice(1, path.length - 2); };
+			bool supplied_interface = false;
+			for (usize item = 0; item < this.interface_imports.size(); @item = item + 1) { if (this.interface_imports.data()[item] == import_name) { @supplied_interface = true; }; };
+			if (supplied_interface) { continue; };
+			usize dependency = this.find_source(import_name);
+			if (dependency == this.inputs.size()) {
+				@this.messages.report(diagnostic_level::error, path, "import does not name a translation unit supplied by the build");
+				return compilation_error();
+			};
+			if (tokens.data()[token_index + 1].kind == token_kind::op_less || input.kind == source_kind::library) {
+				@(@this.inputs).data()[dependency].kind = source_kind::library;
+			};
+			var visited = @this.visit(dependency);
+			if (visited.has<compilation_error>()) { return compilation_error(); };
+		};
+		var parser = Parser(@*input.source, @this.syntax, @this.messages);
+		var parsed = @parser.parse();
+		if (parsed.has<compilation_error>()) { return compilation_error(); };
+		@input.state = 2;
+	};
+
+	export fn CompilerInstance::analyze(var CompilerInstance& this) -> CompilationResult {
+		if (this.analyzed) {
+			if (this.messages.failed()) { return compilation_error(); };
+			return;
+		};
+		@this.analyzed = true;
+		if (this.messages.failed()) { return compilation_error(); };
+		for (usize index = 0; index < this.interface_dependencies.size(); @index = index + 1) {
+			InterfaceImport& dependency = this.interface_dependencies.data()[index];
+			usize source = this.find_source(dependency.name.view());
+			bool supplied = source != this.inputs.size();
+			if (supplied && dependency.kind == import_kind::library) { @(@this.inputs).data()[source].kind = source_kind::library; };
+			for (usize item = 0; item < this.interface_imports.size(); @item = item + 1) { if (this.interface_imports.data()[item] == dependency.name) { @supplied = true; }; };
+			if (!supplied) { @this.messages.report(diagnostic_level::error, Token(), "module interface dependency was not supplied by the build"); return compilation_error(); };
+		};
+		if (this.inputs.size() == 0) {
+			@this.messages.report(diagnostic_level::error, Token(), "no shader source was supplied");
+			return compilation_error();
+		};
+		for (usize index = 0; index < this.inputs.size(); @index = index + 1) {
+			var parsed = @this.visit(index);
+			if (parsed.has<compilation_error>()) { return compilation_error(); };
+		};
+		for (usize index = 0; index < this.inputs.size(); @index = index + 1) {
+			CompilationInput& input = this.inputs.data()[index];
+			if (input.import_path != "std") { continue; };
+			for (usize declaration_index = 0; declaration_index < this.syntax.declarations.size(); @declaration_index = declaration_index + 1) {
+				var Decl& declaration = @(@this.syntax.declarations).data()[declaration_index];
+				if (declaration.source != input.source) { continue; };
+				if (declaration.kind == decl_kind::function) { @declaration.implicit_decl = true; };
+				if (declaration.kind == decl_kind::record && declaration.name.is("Position")) { @declaration.builtin_position = true; };
+			};
+		};
+		var sema = Sema(@this.syntax, @this.messages);
+		return @sema.analyze();
+	};
+
+	export fn CompilerInstance::compile(var CompilerInstance& this, rt::string_view module_name, artifact_kind kind) -> rt::buffer<u08> | compilation_error {
+		var checked = @this.analyze();
+		if (checked.has<compilation_error>()) { return compilation_error(); };
+		return compile_program(@this.syntax, module_name, kind, @this.messages);
+	};
+
+	export fn CompilerInstance::diagnostics(CompilerInstance& this) -> rt::buffer<Diagnostic>& { return this.messages.diagnostics(); };
+	export fn CompilerInstance::context(CompilerInstance& this) -> ASTContext& { return this.syntax; };
+};

@@ -1,0 +1,440 @@
+namespace rtsl {
+	fn expression_stage(ASTContext& context, u32 scope, rt::string_view stage) -> bool {
+		u32 function = scope;
+		while (function && context.decl_at(function)->kind != decl_kind::function) {
+			@function = context.decl_at(function)->parent;
+		};
+		if (!function) {
+			return false;
+		};
+		Decl& declaration = *context.decl_at(function);
+		for (usize i = 0; i < declaration.attributes.size(); @i = i + 1) {
+			Attribute& attribute = declaration.attributes.data()[i];
+			if (!attribute.name.is("stage")) {
+				continue;
+			};
+			for (usize j = 0; j < attribute.arguments.size(); @j = j + 1) {
+				if (attribute.arguments.data()[j].is(stage)) {
+					return true;
+				};
+			};
+		};
+		return false;
+	};
+
+	export fn Sema::finish_expression(var Sema& this, u32 id, Expr value) -> QualType {
+		var type = QualType(value.type);
+		@(@this.context->expressions).data()[static_cast<usize>(id) - 1] = $value;
+		return $type;
+	};
+
+	export fn Sema::expression(var Sema& this, u32 id, u32 scope, QualType expected) -> QualType {
+		Expr* original = this.context->expr_at(id);
+		if (!original) {
+			return this.builtin(builtin_type::void_type);
+		};
+		var value = Expr(*original);
+		if (value.kind == expr_kind::integer) {
+			@value.type = this.builtin(builtin_type::signed_integer);
+			if (expected.type && this.context->type_at(expected.type)->kind == type_kind::builtin) {
+				@value.type = QualType(expected);
+			};
+		}
+		else if (value.kind == expr_kind::floating) {
+			@value.type = this.builtin(builtin_type::floating);
+			if (expected.type && this.context->type_at(expected.type)->kind == type_kind::builtin) {
+				@value.type = QualType(expected);
+			};
+		}
+		else if (value.kind == expr_kind::emitter || (value.kind == expr_kind::declaration && value.location.is("__return"))) {
+			u32 function = scope;
+			while (function && this.context->decl_at(function)->kind != decl_kind::function) {
+				@function = this.context->decl_at(function)->parent;
+			};
+			Type* type = nullptr;
+			if (function) {
+				@value.type = QualType(this.context->decl_at(function)->type);
+				@type = this.context->type_at(value.type.type);
+			};
+			if (!type || type->kind != type_kind::specialization || !type->name.is("triangle_strip")) {
+				@this.error(value.location, "the return emitter requires a geometry primitive return type");
+			};
+			@value.kind = expr_kind::emitter;
+			@value.declaration = function;
+		}
+		else if (value.kind == expr_kind::declaration) {
+			if (value.location.is("true") || value.location.is("false")) {
+				@value.kind = expr_kind::integer;
+				@value.integer = 0;
+				if (value.location.is("true")) {
+					@value.integer = 1;
+				};
+				@value.type = this.builtin(builtin_type::boolean);
+			}
+			else {
+				u32 declaration = this.lookup(value.location, scope, false);
+				if (!declaration) {
+					@this.error(value.location, "unknown value name");
+					return QualType();
+				};
+				@value.declaration = declaration;
+				@value.type = QualType(this.context->decl_at(declaration)->type);
+				if (this.context->decl_at(declaration)->kind == decl_kind::field) {
+					u32 owner = scope;
+					while (owner && this.context->decl_at(owner)->kind != decl_kind::function) {
+						@owner = this.context->decl_at(owner)->parent;
+					};
+					if (owner && this.context->decl_at(owner)->receiver_type.type) {
+						@value.type = @this.receiver_type(value.type, this.context->decl_at(owner)->receiver_type);
+					};
+				};
+			};
+		}
+		else if (value.kind == expr_kind::unary) {
+			var operand = @this.expression(value.left, scope, expected);
+			@value.type = operand;
+			if (value.opcode == token_kind::op_bang) {
+				@value.type = this.builtin(builtin_type::boolean);
+			};
+		}
+		else if (value.kind == expr_kind::binary) {
+			var left = @this.expression(value.left, scope, QualType());
+			var right = @this.expression(value.right, scope, left);
+			if (value.opcode == token_kind::op_emit) {
+				if (this.context->expr_at(value.left)->kind != expr_kind::emitter) {
+					@this.error(value.location, "left operand of '<-' is not an emitter");
+					return QualType();
+				};
+				u32 record = this.record_for(left);
+				if (record && this.context->decl_at(record)->template_pattern) {
+					@record = this.context->decl_at(record)->template_pattern;
+				};
+				u32 selected = 0;
+				usize score = usize::max;
+				usize count = this.context->declarations.size();
+				for (usize i = 0; i < count; @i = i + 1) {
+					var candidate = Decl(this.context->declarations.data()[i]);
+					if (candidate.kind != decl_kind::function || candidate.parent != record || !candidate.name.is("operator<-") || candidate.members.size() != 1 || candidate.template_pattern) {
+						continue;
+					};
+					QualType parameter = @this.receiver_type(this.context->decl_at(candidate.members.data()[0])->type, left);
+					if (this.same_type(parameter, right)) {
+						usize rank = 0;
+						if (this.context->type_at(this.context->decl_at(candidate.members.data()[0])->type.type)->kind == type_kind::template_parameter) {
+							@rank = 1;
+						};
+						if (rank < score) {
+							@selected = static_cast<u32>(i + 1);
+							@score = rank;
+						};
+					};
+				};
+				if (!selected) {
+					@this.error(value.location, "no '<-' overload accepts this emitted value");
+					return QualType();
+				};
+				var arguments = rt::buffer<TemplateArgument>(this.context->type_at(left.type)->arguments);
+				@value.declaration = @this.instantiate(selected, record, arguments);
+				@value.type = QualType(left);
+				return @this.finish_expression(id, $value);
+			};
+			@this.contextual(value.left, right);
+			@left = QualType(this.context->expr_at(value.left)->type);
+			@value.type = QualType(left);
+			if (value.opcode == token_kind::op_equal || value.opcode == token_kind::op_not_equal || value.opcode == token_kind::op_less || value.opcode == token_kind::op_less_equal || value.opcode == token_kind::op_greater || value.opcode == token_kind::op_greater_equal || value.opcode == token_kind::op_and || value.opcode == token_kind::op_or) {
+				@value.type = this.builtin(builtin_type::boolean);
+			}
+			else {
+				Type* lhs = this.context->type_at(left.type);
+				Type* rhs = this.context->type_at(right.type);
+				if (lhs && rhs && rhs->kind != type_kind::builtin && (lhs->kind == type_kind::builtin || lhs->name.is("__mat2") || lhs->name.is("__mat3") || lhs->name.is("__mat4"))) {
+					@value.type = QualType(right);
+				};
+			};
+		}
+		else if (value.kind == expr_kind::member) {
+			var receiver = @this.expression(value.left, scope, QualType());
+			Type* receiver_type = this.context->type_at(receiver.type);
+			while (receiver_type && receiver_type->kind == type_kind::reference) {
+				@receiver_type = this.context->type_at(receiver_type->pointee.type);
+			};
+			if (receiver_type && receiver_type->kind == type_kind::specialization && receiver_type->arguments.size()) {
+				Token& name = receiver_type->name;
+				if (name.is("patch") || name.is("triangle_patch") || name.is("quad_patch") || name.is("isoline_patch") || name.is("triangle")) {
+					if (value.location.is("current")) {
+						if (!expression_stage(*this.context, scope, "tess_control")) {
+							@this.error(value.location, "patch.current is only valid in tessellation control entry points");
+						};
+						@value.type = QualType(receiver_type->arguments.data()[0].type);
+						return @this.finish_expression(id, $value);
+					};
+					if (value.location.is("outer") || value.location.is("coordinate")) {
+						if (value.location.is("outer") && !expression_stage(*this.context, scope, "tess_control")) {
+							@this.error(value.location, "patch.outer is only valid in tessellation control entry points");
+						};
+						if (value.location.is("coordinate") && !expression_stage(*this.context, scope, "tess_eval")) {
+							@this.error(value.location, "patch.coordinate is only valid in tessellation evaluation entry points");
+						};
+						if (value.location.is("coordinate") && (name.is("triangle_patch") || name.is("quad_patch"))) {
+							Type coordinate;
+							@coordinate.kind = type_kind::named;
+							@coordinate.name = @this.context->identifier("vec2");
+							QualType requested;
+							@requested.type = @this.context->add_type($coordinate);
+							@value.type = @this.resolve_type(requested, scope, 0);
+							return @this.finish_expression(id, $value);
+						};
+						@value.type = this.builtin(builtin_type::floating);
+						return @this.finish_expression(id, $value);
+					};
+				};
+				if (name.is("vec2") || name.is("vec3") || name.is("vec4") || name.is("__vec2") || name.is("__vec3") || name.is("__vec4")) {
+					u32 component = 4;
+					if (value.location.is("x")) { @component = 0; };
+					if (value.location.is("y")) { @component = 1; };
+					if (value.location.is("z")) { @component = 2; };
+					if (value.location.is("w")) { @component = 3; };
+					u32 count = static_cast<u32>(name.text().data()[name.length - 1] - '0');
+					if (component < count) {
+						@value.type = QualType(receiver_type->arguments.data()[0].type);
+						return @this.finish_expression(id, $value);
+					};
+				};
+			};
+			u32 member = this.member(receiver, value.location);
+			if (!member) {
+				@this.error(value.location, "unknown member name");
+				return QualType();
+			};
+			@value.declaration = member;
+			@value.type = @this.receiver_type(this.context->decl_at(member)->type, receiver);
+		}
+		else if (value.kind == expr_kind::subscript) {
+			var receiver = @this.expression(value.left, scope, QualType());
+			for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+				discard @this.expression(value.arguments.data()[index], scope, this.builtin(builtin_type::size));
+			};
+			Type* type = this.context->type_at(receiver.type);
+			while (type && type->kind == type_kind::reference) {
+				@type = this.context->type_at(type->pointee.type);
+			};
+			Expr* base = this.context->expr_at(value.left);
+			if (base->kind == expr_kind::member && base->location.is("outer") && value.arguments.size() == 1) {
+				@value.type = this.builtin(builtin_type::floating);
+			}
+			else if (type && type->kind == type_kind::specialization && type->arguments.size()) {
+				@value.type = QualType(type->arguments.data()[type->arguments.size() - 1].type);
+			}
+			else if (type && (type->kind == type_kind::pointer || type->kind == type_kind::reference)) {
+				@value.type = QualType(type->pointee);
+			}
+			else {
+				@this.error(value.location, "type does not support indexing");
+			};
+		}
+		else if (value.kind == expr_kind::call) {
+			Expr* target = this.context->expr_at(value.left);
+			if (!target) {
+				return QualType();
+			};
+			var callee = Expr(*target);
+			if (callee.location.is("barrier")) {
+				if (value.arguments.size()) {
+					@this.error(value.location, "barrier takes no arguments");
+				};
+				if (!expression_stage(*this.context, scope, "compute") && !expression_stage(*this.context, scope, "tess_control")) {
+					@this.error(value.location, "barrier is only valid in compute and tessellation control entry points");
+				};
+				@value.type = this.builtin(builtin_type::void_type);
+				return @this.finish_expression(id, $value);
+			};
+			u32 type_decl = 0;
+			if (callee.kind == expr_kind::declaration && (callee.location.is("bool") || callee.location.is("i32") || callee.location.is("u32") || callee.location.is("usize") || callee.location.is("f32"))) {
+				Type type;
+				@type.kind = type_kind::named;
+				@type.name = Token(callee.location);
+				QualType requested;
+				@requested.type = @this.context->add_type($type);
+				@value.type = @this.resolve_type(requested, scope, 0);
+				@value.kind = expr_kind::construct;
+				if (value.arguments.size() != 1) {
+					@this.error(callee.location, "scalar construction requires one argument");
+				};
+				for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+					discard @this.expression(value.arguments.data()[index], scope, QualType());
+				};
+				return @this.finish_expression(id, $value);
+			};
+			if (callee.kind == expr_kind::declaration) {
+				@type_decl = this.lookup(callee.location, scope, true);
+			};
+			if (type_decl) {
+				Decl& declaration = *this.context->decl_at(type_decl);
+				Type type;
+				@type.kind = type_kind::named;
+				@type.name = Token(declaration.name);
+				if (callee.template_arguments.size()) {
+					@type.kind = type_kind::specialization;
+					@type.arguments = rt::buffer<TemplateArgument>(callee.template_arguments);
+				};
+				QualType requested;
+				@requested.type = @this.context->add_type($type);
+				@value.type = @this.resolve_type(requested, scope, 0);
+				@value.kind = expr_kind::construct;
+				u32 constructor = 0;
+				for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+					Decl& candidate = this.context->declarations.data()[index];
+					if (candidate.kind == decl_kind::function && candidate.parent == type_decl && candidate.name.same(declaration.name) && candidate.members.size() == value.arguments.size()) {
+						if (!constructor || candidate.body) {
+							@constructor = static_cast<u32>(index + 1);
+						};
+					};
+				};
+				@value.declaration = constructor;
+				for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+					QualType parameter;
+					if (constructor) {
+						@parameter = QualType(this.context->decl_at(this.context->decl_at(constructor)->members.data()[index])->type);
+					};
+					discard @this.expression(value.arguments.data()[index], scope, parameter);
+				};
+			}
+			else {
+				discard @this.expression(value.left, scope, QualType());
+				@callee = Expr(*this.context->expr_at(value.left));
+				u32 function = callee.declaration;
+				if (!function || this.context->decl_at(function)->kind != decl_kind::function) {
+					@this.error(value.location, "expression is not callable");
+					return QualType();
+				};
+				for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+					discard @this.expression(value.arguments.data()[index], scope, QualType());
+				};
+				u32 selected = 0;
+				usize best = usize::max;
+				var requested = rt::buffer<TemplateArgument>(callee.template_arguments);
+				for (usize index = 0; index < requested.size(); @index = index + 1) {
+					var TemplateArgument& argument = @(@requested).data()[index];
+					if (argument.kind == template_argument_kind::type) {
+						@argument.type = @this.resolve_type(argument.type, scope, 0);
+					};
+				};
+				QualType receiver;
+				if (callee.kind == expr_kind::member) {
+					@receiver = QualType(this.context->expr_at(callee.left)->type);
+				};
+				for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+					Decl& candidate = this.context->declarations.data()[index];
+					if (candidate.kind != decl_kind::function || candidate.template_pattern || candidate.parent != this.context->decl_at(function)->parent || !candidate.name.same(this.context->decl_at(function)->name) || candidate.members.size() != value.arguments.size()) {
+						continue;
+					};
+					if (!requested.size() && candidate.template_arguments.size()) {
+						continue;
+					};
+					if (requested.size()) {
+						if (candidate.parameters.size() && candidate.parameters.size() != requested.size()) {
+							continue;
+						};
+						if (!candidate.parameters.size()) {
+							if (candidate.template_arguments.size() != requested.size()) {
+								continue;
+							};
+							bool same = true;
+							for (usize index = 0; index < requested.size(); @index = index + 1) {
+								TemplateArgument& first = candidate.template_arguments.data()[index];
+								TemplateArgument& second = requested.data()[index];
+								if (first.kind != second.kind || first.integer != second.integer || !this.same_type(first.type, second.type)) {
+									@same = false;
+								};
+							};
+							if (!same) {
+								continue;
+							};
+						};
+					};
+					usize score = 0;
+					for (usize argument = 0; argument < value.arguments.size(); @argument = argument + 1) {
+						Expr& input = *this.context->expr_at(value.arguments.data()[argument]);
+						QualType parameter = @this.receiver_type(this.context->decl_at(candidate.members.data()[argument])->type, receiver);
+						if (this.same_type(input.type, parameter)) {
+							continue;
+						};
+						Type* type = this.context->type_at(parameter.type);
+						if (type && type->kind == type_kind::template_parameter) {
+							continue;
+						}
+						else if ((input.kind == expr_kind::integer || input.kind == expr_kind::floating) && type && type->kind == type_kind::builtin) {
+							@score = score + 1;
+						}
+						else {
+							@score = usize::max;
+							break;
+						};
+					};
+					if (score < best || score == best && selected && (this.context->decl_at(selected)->parameters.size() && !candidate.parameters.size() || this.context->decl_at(selected)->parameters.size() == candidate.parameters.size() && !this.context->decl_at(selected)->body && candidate.body)) {
+						@selected = static_cast<u32>(index + 1);
+						@best = score;
+					};
+				};
+				if (!selected) {
+					@this.error(value.location, "no function overload accepts these argument types");
+					return QualType();
+				};
+				@function = selected;
+				if (this.context->decl_at(function)->parameters.size()) {
+					rt::buffer<TemplateArgument> arguments;
+					usize count = this.context->decl_at(function)->parameters.size();
+					for (usize index = 0; index < count; @index = index + 1) {
+						TemplateArgument argument;
+						@argument.kind = template_argument_kind::parameter;
+						if (index < callee.template_arguments.size()) {
+							@argument = TemplateArgument(callee.template_arguments.data()[index]);
+							if (argument.kind == template_argument_kind::type) {
+								@argument.type = @this.resolve_type(argument.type, scope, 0);
+							};
+						};
+						@arguments.push_back($argument);
+					};
+					for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+						@this.infer_type(this.context->decl_at(this.context->decl_at(function)->members.data()[index])->type, this.context->expr_at(value.arguments.data()[index])->type, function, @arguments);
+					};
+					bool allowed = true;
+					for (usize index = 0; index < count; @index = index + 1) {
+						TemplateParameter& parameter = this.context->decl_at(function)->parameters.data()[index];
+						if (parameter.constraint == template_constraint::false_value || arguments.data()[index].kind == template_argument_kind::parameter || parameter.is_type != (arguments.data()[index].kind == template_argument_kind::type)) {
+							@allowed = false;
+						};
+					};
+					if (!allowed) {
+						@this.error(value.location, "function template arguments do not satisfy its parameters");
+						return QualType();
+					};
+					@function = @this.instantiate(function, function, arguments);
+
+					@callee = Expr(*this.context->expr_at(value.left));
+				};
+				u32 owner = this.context->decl_at(function)->parent;
+				Type* receiver_value = this.context->type_at(receiver.type);
+				if (owner && this.context->decl_at(owner)->kind == decl_kind::record && this.context->decl_at(owner)->parameters.size() && receiver_value && receiver_value->kind == type_kind::specialization) {
+					var arguments = rt::buffer<TemplateArgument>(receiver_value->arguments);
+					@function = @this.instantiate(function, owner, arguments);
+				};
+				var declaration = Decl(*this.context->decl_at(function));
+				if (declaration.members.size() != value.arguments.size()) {
+					@this.error(value.location, "function argument count does not match");
+				};
+				for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+					QualType parameter;
+					if (index < declaration.members.size()) {
+						@parameter = @this.receiver_type(this.context->decl_at(declaration.members.data()[index])->type, receiver);
+					};
+					discard @this.expression(value.arguments.data()[index], scope, parameter);
+				};
+				@value.declaration = function;
+				@value.type = @this.receiver_type(declaration.type, receiver);
+				@(@this.context->expr_at(value.left))->declaration = function;
+			};
+		};
+		return @this.finish_expression(id, $value);
+	};
+};

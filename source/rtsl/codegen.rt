@@ -1,0 +1,193 @@
+namespace rtsl {
+	struct CodeGenerator {
+		fn CodeGenerator(var CodeGenerator& this, var ASTContext& context, rt::string_view name, var DiagnosticsEngine& diagnostics);
+		fn lower_type(var CodeGenerator& this, QualType type) -> ir::TypeID;
+		fn lower_record_members(var CodeGenerator& this, var ir::Type& type, u32 declaration);
+		fn initialize_base(var CodeGenerator& this, u32 record, u32 value);
+		fn constructor_fields(var CodeGenerator& this, var ir::Instruction& instruction, u32 record);
+		fn aggregate_base(var CodeGenerator& this, var ir::Instruction& instruction, u32 record, u32 value);
+		fn record(CodeGenerator& this, rt::string_view name) -> u32;
+		fn record_type(CodeGenerator& this, QualType type) -> u32;
+		fn qualified_name(CodeGenerator& this, u32 declaration) -> rt::string;
+		fn type_signature(CodeGenerator& this, QualType type) -> rt::string;
+		fn scalar(var CodeGenerator& this, ir::type_kind kind, u32 width) -> ir::TypeID;
+		fn diagnose(var CodeGenerator& this, Token location, rt::string_view message);
+		fn declare_function(var CodeGenerator& this, u32 declaration);
+		fn generate(var CodeGenerator& this);
+		fn expression(var CodeGenerator& this, u32 expression) -> ir::ValueID;
+		fn statement(var CodeGenerator& this, u32 statement);
+		fn define_function(var CodeGenerator& this, u32 declaration);
+		fn entry(var CodeGenerator& this, u32 declaration);
+		fn append_instruction(var CodeGenerator& this, ir::Instruction instruction) -> ir::ValueID;
+		fn value_type(CodeGenerator& this, ir::ValueID value) -> ir::TypeID;
+		fn resource(CodeGenerator& this, u32 expression) -> ir::SymbolID;
+		fn project_base(var CodeGenerator& this, ir::ValueID value, ir::TypeID destination) -> ir::ValueID;
+		fn branch(var CodeGenerator& this, u32 destination);
+		fn merge_arguments(var CodeGenerator& this, u32 block, rt::buffer<u32>& bindings);
+		fn condition(var CodeGenerator& this, Stmt& statement);
+		fn loop(var CodeGenerator& this, Stmt& statement);
+		fn leave_scope(var CodeGenerator& this, u32 scope);
+		fn order_blocks(var CodeGenerator& this);
+		var ASTContext* context;
+		var DiagnosticsEngine* diagnostics;
+		ir::ModuleBuilder builder;
+		rt::buffer<u32> types;
+		rt::buffer<u32> functions;
+		rt::buffer<u32> values;
+		rt::buffer<u32> globals;
+		u32 current_function;
+		u32 current_block;
+		u32 current_object;
+		u32 current_constructor;
+		u32 current_emitter;
+		rt::buffer<u32> break_blocks;
+		rt::buffer<u32> continue_blocks;
+		rt::buffer<rt::buffer<u32>> loop_bindings;
+	};
+
+	fn CodeGenerator::CodeGenerator(var CodeGenerator& this, var ASTContext& context, rt::string_view name, var DiagnosticsEngine& diagnostics) {
+		@this.context = &@context;
+		@this.diagnostics = &@diagnostics;
+		@this.builder = ir::ModuleBuilder(name);
+		for (usize i = 0; i <= context.types.size(); @i = i + 1) { @this.types.push_back(0); };
+		for (usize i = 0; i <= context.declarations.size(); @i = i + 1) {
+			@this.functions.push_back(0); @this.values.push_back(0); @this.globals.push_back(0);
+		};
+	};
+
+	fn CodeGenerator::diagnose(var CodeGenerator& this, Token location, rt::string_view message) {
+		@this.diagnostics->report(diagnostic_level::error, location, message);
+	};
+
+	fn CodeGenerator::record(CodeGenerator& this, rt::string_view name) -> u32 {
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			var declaration = &this.context->declarations.data()[i];
+			if ((declaration->kind == decl_kind::record || declaration->kind == decl_kind::type_alias) && declaration->name.text() == name) { return static_cast<u32>(i + 1); };
+		};
+		return 0;
+	};
+
+	fn CodeGenerator::record_type(CodeGenerator& this, QualType qualified) -> u32 {
+		var type = this.context->type_at(qualified.type);
+		if (!type) { return 0; };
+		if (type->kind == type_kind::reference || type->kind == type_kind::pointer) { return this.record_type(type->pointee); };
+		if (type->declaration) { return type->declaration; };
+		return this.record(type->name.text());
+	};
+
+	fn CodeGenerator::qualified_name(CodeGenerator& this, u32 id) -> rt::string {
+		var declaration = this.context->decl_at(id);
+		if (!declaration) { return rt::string(); };
+		var parent = this.context->decl_at(declaration->parent);
+		if (parent && parent->kind == decl_kind::record) {
+			if (declaration->receiver_type.type) { return this.type_signature(declaration->receiver_type) + "::" + declaration->name.text(); };
+			return rt::string(parent->name.text()) + "::" + declaration->name.text();
+		};
+		return rt::string(declaration->name.text());
+	};
+
+	fn CodeGenerator::type_signature(CodeGenerator& this, QualType qualified) -> rt::string {
+		var type = this.context->type_at(qualified.type);
+		if (!type) { return rt::string("void"); };
+		if (type->kind == type_kind::builtin) { return integer_text(static_cast<u32>(type->builtin)); };
+		if (type->kind == type_kind::reference) { return this.type_signature(type->pointee) + "&"; };
+		if (type->kind == type_kind::pointer) { return this.type_signature(type->pointee) + "*"; };
+		var result = rt::string(type->name.text());
+		if (type->arguments.size()) {
+			@result.append("<");
+			for (usize i = 0; i < type->arguments.size(); @i = i + 1) {
+				if (i) { @result.append(","); };
+				var argument = &type->arguments.data()[i];
+				if (argument->kind == template_argument_kind::integer) { @result.append(integer_text(argument->integer)); }
+				else { @result.append(this.type_signature(argument->type)); };
+			};
+			@result.append(">");
+		};
+		return $result;
+	};
+
+	fn CodeGenerator::scalar(var CodeGenerator& this, ir::type_kind kind, u32 width) -> ir::TypeID {
+		var ir::Type type;
+		@type.kind = kind;
+		@type.bit_width = width;
+		return @this.builder.intern_type($type);
+	};
+
+	fn CodeGenerator::lower_record_members(var CodeGenerator& this, var ir::Type& type, u32 id) {
+		var declaration = this.context->decl_at(id);
+		if (!declaration) { return; };
+		if (declaration->base.type) {
+			var base = this.context->type_at(declaration->base.type);
+			if (base) { @this.lower_record_members(@type, this.record_type(declaration->base)); };
+		};
+		for (usize i = 0; i < declaration->members.size(); @i = i + 1) {
+			var field = this.context->decl_at(declaration->members.data()[i]);
+			if (field->kind != decl_kind::field) { continue; };
+			var ir::StructMember member;
+			@member.name = @this.builder.module.strings.intern(field->name.text());
+			@member.type = @this.lower_type(field->type);
+			@type.members.push_back($member);
+			if (declaration->builtin_position) {
+				var ir::BuiltinMember builtin;
+				@builtin.kind = ir::builtin::position;
+				@builtin.member_path.push_back(static_cast<u32>(type.members.size() - 1));
+				@type.builtin_members.push_back($builtin);
+			};
+		};
+	};
+
+	fn CodeGenerator::lower_type(var CodeGenerator& this, QualType qualified) -> ir::TypeID {
+		if (!qualified.type) { return 0; };
+		if (this.types.data()[qualified.type]) { return this.types.data()[qualified.type]; };
+		var source = this.context->type_at(qualified.type);
+		var ir::Type type;
+		if (source->kind == type_kind::builtin) {
+			@type.bit_width = 32;
+			if (source->builtin == builtin_type::void_type) { @type.kind = ir::type_kind::void_type; @type.bit_width = 0; }
+			else if (source->builtin == builtin_type::boolean) { @type.kind = ir::type_kind::boolean; @type.bit_width = 1; }
+			else if (source->builtin == builtin_type::signed_integer) { @type.kind = ir::type_kind::signed_integer; }
+			else if (source->builtin == builtin_type::floating) { @type.kind = ir::type_kind::floating; }
+			else { @type.kind = ir::type_kind::unsigned_integer; };
+		} else if (source->kind == type_kind::pointer || source->kind == type_kind::reference) {
+			@type.kind = ir::type_kind::pointer;
+			@type.element_type = @this.lower_type(source->pointee);
+		} else if (source->kind == type_kind::template_parameter) {
+			@this.diagnose(source->name, "unresolved template type reached code generation");
+			return 0;
+		} else {
+			var name = source->name.text();
+			if (name.size() > 2 && name.data()[0] == '_' && name.data()[1] == '_') { @name = rt::string_view(name.data() + 2, name.size() - 2); };
+			if (name == "vec2" || name == "vec3" || name == "vec4" || name == "mat2" || name == "mat3" || name == "mat4") {
+				@type.kind = ir::type_kind::vector;
+				if (name.data()[0] == 'm') { @type.kind = ir::type_kind::matrix; };
+				@type.element_count = static_cast<u32>(name.data()[name.size() - 1] - '0');
+				if (source->arguments.size()) { @type.element_type = @this.lower_type(source->arguments.data()[0].type); }
+				else { @type.element_type = @this.scalar(ir::type_kind::floating, 32); };
+			} else {
+				var declaration = this.record_type(qualified);
+				if (declaration && this.context->decl_at(declaration)->kind == decl_kind::type_alias) {
+					var result = @this.lower_type(this.context->decl_at(declaration)->type);
+					@(@this.types).data()[qualified.type] = result;
+					return result;
+				};
+				@type.kind = ir::type_kind::structure;
+				@type.name = @this.builder.module.strings.intern(name);
+				if (name == "patch" || name == "triangle_patch" || name == "quad_patch" || name == "isoline_patch") { @type.kind = ir::type_kind::patch; }
+				else if (name == "triangle" || name == "triangle_strip") { @type.kind = ir::type_kind::primitive; };
+				for (usize i = 0; i < source->arguments.size(); @i = i + 1) {
+					var argument = &source->arguments.data()[i];
+					if (argument->kind == template_argument_kind::type) {
+						var element = @this.lower_type(argument->type);
+						@type.parameter_types.push_back(element);
+						if (!type.element_type) { @type.element_type = element; };
+					} else if (argument->kind == template_argument_kind::integer) { @type.element_count = argument->integer; };
+				};
+				if (name == "triangle") { @type.element_count = 3; };
+				if (declaration && type.kind == ir::type_kind::structure) { @this.lower_record_members(@type, declaration); };
+			};
+		};
+		var result = @this.builder.intern_type($type);
+		@(@this.types).data()[qualified.type] = result;
+		return result;
+	};
+};

@@ -1,0 +1,202 @@
+fn strtod(char* text, char** end) -> f64;
+
+namespace rtsl {
+	export fn Parser::binary_precedence(token_kind kind) -> u32 {
+		switch (kind) {
+			case token_kind::op_assign:
+			case token_kind::op_emit:
+			case token_kind::op_plus_assign:
+				return 1;
+			case token_kind::op_or:
+				return 2;
+			case token_kind::op_and:
+				return 3;
+			case token_kind::op_pipe:
+				return 4;
+			case token_kind::op_caret:
+				return 5;
+			case token_kind::op_ampersand:
+				return 6;
+			case token_kind::op_equal:
+			case token_kind::op_not_equal:
+				return 7;
+			case token_kind::op_less:
+			case token_kind::op_less_equal:
+			case token_kind::op_greater:
+			case token_kind::op_greater_equal:
+				return 8;
+			case token_kind::op_shift_left:
+			case token_kind::op_shift_right:
+				return 9;
+			case token_kind::op_plus:
+			case token_kind::op_minus:
+				return 10;
+			case token_kind::op_star:
+			case token_kind::op_slash:
+			case token_kind::op_remainder:
+				return 11;
+			default:
+				return 0;
+		};
+	};
+
+	export fn Parser::expression(var Parser& this, u32 precedence) -> u32 {
+		u32 left = @this.primary();
+		while (left) {
+			var operation = this.token(0);
+			u32 level = Parser::binary_precedence(operation.kind);
+			if (!level || level < precedence) {
+				break;
+			};
+			discard @this.consume();
+			u32 next = level + 1;
+			if (level == 1) {
+				@next = level;
+			};
+			u32 right = @this.expression(next);
+			if (!right) {
+				return 0;
+			};
+			Expr value;
+			@value.kind = expr_kind::binary;
+			@value.location = operation;
+			@value.opcode = operation.kind;
+			@value.left = left;
+			@value.right = right;
+			@left = @this.context->add_expr($value);
+		};
+		return left;
+	};
+
+	export fn Parser::explicit_call_arguments(Parser& this) -> bool {
+		if (this.token(0).kind != token_kind::op_less) { return false; };
+		usize depth = 0;
+		usize offset = 0;
+		while (this.token(offset).kind != token_kind::eof) {
+			var kind = this.token(offset).kind;
+			if (kind == token_kind::op_less) { @depth = depth + 1; }
+			else if (kind == token_kind::op_greater || kind == token_kind::op_shift_right) {
+				usize count = 1;
+				if (kind == token_kind::op_shift_right) { @count = 2; };
+				if (count >= depth) { return count == depth && this.token(offset + 1).kind == token_kind::punct_left_paren; };
+				@depth = depth - count;
+			}
+			else if (kind == token_kind::punct_semicolon || kind == token_kind::punct_left_brace || kind == token_kind::punct_right_brace) { return false; };
+			@offset = offset + 1;
+		};
+		return false;
+	};
+	export fn Parser::primary(var Parser& this) -> u32 {
+		var first = this.token(0);
+		u32 result = 0;
+		if (first.kind == token_kind::op_minus || first.kind == token_kind::op_plus || first.kind == token_kind::op_bang || first.kind == token_kind::op_tilde || first.kind == token_kind::op_access || first.kind == token_kind::op_relocate || first.kind == token_kind::op_ampersand || first.kind == token_kind::op_star) {
+			discard @this.consume();
+			Expr value;
+			@value.kind = expr_kind::unary;
+			@value.location = first;
+			@value.opcode = first.kind;
+			@value.left = @this.primary();
+			return @this.context->add_expr($value);
+		};
+		if (@this.take(token_kind::punct_left_paren)) {
+			@result = @this.expression(1);
+			discard @this.require(token_kind::punct_right_paren, "expected ')' after expression");
+		}
+		else if (first.kind == token_kind::identifier) {
+			discard @this.consume();
+			Expr value;
+			@value.kind = expr_kind::declaration;
+			@value.location = first;
+			if (this.token(0).kind == token_kind::op_less) {
+				bool generic = false;
+				for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
+					Decl& declaration = this.context->declarations.data()[index];
+					if (declaration.name.same(first) && (declaration.parameters.size() || declaration.template_arguments.size())) {
+						@generic = true;
+					};
+				};
+				if (!generic) { @generic = this.explicit_call_arguments(); };
+				if (generic) {
+					@value.template_arguments = @this.template_arguments();
+				};
+			};
+			@result = @this.context->add_expr($value);
+		}
+		else if (first.kind == token_kind::literal_number) {
+			discard @this.consume();
+			Expr value;
+			@value.kind = expr_kind::integer;
+			@value.location = first;
+			bool floating = false;
+			for (usize index = 0; index < first.length; @index = index + 1) {
+				char character = first.text().data()[index];
+				if (character == '.' || character == 'e' || character == 'E') {
+					@floating = true;
+				};
+			};
+			usize cursor = 0;
+			while (!floating && cursor < first.length && first.text().data()[cursor] >= '0' && first.text().data()[cursor] <= '9') {
+				u64 digit = static_cast<u64>(first.text().data()[cursor] - '0');
+				if (value.integer > (u64::max - digit) / 10) {
+					@this.diagnostics->report(diagnostic_level::error, first, "integer literal is out of range");
+					return 0;
+				};
+				@value.integer = value.integer * 10 + digit;
+				@cursor = cursor + 1;
+			};
+			if (floating) {
+				@value.kind = expr_kind::floating;
+				var spelling = rt::string(first.text());
+				char* end = nullptr;
+				@value.floating = strtod(spelling.c_str(), &@end);
+				if (end != spelling.c_str() + spelling.size()) {
+					@this.diagnostics->report(diagnostic_level::error, first, "invalid floating literal");
+					return 0;
+				};
+			}
+			else if (cursor != first.length) {
+				@this.diagnostics->report(diagnostic_level::error, first, "invalid integer literal");
+				return 0;
+			};
+			@result = @this.context->add_expr($value);
+		}
+		else {
+			@this.error("expected expression");
+			return 0;
+		};
+		while (result) {
+			Expr value;
+			@value.left = result;
+			if (@this.take(token_kind::op_dot)) {
+				@value.kind = expr_kind::member;
+				@value.location = @this.consume();
+				if (value.location.kind != token_kind::identifier) {
+					@this.error("expected member name");
+				};
+				if (this.explicit_call_arguments()) { @value.template_arguments = @this.template_arguments(); };
+			}
+			else if (this.token(0).kind == token_kind::punct_left_paren || this.token(0).kind == token_kind::punct_left_bracket) {
+				var open = @this.consume();
+				@value.location = open;
+				@value.kind = expr_kind::call;
+				token_kind close = token_kind::punct_right_paren;
+				if (open.kind == token_kind::punct_left_bracket) {
+					@value.kind = expr_kind::subscript;
+					@close = token_kind::punct_right_bracket;
+				};
+				while (this.token(0).kind != close && this.token(0).kind != token_kind::eof) {
+					@value.arguments.push_back(@this.expression(1));
+					if (!@this.take(token_kind::punct_comma)) {
+						break;
+					};
+				};
+				discard @this.require(close, "expected closing delimiter after arguments");
+			}
+			else {
+				break;
+			};
+			@result = @this.context->add_expr($value);
+		};
+		return result;
+	};
+};

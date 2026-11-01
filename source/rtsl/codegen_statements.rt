@@ -1,0 +1,206 @@
+namespace rtsl {
+	fn visit_blocks(ir::Function& function, u32 id, var rt::unordered_map<u32, u32>& visited, var rt::buffer<u32>& order) {
+		if (visited.find(id)) { return; };
+		discard @visited.insert(id, 1);
+		for (usize i = 0; i < function.blocks.size(); @i = i + 1) {
+			var block = &function.blocks.data()[i];
+			if (block->id != id) { continue; };
+			if (block->terminator.has_value()) {
+				var terminator = &block->terminator.value();
+				for (usize j = 0; j < terminator->successors.size(); @j = j + 1) { visit_blocks(function, terminator->successors.data()[j].block, @visited, @order); };
+			};
+			break;
+		};
+		@order.push_back(id);
+	};
+
+	fn CodeGenerator::order_blocks(var CodeGenerator& this) {
+		var ir::Function* function = (@this.builder.module).find_function(this.current_function);
+		if (!function || !function->blocks.size()) { return; };
+		var rt::unordered_map<u32, u32> visited;
+		var rt::buffer<u32> order;
+		visit_blocks(*function, function->blocks.data()[0].id, @visited, @order);
+		var rt::buffer<ir::Block> blocks;
+		for (usize i = order.size(); i > 0; @i = i - 1) {
+			var block = @this.builder.block(this.current_function, order.data()[i - 1]);
+			@blocks.push_back(ir::Block(*block));
+		};
+		for (usize i = 0; i < function->blocks.size(); @i = i + 1) {
+			if (!visited.find(function->blocks.data()[i].id)) { @blocks.push_back(ir::Block(function->blocks.data()[i])); };
+		};
+		@function->blocks = $blocks;
+	};
+
+	fn CodeGenerator::leave_scope(var CodeGenerator& this, u32 scope) {
+		for (usize i = 0; i < this.context->declarations.size(); @i = i + 1) {
+			var declaration = &this.context->declarations.data()[i];
+			if (declaration->kind == decl_kind::variable && declaration->parent == scope) { @(@this.values).data()[i + 1] = 0; };
+		};
+	};
+
+	fn CodeGenerator::branch(var CodeGenerator& this, u32 destination) {
+		var ir::Successor successor;
+		@successor.block = destination;
+		var ir::Terminator terminator;
+		@terminator.kind = ir::terminator_kind::branch;
+		@terminator.successors.push_back($successor);
+		var ir::Block* block = @this.builder.block(this.current_function, this.current_block);
+		@block->terminator = rt::optional<ir::Terminator>($terminator);
+	};
+
+	fn CodeGenerator::merge_arguments(var CodeGenerator& this, u32 destination, rt::buffer<u32>& bindings) {
+		var ir::Successor successor;
+		@successor.block = destination;
+		for (usize i = 0; i < bindings.size(); @i = i + 1) { @successor.arguments.push_back(this.values.data()[bindings.data()[i]]); };
+		var ir::Terminator terminator;
+		@terminator.kind = ir::terminator_kind::branch;
+		@terminator.successors.push_back($successor);
+		var ir::Block* block = @this.builder.block(this.current_function, this.current_block);
+		@block->terminator = rt::optional<ir::Terminator>($terminator);
+	};
+
+	fn CodeGenerator::condition(var CodeGenerator& this, Stmt& statement) {
+		var test = @this.expression(statement.value);
+		var before = rt::buffer<u32>(this.values);
+		var origin = this.current_block;
+		var then_block = @this.builder.add_block(this.current_function);
+		var else_block = @this.builder.add_block(this.current_function);
+		var merge_block = @this.builder.add_block(this.current_function);
+		var rt::buffer<u32> bindings;
+		var rt::buffer<u32> joined;
+		for (usize i = 0; i < before.size(); @i = i + 1) {
+			if (!before.data()[i]) { continue; };
+			@bindings.push_back(static_cast<u32>(i));
+			var ir::BlockArgument argument;
+			if (i) { @argument.type = @this.lower_type(this.context->decl_at(static_cast<u32>(i))->type); }
+			else { @argument.type = this.value_type(before.data()[i]); };
+			@argument.value = @this.builder.value();
+			@joined.push_back(argument.value);
+			var ir::Block* merge = @this.builder.block(this.current_function, merge_block);
+			@merge->arguments.push_back($argument);
+		};
+		var ir::Terminator terminator;
+		@terminator.kind = ir::terminator_kind::conditional_branch;
+		@terminator.operands.push_back(test);
+		var ir::Successor yes; @yes.block = then_block;
+		var ir::Successor no; @no.block = else_block;
+		@terminator.successors.push_back($yes); @terminator.successors.push_back($no);
+		{
+			var ir::Block* block = @this.builder.block(this.current_function, origin);
+			@block->merge.kind = ir::merge_kind::selection;
+			@block->merge.merge_block = merge_block;
+			@block->terminator = rt::optional<ir::Terminator>($terminator);
+		};
+		@this.current_block = then_block;
+		@this.statement(statement.then_branch);
+		var then_reaches = !(@this.builder.block(this.current_function, this.current_block))->terminator.has_value();
+		if (then_reaches) { @this.merge_arguments(merge_block, bindings); };
+		@this.values = rt::buffer<u32>(before);
+		@this.current_block = else_block;
+		@this.statement(statement.else_branch);
+		var else_reaches = !(@this.builder.block(this.current_function, this.current_block))->terminator.has_value();
+		if (else_reaches) { @this.merge_arguments(merge_block, bindings); };
+		@this.values = $before;
+		for (usize i = 0; i < bindings.size(); @i = i + 1) { @(@this.values).data()[bindings.data()[i]] = joined.data()[i]; };
+		@this.current_block = merge_block;
+		@this.current_emitter = this.values.data()[0];
+		if (!then_reaches && !else_reaches) {
+			var ir::Block* block = @this.builder.block(this.current_function, merge_block);
+			@block->arguments.clear();
+			var ir::Terminator unreachable; @unreachable.kind = ir::terminator_kind::unreachable;
+			@block->terminator = rt::optional<ir::Terminator>($unreachable);
+		};
+	};
+
+	fn CodeGenerator::loop(var CodeGenerator& this, Stmt& statement) {
+		@this.statement(statement.initialization);
+		var header = @this.builder.add_block(this.current_function);
+		var body = @this.builder.add_block(this.current_function);
+		var continuation = @this.builder.add_block(this.current_function);
+		var merge = @this.builder.add_block(this.current_function);
+		var rt::buffer<u32> bindings;
+		var rt::buffer<u32> header_values;
+		var rt::buffer<u32> merge_values;
+		for (usize i = 0; i < this.values.size(); @i = i + 1) {
+			if (!this.values.data()[i]) { continue; };
+			@bindings.push_back(static_cast<u32>(i));
+			var u32 type = this.value_type(this.values.data()[i]);
+			var ir::BlockArgument argument; @argument.type = type; @argument.value = @this.builder.value();
+			@header_values.push_back(argument.value);
+			var ir::Block* block = @this.builder.block(this.current_function, header);
+			@block->arguments.push_back($argument);
+			var ir::BlockArgument exit_argument; @exit_argument.type = type; @exit_argument.value = @this.builder.value();
+			@merge_values.push_back(exit_argument.value);
+			var ir::Block* exit = @this.builder.block(this.current_function, merge);
+			@exit->arguments.push_back($exit_argument);
+			var ir::BlockArgument next; @next.type = type; @next.value = @this.builder.value();
+			var ir::Block* continue_block = @this.builder.block(this.current_function, continuation);
+			@continue_block->arguments.push_back($next);
+		};
+		@this.merge_arguments(header, bindings);
+		@this.current_block = header;
+		for (usize i = 0; i < bindings.size(); @i = i + 1) { @(@this.values).data()[bindings.data()[i]] = header_values.data()[i]; };
+		var ir::Terminator test;
+		var ir::Successor yes; @yes.block = body;
+		@test.successors.push_back($yes);
+		if (statement.value) {
+			@test.kind = ir::terminator_kind::conditional_branch;
+			@test.operands.push_back(@this.expression(statement.value));
+			var ir::Successor no; @no.block = merge;
+			for (usize i = 0; i < bindings.size(); @i = i + 1) { @no.arguments.push_back(this.values.data()[bindings.data()[i]]); };
+			@test.successors.push_back($no);
+		} else { @test.kind = ir::terminator_kind::branch; };
+		{
+			var ir::Block* block = @this.builder.block(this.current_function, header);
+			@block->merge.kind = ir::merge_kind::loop; @block->merge.merge_block = merge; @block->merge.continue_block = continuation;
+			@block->terminator = rt::optional<ir::Terminator>($test);
+		};
+		@this.break_blocks.push_back(merge); @this.continue_blocks.push_back(continuation);
+		@this.loop_bindings.push_back(rt::buffer<u32>(bindings));
+		@this.current_block = body;
+		@this.statement(statement.then_branch);
+		if (!(@this.builder.block(this.current_function, this.current_block))->terminator.has_value()) { @this.merge_arguments(continuation, bindings); };
+		@this.current_block = continuation;
+		{
+			var block = @this.builder.block(this.current_function, continuation);
+			for (usize i = 0; i < bindings.size(); @i = i + 1) { @(@this.values).data()[bindings.data()[i]] = block->arguments.data()[i].value; };
+		};
+		discard @this.expression(statement.increment);
+		@this.merge_arguments(header, bindings);
+		discard @this.break_blocks.pop_back(); discard @this.continue_blocks.pop_back(); discard @this.loop_bindings.pop_back();
+		for (usize i = 0; i < bindings.size(); @i = i + 1) { @(@this.values).data()[bindings.data()[i]] = merge_values.data()[i]; };
+		@this.current_block = merge;
+		@this.current_emitter = this.values.data()[0];
+		if (statement.kind == stmt_kind::for_loop) { @this.leave_scope(statement.scope); };
+	};
+
+	fn CodeGenerator::statement(var CodeGenerator& this, u32 id) {
+		var statement = this.context->stmt_at(id);
+		if (!statement || (@this.builder.block(this.current_function, this.current_block))->terminator.has_value()) { return; };
+		if (statement->kind == stmt_kind::compound) {
+			for (usize i = 0; i < statement->body.size(); @i = i + 1) { @this.statement(statement->body.data()[i]); };
+			@this.leave_scope(statement->scope);
+		} else if (statement->kind == stmt_kind::declaration) {
+			var declaration = this.context->decl_at(statement->declaration);
+			var value = @this.expression(declaration->initializer);
+			@(@this.values).data()[statement->declaration] = value;
+		} else if (statement->kind == stmt_kind::return_value) {
+			var ir::Terminator terminator;
+			@terminator.kind = ir::terminator_kind::return_void;
+			if (statement->value) { @terminator.kind = ir::terminator_kind::return_value; @terminator.operands.push_back(@this.expression(statement->value)); };
+			var ir::Block* block = @this.builder.block(this.current_function, this.current_block);
+			@block->terminator = rt::optional<ir::Terminator>($terminator);
+		} else if (statement->kind == stmt_kind::condition) { @this.condition(*statement); }
+		else if (statement->kind == stmt_kind::while_loop || statement->kind == stmt_kind::for_loop) { @this.loop(*statement); }
+		else if (statement->kind == stmt_kind::break_loop || statement->kind == stmt_kind::continue_loop) {
+			if (!this.break_blocks.size()) { @this.diagnose(statement->location, "loop control outside a loop"); return; };
+			var index = this.break_blocks.size() - 1;
+			var u32 destination = this.break_blocks.data()[index];
+			if (statement->kind == stmt_kind::continue_loop) { @destination = this.continue_blocks.data()[index]; };
+			@this.merge_arguments(destination, this.loop_bindings.data()[index]);
+		} else if (statement->kind == stmt_kind::barrier) {
+			var ir::Instruction instruction; @instruction.operation = ir::opcode::barrier;
+			discard @this.append_instruction($instruction);
+		} else { discard @this.expression(statement->value); };
+	};
+};

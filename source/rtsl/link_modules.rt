@@ -1,0 +1,211 @@
+namespace rtsl {
+	struct ModuleMaps {
+		rt::unordered_map<u32, u32> types;
+		rt::unordered_map<u32, u32> symbols;
+		rt::unordered_map<u32, u32> functions;
+		rt::unordered_map<u32, u32> definitions;
+	};
+
+	fn mapped(rt::unordered_map<u32, u32>& map, u32 id) -> u32 {
+		if (!id) { return 0; };
+		var found = map.find(id);
+		if (found) { return *found; };
+		return 0;
+	};
+
+	fn link_string(var ir::ModuleBuilder& builder, ir::Module& source, u32 id) -> u32 {
+		if (!id) { return 0; };
+		return @builder.module.strings.intern(source.strings.get(id));
+	};
+
+	fn link_type(var ir::ModuleBuilder& builder, ir::Module& source, var ModuleMaps& maps, u32 id, usize depth, var DiagnosticsEngine& diagnostics) -> u32 {
+		if (!id) { return 0; };
+		var known = mapped(maps.types, id);
+		if (known) { return known; };
+		var original = source.find_type(id);
+		if (!original || depth > source.types.size()) { @diagnostics.report(diagnostic_level::error, Token(), "invalid or recursive artifact type dependency"); return 0; };
+		var type = ir::Type(*original);
+		@type.id = 0;
+		@type.name = link_string(@builder, source, type.name);
+		@type.element_type = link_type(@builder, source, @maps, type.element_type, depth + 1, @diagnostics);
+		for (usize i = 0; i < type.parameter_types.size(); @i = i + 1) { @(@type.parameter_types).data()[i] = link_type(@builder, source, @maps, type.parameter_types.data()[i], depth + 1, @diagnostics); };
+		for (usize i = 0; i < type.members.size(); @i = i + 1) {
+			var ir::StructMember& member = @(@type.members).data()[i];
+			@member.name = link_string(@builder, source, member.name);
+			@member.type = link_type(@builder, source, @maps, member.type, depth + 1, @diagnostics);
+		};
+		var result = @builder.intern_type($type);
+		discard @maps.types.insert(id, result);
+		return result;
+	};
+
+	fn link_declarations(var ir::ModuleBuilder& builder, ir::Module& source, var ModuleMaps& maps, var DiagnosticsEngine& diagnostics) {
+		for (usize i = 0; i < source.functions.size(); @i = i + 1) {
+			var original = &source.functions.data()[i];
+			var symbol = mapped(maps.symbols, original->symbol);
+			var u32 existing = 0;
+			for (usize j = 0; j < builder.module.functions.size(); @j = j + 1) {
+				if (builder.module.functions.data()[j].symbol == symbol) { @existing = builder.module.functions.data()[j].id; break; };
+			};
+			if (!existing) {
+				var ir::Function function;
+				@function.symbol = symbol; @function.return_type = mapped(maps.types, original->return_type);
+				@function.declaration = original->declaration; @function.implicit_decl = original->implicit_decl; @function.implicit_emitter = original->implicit_emitter;
+				for (usize j = 0; j < original->parameters.size(); @j = j + 1) {
+					var parameter = ir::Parameter(original->parameters.data()[j]);
+					@parameter.value = @builder.value(); @parameter.type = mapped(maps.types, parameter.type); @parameter.symbol = mapped(maps.symbols, parameter.symbol);
+					@function.parameters.push_back($parameter);
+				};
+				@existing = @builder.add_function($function);
+				if (!original->declaration) { discard @maps.definitions.insert(original->id, existing); };
+			} else {
+				var ir::Function* target = (@builder.module).find_function(existing);
+				var bool same = target->return_type == mapped(maps.types, original->return_type) && target->parameters.size() == original->parameters.size() && target->implicit_emitter == original->implicit_emitter;
+				if (same) {
+					for (usize j = 0; j < target->parameters.size(); @j = j + 1) {
+						var a = &target->parameters.data()[j]; var b = &original->parameters.data()[j];
+						if (a->type != mapped(maps.types, b->type) || a->kind.has_value() != b->kind.has_value()) { @same = false; }
+						else if (a->kind.has_value() && a->kind.value() != b->kind.value()) { @same = false; };
+					};
+				};
+				if (!same) { @diagnostics.report(diagnostic_level::error, Token(), "linked function declarations have incompatible types"); };
+				if (!original->declaration) {
+					if (!target->declaration) {
+						if (!target->implicit_decl || !original->implicit_decl) { @diagnostics.report(diagnostic_level::error, Token(), "function has multiple linked definitions"); };
+					}
+					else { @target->declaration = false; discard @maps.definitions.insert(original->id, existing); };
+				};
+			};
+			discard @maps.functions.insert(original->id, existing);
+		};
+	};
+
+	fn link_bodies(var ir::ModuleBuilder& builder, ir::Module& source, ModuleMaps& maps) {
+		for (usize i = 0; i < source.functions.size(); @i = i + 1) {
+			var original = &source.functions.data()[i];
+			var target = mapped(maps.definitions, original->id);
+			if (!target) { continue; };
+			var rt::unordered_map<u32, u32> values;
+			var rt::unordered_map<u32, u32> blocks;
+			for (usize j = 0; j < original->parameters.size(); @j = j + 1) { discard @values.insert(original->parameters.data()[j].value, builder.module.find_function(target)->parameters.data()[j].value); };
+			for (usize j = 0; j < original->blocks.size(); @j = j + 1) { discard @blocks.insert(original->blocks.data()[j].id, @builder.add_block(target)); };
+			for (usize j = 0; j < original->blocks.size(); @j = j + 1) {
+				var source_block = &original->blocks.data()[j];
+				for (usize k = 0; k < source_block->arguments.size(); @k = k + 1) {
+					var argument = ir::BlockArgument(source_block->arguments.data()[k]);
+					var old = argument.value; @argument.value = @builder.value(); @argument.type = mapped(maps.types, argument.type);
+					discard @values.insert(old, argument.value);
+					var ir::Block* block = @builder.block(target, mapped(blocks, source_block->id));
+					@block->arguments.push_back($argument);
+				};
+				for (usize k = 0; k < source_block->instructions.size(); @k = k + 1) {
+					var result = source_block->instructions.data()[k].result;
+					if (result) { discard @values.insert(result, @builder.value()); };
+				};
+			};
+			for (usize j = 0; j < original->blocks.size(); @j = j + 1) {
+				var source_block = &original->blocks.data()[j];
+				var ir::Block* block = @builder.block(target, mapped(blocks, source_block->id));
+				for (usize k = 0; k < source_block->instructions.size(); @k = k + 1) {
+					var instruction = ir::Instruction(source_block->instructions.data()[k]);
+					@instruction.type = mapped(maps.types, instruction.type); @instruction.result = mapped(values, instruction.result); @instruction.callee = mapped(maps.functions, instruction.callee);
+					for (usize operand = 0; operand < instruction.operands.size(); @operand = operand + 1) { @(@instruction.operands).data()[operand] = mapped(values, instruction.operands.data()[operand]); };
+					if (instruction.immediates.size()) {
+						if (instruction.operation == ir::opcode::resource_load || instruction.operation == ir::opcode::resource_store || instruction.operation == ir::opcode::resource_sample || instruction.operation == ir::opcode::resource_query) { @(@instruction.immediates).data()[0] = mapped(maps.symbols, instruction.immediates.data()[0]); }
+						else if (instruction.operation == ir::opcode::access) { @(@instruction.immediates).data()[0] = link_string(@builder, source, instruction.immediates.data()[0]); };
+					};
+					@block->instructions.push_back($instruction);
+				};
+				@block->merge.kind = source_block->merge.kind;
+				@block->merge.merge_block = mapped(blocks, source_block->merge.merge_block); @block->merge.continue_block = mapped(blocks, source_block->merge.continue_block);
+				if (source_block->terminator.has_value()) {
+					var terminator = ir::Terminator(source_block->terminator.value());
+					for (usize k = 0; k < terminator.operands.size(); @k = k + 1) { @(@terminator.operands).data()[k] = mapped(values, terminator.operands.data()[k]); };
+					for (usize k = 0; k < terminator.successors.size(); @k = k + 1) {
+						var ir::Successor& successor = @(@terminator.successors).data()[k];
+						@successor.block = mapped(blocks, successor.block);
+						for (usize a = 0; a < successor.arguments.size(); @a = a + 1) { @(@successor.arguments).data()[a] = mapped(values, successor.arguments.data()[a]); };
+					};
+					@block->terminator = rt::optional<ir::Terminator>($terminator);
+				};
+			};
+		};
+	};
+
+	fn link_metadata(var ir::ModuleBuilder& builder, ir::Module& source, ModuleMaps& maps, var DiagnosticsEngine& diagnostics) {
+		for (usize i = 0; i < source.entry_points.size(); @i = i + 1) {
+			var entry = ir::EntryPoint(source.entry_points.data()[i]);
+			@entry.function = mapped(maps.functions, entry.function); @entry.symbol = mapped(maps.symbols, entry.symbol); @entry.source_name = link_string(@builder, source, entry.source_name);
+			for (usize j = 0; j < entry.attributes.size(); @j = j + 1) {
+				var ir::EntryAttribute& attribute = @(@entry.attributes).data()[j];
+				@attribute.name = link_string(@builder, source, attribute.name);
+				for (usize k = 0; k < attribute.tokens.size(); @k = k + 1) { @(@attribute.tokens).data()[k] = link_string(@builder, source, attribute.tokens.data()[k]); };
+			};
+			for (usize j = 0; j < entry.parameter_contracts.size(); @j = j + 1) {
+				var ir::InterfaceContract& contract = @(@entry.parameter_contracts).data()[j];
+				@contract.contract = link_string(@builder, source, contract.contract);
+				for (usize k = 0; k < contract.member_path.size(); @k = k + 1) { @(@contract.member_path).data()[k] = link_string(@builder, source, contract.member_path.data()[k]); };
+			};
+			@builder.module.entry_points.push_back($entry);
+		};
+		for (usize i = 0; i < source.resources.size(); @i = i + 1) {
+			var resource = ir::Resource(source.resources.data()[i]);
+			@resource.symbol = mapped(maps.symbols, resource.symbol); @resource.type = mapped(maps.types, resource.type);
+			for (usize j = 0; j < resource.users.size(); @j = j + 1) { @(@resource.users).data()[j] = mapped(maps.functions, resource.users.data()[j]); };
+			var bool duplicate = false;
+			for (usize j = 0; j < builder.module.resources.size(); @j = j + 1) {
+				var prior = &builder.module.resources.data()[j];
+				if (prior->symbol != resource.symbol) { continue; };
+				@duplicate = true;
+				if (prior->type != resource.type || prior->kind != resource.kind || prior->access != resource.access) { @diagnostics.report(diagnostic_level::error, Token(), "linked resource declarations are incompatible"); };
+			};
+			if (!duplicate) { @builder.module.resources.push_back($resource); };
+		};
+		for (usize i = 0; i < source.uniforms.size(); @i = i + 1) {
+			var uniform = ir::Uniform(source.uniforms.data()[i]);
+			@uniform.symbol = mapped(maps.symbols, uniform.symbol); @uniform.type = mapped(maps.types, uniform.type);
+			var bool duplicate = false;
+			for (usize j = 0; j < builder.module.uniforms.size(); @j = j + 1) {
+				var prior = &builder.module.uniforms.data()[j];
+				if (prior->symbol != uniform.symbol) { continue; };
+				@duplicate = true;
+				if (prior->type != uniform.type) { @diagnostics.report(diagnostic_level::error, Token(), "linked uniform declarations are incompatible"); };
+			};
+			if (!duplicate) { @builder.module.uniforms.push_back($uniform); };
+		};
+		for (usize i = 0; i < source.storage_objects.size(); @i = i + 1) {
+			var storage = ir::StorageObject(source.storage_objects.data()[i]);
+			@storage.symbol = mapped(maps.symbols, storage.symbol); @storage.type = mapped(maps.types, storage.type);
+			@storage.initializer.reset();
+			var bool duplicate = false;
+			for (usize j = 0; j < builder.module.storage_objects.size(); @j = j + 1) {
+				var prior = &builder.module.storage_objects.data()[j];
+				if (prior->symbol != storage.symbol) { continue; };
+				@duplicate = true;
+				if (prior->type != storage.type || prior->space != storage.space || prior->access != storage.access) { @diagnostics.report(diagnostic_level::error, Token(), "linked storage declarations are incompatible"); };
+			};
+			if (!duplicate) { @builder.module.storage_objects.push_back($storage); };
+		};
+	};
+
+	export fn link_modules(rt::span<ir::Module> modules, rt::string_view name, var DiagnosticsEngine& diagnostics, artifact_kind output_kind) -> ir::Module | compilation_error {
+		var builder = ir::ModuleBuilder(name);
+		var rt::buffer<ModuleMaps> maps;
+		for (usize i = 0; i < modules.size(); @i = i + 1) {
+			if (!verify_module(modules.data()[i], @diagnostics)) { return compilation_error(); };
+			@maps.push_back(ModuleMaps());
+			var ModuleMaps& map = @(@maps).data()[i];
+			var source = &modules.data()[i];
+			for (usize j = 0; j < source->types.size(); @j = j + 1) { discard link_type(@builder, *source, @map, source->types.data()[j].id, 0, @diagnostics); };
+			for (usize j = 0; j < source->symbols.size(); @j = j + 1) {
+				var symbol = &source->symbols.data()[j];
+				discard @map.symbols.insert(symbol->id, @builder.symbol(source->strings.get(symbol->name), symbol->exported));
+			};
+		};
+		for (usize i = 0; i < modules.size(); @i = i + 1) { link_declarations(@builder, modules.data()[i], @(@maps).data()[i], @diagnostics); };
+		for (usize i = 0; i < modules.size(); @i = i + 1) { link_bodies(@builder, modules.data()[i], maps.data()[i]); link_metadata(@builder, modules.data()[i], maps.data()[i], @diagnostics); };
+		if (output_kind == artifact_kind::program) { finalize_program(@builder, @diagnostics); };
+		if (!verify_module(builder.module, @diagnostics) || diagnostics.failed()) { return compilation_error(); };
+		return ir::Module(builder.module);
+	};
+};

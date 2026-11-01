@@ -1,0 +1,385 @@
+namespace rtsl::ir {
+	using TypeID = u32;
+	using ValueID = u32;
+	using BlockID = u32;
+	using FunctionID = u32;
+	using SymbolID = u32;
+	using StringID = u32;
+
+	struct StringTable {
+		fn intern(var StringTable& this, rt::string_view spelling) -> StringID;
+		fn get(StringTable& this, StringID id) -> rt::string_view;
+		rt::buffer<rt::string> values;
+	};
+
+	fn StringTable::intern(var StringTable& this, rt::string_view spelling) -> StringID {
+		for (usize index = 0; index < this.values.size(); @index = index + 1) {
+			if (this.values.data()[index] == spelling) {
+				return static_cast<StringID>(index + 1);
+			};
+		};
+		@this.values.push_back(rt::string(spelling));
+		return static_cast<StringID>(this.values.size());
+	};
+
+	fn StringTable::get(StringTable& this, StringID id) -> rt::string_view {
+		if (!id || static_cast<usize>(id) > this.values.size()) {
+			return "";
+		};
+		return this.values.data()[id - 1];
+	};
+
+	enum address_space : [u08] {
+		function;
+		private_space;
+		workgroup;
+		uniform;
+		storage;
+		push_constant;
+		resource;
+	};
+
+	enum type_kind : [u08] {
+		void_type;
+		boolean;
+		signed_integer;
+		unsigned_integer;
+		floating;
+		vector;
+		matrix;
+		structure;
+		pointer;
+		array;
+		runtime_array;
+		function;
+		image;
+		texture;
+		sampler;
+		patch;
+		primitive;
+	};
+
+	enum builtin : [u08] {
+		position;
+		global_invocation_x;
+		global_invocation_y;
+		global_invocation_z;
+	};
+
+	struct StructMember {
+		StringID name;
+		TypeID type;
+		rt::optional<u32> offset;
+		rt::optional<u32> alignment;
+	};
+
+	struct BuiltinMember {
+		builtin kind;
+		rt::buffer<u32> member_path;
+	};
+
+	struct Type {
+		TypeID id;
+		type_kind kind;
+		u32 bit_width;
+		TypeID element_type;
+		u32 element_count;
+		address_space space;
+		rt::buffer<TypeID> parameter_types;
+		rt::buffer<StructMember> members;
+		rt::buffer<BuiltinMember> builtin_members;
+		StringID name;
+	};
+
+	struct Symbol {
+		SymbolID id;
+		StringID name;
+		bool exported;
+	};
+
+	enum opcode : [u16] {
+		undef;
+		constant_boolean;
+		constant_integer;
+		constant_floating;
+		constant_composite;
+		variable;
+		load;
+		store;
+		access;
+		add;
+		subtract;
+		multiply;
+		divide;
+		remainder;
+		negate;
+		compare_equal;
+		compare_not_equal;
+		compare_less;
+		compare_less_equal;
+		compare_greater;
+		compare_greater_equal;
+		logical_and;
+		logical_or;
+		logical_not;
+		convert;
+		bitcast;
+		construct;
+		extract;
+		insert;
+		call;
+		barrier;
+		memory_barrier;
+		resource_load;
+		resource_store;
+		resource_sample;
+		resource_query;
+		derivative;
+		discard_value;
+		sqrt;
+		clamp;
+	};
+
+	struct Instruction {
+		opcode operation;
+		ValueID result;
+		TypeID type;
+		FunctionID callee;
+		rt::buffer<ValueID> operands;
+		rt::buffer<u32> immediates;
+	};
+
+	struct BlockArgument {
+		ValueID value;
+		TypeID type;
+	};
+
+	struct Successor {
+		BlockID block;
+		rt::buffer<ValueID> arguments;
+	};
+
+	enum terminator_kind : [u08] {
+		branch;
+		conditional_branch;
+		switch_value;
+		return_void;
+		return_value;
+		kill;
+		unreachable;
+	};
+
+	struct Terminator {
+		terminator_kind kind;
+		rt::buffer<ValueID> operands;
+		rt::buffer<Successor> successors;
+		rt::buffer<u32> immediates;
+	};
+
+	enum merge_kind : [u08] {
+		none;
+		selection;
+		loop;
+	};
+
+	struct StructuredMerge {
+		merge_kind kind;
+		BlockID merge_block;
+		BlockID continue_block;
+	};
+
+	struct Block {
+		BlockID id;
+		rt::buffer<BlockArgument> arguments;
+		rt::buffer<Instruction> instructions;
+		rt::optional<Terminator> terminator;
+		StructuredMerge merge;
+	};
+
+	struct Parameter {
+		ValueID value;
+		TypeID type;
+		SymbolID symbol;
+		rt::optional<builtin> kind;
+	};
+
+	struct Function {
+		FunctionID id;
+		SymbolID symbol;
+		TypeID return_type;
+		rt::buffer<Parameter> parameters;
+		rt::buffer<Block> blocks;
+		bool declaration;
+		bool implicit_emitter;
+		bool implicit_decl;
+	};
+
+	enum stage : [u08] {
+		vertex;
+		tessellation_control;
+		tessellation_evaluation;
+		geometry;
+		fragment;
+		compute;
+	};
+
+	enum tessellation_domain : [u08] {
+		triangles;
+		quads;
+		isolines;
+	};
+
+	enum tessellation_spacing : [u08] {
+		equal;
+		fractional_even;
+		fractional_odd;
+	};
+
+	enum winding : [u08] {
+		clockwise;
+		counter_clockwise;
+	};
+
+	enum primitive_topology : [u08] {
+		points;
+		lines;
+		lines_adjacency;
+		triangles;
+		triangles_adjacency;
+		line_strip;
+		triangle_strip;
+	};
+
+	struct TessellationControlConfiguration {
+		u32 output_control_points;
+	};
+
+	struct TessellationEvaluationConfiguration {
+		tessellation_domain domain;
+		tessellation_spacing spacing;
+		winding order;
+	};
+
+	struct GeometryConfiguration {
+		primitive_topology input;
+		primitive_topology output;
+		u32 maximum_vertices;
+		u32 invocations;
+	};
+
+	struct ComputeConfiguration {
+		u32[3] workgroup_size;
+	};
+
+	struct InterfaceContract {
+		u32 parameter_index;
+		rt::buffer<StringID> member_path;
+		StringID contract;
+	};
+
+	struct EntryAttribute {
+		StringID name;
+		rt::buffer<StringID> tokens;
+	};
+
+	using StageConfiguration = void | TessellationControlConfiguration | TessellationEvaluationConfiguration | GeometryConfiguration | ComputeConfiguration;
+
+	struct EntryPoint {
+		SymbolID symbol;
+		FunctionID function;
+		StringID source_name;
+		stage kind;
+		StageConfiguration configuration;
+		rt::buffer<EntryAttribute> attributes;
+		rt::buffer<InterfaceContract> parameter_contracts;
+	};
+
+	enum resource_kind : [u08] {
+		uniform_buffer;
+		storage_buffer;
+		sampled_texture;
+		storage_texture;
+		sampler;
+		input_attachment;
+	};
+
+	enum access_kind : [u08] {
+		read_only;
+		write_only;
+		read_write;
+	};
+
+	struct Binding {
+		u32 set;
+		u32 binding;
+	};
+
+	struct Resource {
+		SymbolID symbol;
+		resource_kind kind;
+		TypeID type;
+		access_kind access;
+		rt::optional<Binding> binding;
+		rt::buffer<FunctionID> users;
+	};
+
+	struct Uniform {
+		SymbolID symbol;
+		TypeID type;
+		rt::optional<Binding> binding;
+		rt::optional<u32> offset;
+		rt::optional<u32> size;
+		rt::optional<u32> alignment;
+	};
+
+	struct StorageObject {
+		SymbolID symbol;
+		TypeID type;
+		address_space space;
+		access_kind access;
+		rt::optional<Binding> binding;
+		rt::optional<ValueID> initializer;
+	};
+
+	struct Module {
+		fn find_type(auto Module& this, TypeID id) -> const[this] Type*;
+		fn find_symbol(auto Module& this, SymbolID id) -> const[this] Symbol*;
+		fn find_function(auto Module& this, FunctionID id) -> const[this] Function*;
+		StringTable strings;
+		StringID name;
+		rt::buffer<Type> types;
+		rt::buffer<Symbol> symbols;
+		rt::buffer<Function> functions;
+		rt::buffer<EntryPoint> entry_points;
+		rt::buffer<Resource> resources;
+		rt::buffer<Uniform> uniforms;
+		rt::buffer<StorageObject> storage_objects;
+	};
+
+	fn Module::find_type(auto Module& this, TypeID id) -> const[this] Type* {
+		for (usize index = 0; index < this.types.size(); @index = index + 1) {
+			if (this.types.data()[index].id == id) {
+				return const_cast<const[this] Type*>(&this.types.data()[index]);
+			};
+		};
+		return nullptr;
+	};
+
+	fn Module::find_symbol(auto Module& this, SymbolID id) -> const[this] Symbol* {
+		for (usize index = 0; index < this.symbols.size(); @index = index + 1) {
+			if (this.symbols.data()[index].id == id) {
+				return const_cast<const[this] Symbol*>(&this.symbols.data()[index]);
+			};
+		};
+		return nullptr;
+	};
+
+	fn Module::find_function(auto Module& this, FunctionID id) -> const[this] Function* {
+		for (usize index = 0; index < this.functions.size(); @index = index + 1) {
+			if (this.functions.data()[index].id == id) {
+				return const_cast<const[this] Function*>(&this.functions.data()[index]);
+			};
+		};
+		return nullptr;
+	};
+};

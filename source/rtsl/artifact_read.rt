@@ -1,0 +1,412 @@
+namespace rtsl {
+	export enum artifact_error_code : [u08] {
+		invalid_argument;
+		invalid_magic;
+		unsupported_version;
+		wrong_endian_marker;
+		invalid_directory;
+		missing_section;
+		duplicate_section;
+		truncated;
+		invalid_count;
+		invalid_enum;
+		invalid_reference;
+		invalid_ir;
+		allocation_failure;
+	};
+
+	export struct artifact_error : [rt::error] {
+		fn description(artifact_error& this) -> rt::string_view : [override] { return this.message; };
+		artifact_error_code code;
+		usize offset;
+		rt::string message;
+	};
+
+	export struct Artifact {
+		artifact_kind kind;
+		ir::Module module;
+	};
+
+	struct BinaryReader {
+		fn BinaryReader(var BinaryReader& this, rt::span<u08> bytes, usize base, u08 patch) {
+			@this.bytes = $bytes;
+			@this.base = base;
+			@this.patch = patch;
+		};
+		fn fail(BinaryReader& this, artifact_error_code code, rt::string_view message) {
+			artifact_error error;
+			@error.code = code;
+			@error.offset = this.base + this.position;
+			@error.message = rt::string(message);
+			throw $error;
+		};
+		fn remaining(BinaryReader& this) -> usize { return this.bytes.size() - this.position; };
+		fn byte(var BinaryReader& this) -> u08 {
+			if (!this.remaining()) { this.fail(artifact_error_code::truncated, "unexpected end of artifact"); };
+			var value = this.bytes.data()[this.position];
+			@this.position = this.position + 1;
+			return value;
+		};
+		fn word(var BinaryReader& this) -> u32 {
+			u32 value = 0;
+			for (u32 shift = 0; shift < 32; @shift = shift + 8) { @value = value + (static_cast<u32>(@this.byte()) << shift); };
+			return value;
+		};
+		fn wide(var BinaryReader& this) -> u64 {
+			u64 value = 0;
+			for (u64 shift = 0; shift < 64; @shift = shift + 8) { @value = value + (static_cast<u64>(@this.byte()) << shift); };
+			return value;
+		};
+		fn flag(var BinaryReader& this) -> bool {
+			var value = @this.byte();
+			if (value > 1) { this.fail(artifact_error_code::invalid_enum, "boolean encoding is not zero or one"); };
+			return value != 0;
+		};
+		fn enumeration(var BinaryReader& this, u32 maximum) -> u32 {
+			var value = @this.word();
+			if (value > maximum) { this.fail(artifact_error_code::invalid_enum, "enum value is outside the supported range"); };
+			return value;
+		};
+		fn count(var BinaryReader& this) -> usize {
+			var value = @this.word();
+			if (value > 16777216) { this.fail(artifact_error_code::invalid_count, "record count exceeds the artifact limit"); };
+			return static_cast<usize>(value);
+		};
+		fn records(var BinaryReader& this) -> usize {
+			var value = @this.count();
+			if (value > this.remaining()) { this.fail(artifact_error_code::truncated, "record count exceeds its section"); };
+			return value;
+		};
+		fn words(var BinaryReader& this) -> rt::buffer<u32> {
+			var count = @this.count();
+			if (count > this.remaining() / 4) { this.fail(artifact_error_code::truncated, "word array exceeds its section"); };
+			rt::buffer<u32> values;
+			@values.reserve(count);
+			for (usize i = 0; i < count; @i = i + 1) { @values.push_back(@this.word()); };
+			return $values;
+		};
+		fn optional_word(var BinaryReader& this) -> rt::optional<u32> {
+			if (@this.flag()) { return rt::optional<u32>(@this.word()); };
+			return rt::optional<u32>();
+		};
+		fn binding(var BinaryReader& this) -> rt::optional<ir::Binding> {
+			if (!@this.flag()) { return rt::optional<ir::Binding>(); };
+			ir::Binding value;
+			@value.set = @this.word();
+			@value.binding = @this.word();
+			return rt::optional<ir::Binding>($value);
+		};
+		fn finish(BinaryReader& this) {
+			if (this.remaining()) { this.fail(artifact_error_code::invalid_count, "section contains trailing bytes"); };
+		};
+		rt::span<u08> bytes = rt::span<u08>(nullptr, 0);
+		usize base;
+		usize position;
+		u08 patch;
+	};
+
+	fn read_terminator(var BinaryReader& reader) -> ir::Terminator {
+		ir::Terminator value;
+		@value.kind = static_cast<ir::terminator_kind>(@reader.enumeration(static_cast<u32>(ir::terminator_kind::unreachable)));
+		@value.operands = @reader.words();
+		var count = @reader.records();
+		for (usize i = 0; i < count; @i = i + 1) {
+			ir::Successor successor;
+			@successor.block = @reader.word();
+			@successor.arguments = @reader.words();
+			@value.successors.push_back($successor);
+		};
+		@value.immediates = @reader.words();
+		return $value;
+	};
+
+	fn read_types(var BinaryReader& reader, var ir::Module& module) {
+		var count = @reader.records();
+		for (usize i = 0; i < count; @i = i + 1) {
+			ir::Type value;
+			@value.id = @reader.word();
+			@value.kind = static_cast<ir::type_kind>(@reader.enumeration(static_cast<u32>(ir::type_kind::primitive)));
+			@value.bit_width = @reader.word();
+			@value.element_type = @reader.word();
+			@value.element_count = @reader.word();
+			@value.space = static_cast<ir::address_space>(@reader.enumeration(static_cast<u32>(ir::address_space::resource)));
+			@value.parameter_types = @reader.words();
+			var members = @reader.records();
+			for (usize j = 0; j < members; @j = j + 1) {
+				ir::StructMember member;
+				@member.name = @reader.word();
+				@member.type = @reader.word();
+				@member.offset = @reader.optional_word();
+				@member.alignment = @reader.optional_word();
+				@value.members.push_back($member);
+			};
+			if (reader.patch >= 5) {
+				var builtins = @reader.records();
+				for (usize j = 0; j < builtins; @j = j + 1) {
+					ir::BuiltinMember member;
+					@member.kind = static_cast<ir::builtin>(@reader.enumeration(static_cast<u32>(ir::builtin::position)));
+					@member.member_path = @reader.words();
+					@value.builtin_members.push_back($member);
+				};
+			};
+			@value.name = @reader.word();
+			@module.types.push_back($value);
+		};
+	};
+
+	fn read_functions(var BinaryReader& reader, var ir::Module& module) {
+		var count = @reader.records();
+		for (usize i = 0; i < count; @i = i + 1) {
+			ir::Function function;
+			@function.id = @reader.word();
+			@function.symbol = @reader.word();
+			@function.return_type = @reader.word();
+			@function.declaration = @reader.flag();
+			if (reader.patch >= 2) { @function.implicit_emitter = @reader.flag(); };
+			if (reader.patch >= 6) { @function.implicit_decl = @reader.flag(); };
+			var parameters = @reader.records();
+			for (usize j = 0; j < parameters; @j = j + 1) {
+				ir::Parameter parameter;
+				@parameter.value = @reader.word();
+				@parameter.type = @reader.word();
+				@parameter.symbol = @reader.word();
+				if (reader.patch >= 7 && @reader.flag()) { @parameter.kind = rt::optional<ir::builtin>(static_cast<ir::builtin>(@reader.enumeration(static_cast<u32>(ir::builtin::global_invocation_z)))); };
+				@function.parameters.push_back($parameter);
+			};
+			var blocks = @reader.records();
+			for (usize j = 0; j < blocks; @j = j + 1) {
+				ir::Block block;
+				@block.id = @reader.word();
+				var arguments = @reader.records();
+				for (usize k = 0; k < arguments; @k = k + 1) {
+					ir::BlockArgument argument;
+					@argument.value = @reader.word();
+					@argument.type = @reader.word();
+					@block.arguments.push_back($argument);
+				};
+				var instructions = @reader.records();
+				for (usize k = 0; k < instructions; @k = k + 1) {
+					ir::Instruction instruction;
+					@instruction.operation = static_cast<ir::opcode>(@reader.enumeration(static_cast<u32>(ir::opcode::clamp)));
+					@instruction.result = @reader.word();
+					@instruction.type = @reader.word();
+					@instruction.callee = @reader.word();
+					@instruction.operands = @reader.words();
+					@instruction.immediates = @reader.words();
+					@block.instructions.push_back($instruction);
+				};
+				if (@reader.flag()) { @block.terminator = rt::optional<ir::Terminator>(read_terminator(@reader)); };
+				@block.merge.kind = static_cast<ir::merge_kind>(@reader.enumeration(static_cast<u32>(ir::merge_kind::loop)));
+				@block.merge.merge_block = @reader.word();
+				@block.merge.continue_block = @reader.word();
+				@function.blocks.push_back($block);
+			};
+			@module.functions.push_back($function);
+		};
+	};
+
+	fn read_entries(var BinaryReader& reader, var ir::Module& module) {
+		var count = @reader.records();
+		for (usize i = 0; i < count; @i = i + 1) {
+			ir::EntryPoint entry;
+			@entry.symbol = @reader.word();
+			@entry.function = @reader.word();
+			@entry.source_name = @reader.word();
+			@entry.kind = static_cast<ir::stage>(@reader.enumeration(static_cast<u32>(ir::stage::compute)));
+			var configuration = @reader.byte();
+			if (configuration == 1) {
+				ir::TessellationControlConfiguration value;
+				@value.output_control_points = @reader.word();
+				@entry.configuration = $value;
+			} else if (configuration == 2) {
+				ir::TessellationEvaluationConfiguration value;
+				@value.domain = static_cast<ir::tessellation_domain>(@reader.enumeration(static_cast<u32>(ir::tessellation_domain::isolines)));
+				@value.spacing = static_cast<ir::tessellation_spacing>(@reader.enumeration(static_cast<u32>(ir::tessellation_spacing::fractional_odd)));
+				@value.order = static_cast<ir::winding>(@reader.enumeration(static_cast<u32>(ir::winding::counter_clockwise)));
+				@entry.configuration = $value;
+			} else if (configuration == 3) {
+				ir::GeometryConfiguration value;
+				@value.input = static_cast<ir::primitive_topology>(@reader.enumeration(static_cast<u32>(ir::primitive_topology::triangle_strip)));
+				@value.output = static_cast<ir::primitive_topology>(@reader.enumeration(static_cast<u32>(ir::primitive_topology::triangle_strip)));
+				@value.maximum_vertices = @reader.word();
+				@value.invocations = @reader.word();
+				@entry.configuration = $value;
+			} else if (configuration == 4) {
+				ir::ComputeConfiguration value;
+				for (usize j = 0; j < 3; @j = j + 1) { @value.workgroup_size[j] = @reader.word(); };
+				@entry.configuration = $value;
+			} else if (configuration != 0) { reader.fail(artifact_error_code::invalid_enum, "unknown stage configuration variant"); };
+			if (reader.patch >= 4) {
+				var attributes = @reader.records();
+				for (usize j = 0; j < attributes; @j = j + 1) {
+					ir::EntryAttribute attribute;
+					@attribute.name = @reader.word();
+					@attribute.tokens = @reader.words();
+					@entry.attributes.push_back($attribute);
+				};
+			};
+			var contracts = @reader.records();
+			for (usize j = 0; j < contracts; @j = j + 1) {
+				ir::InterfaceContract contract;
+				@contract.parameter_index = @reader.word();
+				@contract.member_path = @reader.words();
+				@contract.contract = @reader.word();
+				@entry.parameter_contracts.push_back($contract);
+			};
+			@module.entry_points.push_back($entry);
+		};
+	};
+
+	fn read_section(var BinaryReader& reader, u32 kind, var ir::Module& module) {
+		if (kind == 1) {
+			var count = @reader.records();
+			for (usize i = 0; i < count; @i = i + 1) {
+				var size = @reader.count();
+				if (size > reader.remaining()) { reader.fail(artifact_error_code::truncated, "string exceeds its section"); };
+				var spelling = rt::string_view(reinterpret_cast<char*>(reader.bytes.data() + reader.position), size);
+				if ((@module.strings).intern(spelling) != static_cast<u32>(i + 1)) { reader.fail(artifact_error_code::invalid_reference, "string table contains duplicate records"); };
+				@reader.position = reader.position + size;
+			};
+		} else if (kind == 2) { @module.name = @reader.word(); }
+		else if (kind == 3) { read_types(@reader, @module); }
+		else if (kind == 4) {
+			var count = @reader.records();
+			for (usize i = 0; i < count; @i = i + 1) {
+				ir::Symbol value;
+				@value.id = @reader.word();
+				@value.name = @reader.word();
+				if (reader.patch >= 3) { @value.exported = @reader.flag(); };
+				@module.symbols.push_back($value);
+			};
+		} else if (kind == 5) { read_functions(@reader, @module); }
+		else if (kind == 6) { read_entries(@reader, @module); }
+		else if (kind == 7) {
+			var count = @reader.records();
+			for (usize i = 0; i < count; @i = i + 1) {
+				ir::Resource value;
+				@value.symbol = @reader.word();
+				@value.kind = static_cast<ir::resource_kind>(@reader.enumeration(static_cast<u32>(ir::resource_kind::input_attachment)));
+				@value.type = @reader.word();
+				@value.access = static_cast<ir::access_kind>(@reader.enumeration(static_cast<u32>(ir::access_kind::read_write)));
+				@value.binding = @reader.binding();
+				@value.users = @reader.words();
+				@module.resources.push_back($value);
+			};
+		} else if (kind == 8) {
+			var count = @reader.records();
+			for (usize i = 0; i < count; @i = i + 1) {
+				ir::Uniform value;
+				@value.symbol = @reader.word();
+				@value.type = @reader.word();
+				@value.binding = @reader.binding();
+				@value.offset = @reader.optional_word();
+				@value.size = @reader.optional_word();
+				@value.alignment = @reader.optional_word();
+				@module.uniforms.push_back($value);
+			};
+		} else if (kind == 9) {
+			var count = @reader.records();
+			for (usize i = 0; i < count; @i = i + 1) {
+				ir::StorageObject value;
+				@value.symbol = @reader.word();
+				@value.type = @reader.word();
+				@value.space = static_cast<ir::address_space>(@reader.enumeration(static_cast<u32>(ir::address_space::resource)));
+				@value.access = static_cast<ir::access_kind>(@reader.enumeration(static_cast<u32>(ir::access_kind::read_write)));
+				@value.binding = @reader.binding();
+				@value.initializer = @reader.optional_word();
+				@module.storage_objects.push_back($value);
+			};
+		};
+		reader.finish();
+	};
+
+	fn artifact_string(ir::Module& module, u32 id, BinaryReader& reader) {
+		if (static_cast<usize>(id) > module.strings.values.size()) { reader.fail(artifact_error_code::invalid_reference, "string id is outside the string table"); };
+	};
+
+	fn artifact_strings(ir::Module& module, BinaryReader& reader) {
+		artifact_string(module, module.name, reader);
+		for (usize i = 0; i < module.types.size(); @i = i + 1) {
+			var type = &module.types.data()[i];
+			artifact_string(module, type->name, reader);
+			for (usize j = 0; j < type->members.size(); @j = j + 1) { artifact_string(module, type->members.data()[j].name, reader); };
+		};
+		for (usize i = 0; i < module.symbols.size(); @i = i + 1) { artifact_string(module, module.symbols.data()[i].name, reader); };
+		for (usize i = 0; i < module.entry_points.size(); @i = i + 1) {
+			var entry = &module.entry_points.data()[i];
+			artifact_string(module, entry->source_name, reader);
+			for (usize j = 0; j < entry->attributes.size(); @j = j + 1) {
+				var attribute = &entry->attributes.data()[j];
+				artifact_string(module, attribute->name, reader);
+				for (usize k = 0; k < attribute->tokens.size(); @k = k + 1) { artifact_string(module, attribute->tokens.data()[k], reader); };
+			};
+			for (usize j = 0; j < entry->parameter_contracts.size(); @j = j + 1) {
+				var contract = &entry->parameter_contracts.data()[j];
+				artifact_string(module, contract->contract, reader);
+				for (usize k = 0; k < contract->member_path.size(); @k = k + 1) { artifact_string(module, contract->member_path.data()[k], reader); };
+			};
+		};
+	};
+
+	struct ArtifactSection { u32 kind; usize offset; usize size; };
+
+	fn decode_artifact(rt::span<u08> bytes) -> Artifact {
+		var reader = BinaryReader(bytes, 0, 7);
+		var rt::string_view magic = "RTSLRTIR";
+		for (usize i = 0; i < 8; @i = i + 1) {
+			if (@reader.byte() != static_cast<u08>(magic.data()[i])) { reader.fail(artifact_error_code::invalid_magic, "artifact magic does not identify RTIR"); };
+		};
+		u32 major = static_cast<u32>(@reader.byte()) + (static_cast<u32>(@reader.byte()) << 8);
+		u32 minor = static_cast<u32>(@reader.byte()) + (static_cast<u32>(@reader.byte()) << 8);
+		var endian = @reader.word();
+		var kind = @reader.byte();
+		var patch = @reader.byte();
+		var reserved_a = @reader.byte();
+		var reserved_b = @reader.byte();
+		var count = @reader.word();
+		if (major || minor != 1 || patch > 7) { reader.fail(artifact_error_code::unsupported_version, "artifact version is not supported"); };
+		if (endian != 16909060) { reader.fail(artifact_error_code::wrong_endian_marker, "artifact endian marker is invalid"); };
+		if (kind > 2) { reader.fail(artifact_error_code::invalid_enum, "artifact kind is invalid"); };
+		if (reserved_a || reserved_b || count != 9 || bytes.size() < 240) { reader.fail(artifact_error_code::invalid_directory, "artifact must contain the complete RTIR section set"); };
+		ArtifactSection[9] sections;
+		for (usize i = 0; i < 9; @i = i + 1) {
+			var section_kind = @reader.word();
+			var reserved = @reader.word();
+			var offset = @reader.wide();
+			var size = @reader.wide();
+			if (!section_kind || section_kind > 9 || reserved) { reader.fail(artifact_error_code::invalid_directory, "section kind or reserved field is invalid"); };
+			var index = static_cast<usize>(section_kind - 1);
+			if (sections[index].kind) { reader.fail(artifact_error_code::duplicate_section, "section kind appears more than once"); };
+			if (offset < 240 || offset > static_cast<u64>(bytes.size()) || size > static_cast<u64>(bytes.size()) - offset) { reader.fail(artifact_error_code::invalid_directory, "section range lies outside the artifact"); };
+			@sections[index].kind = section_kind;
+			@sections[index].offset = static_cast<usize>(offset);
+			@sections[index].size = static_cast<usize>(size);
+		};
+		for (usize i = 0; i < 9; @i = i + 1) {
+			for (usize j = i + 1; j < 9; @j = j + 1) {
+				if (sections[i].offset < sections[j].offset + sections[j].size && sections[j].offset < sections[i].offset + sections[i].size) { reader.fail(artifact_error_code::invalid_directory, "section ranges overlap"); };
+			};
+		};
+		Artifact artifact;
+		@artifact.kind = static_cast<artifact_kind>(kind);
+		for (usize i = 0; i < 9; @i = i + 1) {
+			var section = BinaryReader(rt::span<u08>(bytes.data() + sections[i].offset, sections[i].size), sections[i].offset, patch);
+			read_section(@section, sections[i].kind, @artifact.module);
+		};
+		artifact_strings(artifact.module, reader);
+		DiagnosticsEngine diagnostics;
+		if (!verify_module(artifact.module, @diagnostics)) { reader.fail(artifact_error_code::invalid_ir, diagnostics.diagnostics().data()[0].message); };
+		return $artifact;
+	};
+
+	export fn read_artifact(rt::span<u08> bytes) -> Artifact | artifact_error {
+		try { return decode_artifact(bytes); }
+		catch (artifact_error error) { return $error; }
+		catch (rt::allocation_error error) {
+			artifact_error failure;
+			@failure.code = artifact_error_code::allocation_failure;
+			@failure.message = rt::string("allocation failed while reading RTIR");
+			return $failure;
+		};
+	};
+};

@@ -1,0 +1,276 @@
+namespace rtsl::lsp {
+	fn declaration_at(ASTContext& context, rt::string_view uri, usize offset) -> u32 {
+		for (usize index = 0; index < context.declarations.size(); @index = index + 1) {
+			Token& name = context.declarations.data()[index].name;
+			if (name.source && name.source->path() == uri && offset >= name.begin && offset < name.begin + name.length) {
+				return static_cast<u32>(index + 1);
+			};
+		};
+		for (usize index = 0; index < context.expressions.size(); @index = index + 1) {
+			Expr& expression = context.expressions.data()[index];
+			Token& token = expression.location;
+			if (token.source && token.source->path() == uri && offset >= token.begin && offset < token.begin + token.length && expression.declaration) {
+				return expression.declaration;
+			};
+		};
+		for (usize index = 0; index < context.types.size(); @index = index + 1) {
+			Token& name = context.types.data()[index].name;
+			if (!name.source || name.source->path() != uri || offset < name.begin || offset >= name.begin + name.length) { continue; };
+			for (usize candidate = 0; candidate < context.declarations.size(); @candidate = candidate + 1) {
+				Decl& declaration = context.declarations.data()[candidate];
+				if ((declaration.kind == decl_kind::record || declaration.kind == decl_kind::type_alias) && declaration.name.same(name)) { return static_cast<u32>(candidate + 1); };
+			};
+		};
+		return 0;
+	};
+
+	fn type_name(ASTContext& context, QualType value, usize depth) -> rt::string {
+		if (!value.type || depth > 64) { return rt::string("void"); };
+		Type& type = *context.type_at(value.type);
+		rt::string result;
+		if (value.constant) { @result.append("const "); };
+		if (type.kind == type_kind::builtin) {
+			if (type.builtin == builtin_type::void_type) { @result.append("void"); }
+			else if (type.builtin == builtin_type::boolean) { @result.append("bool"); }
+			else if (type.builtin == builtin_type::signed_integer) { @result.append("i32"); }
+			else if (type.builtin == builtin_type::unsigned_integer) { @result.append("u32"); }
+			else if (type.builtin == builtin_type::size) { @result.append("usize"); }
+			else { @result.append("f32"); };
+		}
+		else if (type.kind == type_kind::pointer || type.kind == type_kind::reference) {
+			@result.append(type_name(context, type.pointee, depth + 1));
+			if (type.kind == type_kind::pointer) { @result.append("*"); }
+			else { @result.append("&"); };
+		}
+		else {
+			@result.append(type.name.text());
+			if (type.kind == type_kind::specialization) {
+				@result.append("<");
+				for (usize index = 0; index < type.arguments.size(); @index = index + 1) {
+					if (index) { @result.append(", "); };
+					TemplateArgument& argument = type.arguments.data()[index];
+					if (argument.kind == template_argument_kind::integer) { cli_number(@result, static_cast<usize>(argument.integer)); }
+					else { @result.append(type_name(context, argument.type, depth + 1)); };
+				};
+				@result.append(">");
+			};
+		};
+		return $result;
+	};
+
+	fn label(ASTContext& context, Decl& declaration) -> rt::string {
+		rt::string result;
+		if (declaration.kind == decl_kind::record) { @result.append("struct "); }
+		else if (declaration.kind == decl_kind::type_alias) { @result.append("using "); }
+		else if (declaration.kind == decl_kind::function) { @result.append("fn "); }
+		else { @result.append(type_name(context, declaration.type, 0)); @result.append(" "); };
+		@result.append(declaration.name.text());
+		if (declaration.kind == decl_kind::function) {
+			if (declaration.template_arguments.size()) {
+				@result.append("<");
+				for (usize index = 0; index < declaration.template_arguments.size(); @index = index + 1) {
+					if (index) { @result.append(", "); };
+					TemplateArgument& argument = declaration.template_arguments.data()[index];
+					if (argument.kind == template_argument_kind::integer) { cli_number(@result, static_cast<usize>(argument.integer)); }
+					else { @result.append(type_name(context, argument.type, 0)); };
+				};
+				@result.append(">");
+			};
+			@result.append("(");
+			for (usize index = 0; index < declaration.members.size(); @index = index + 1) {
+				if (index) { @result.append(", "); };
+				Decl& parameter = *context.decl_at(declaration.members.data()[index]);
+				@result.append(type_name(context, parameter.type, 0));
+				@result.append(" ");
+				@result.append(parameter.name.text());
+			};
+			@result.append(")");
+			if (declaration.type.type) { @result.append(" -> "); @result.append(type_name(context, declaration.type, 0)); };
+		};
+		return $result;
+	};
+
+	fn hover(Document& document, usize offset) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		u32 target = declaration_at(context, document.uri, offset);
+		if (!target) { return rt::string("null"); };
+		return rt::string("{\"contents\":{\"kind\":\"plaintext\",\"value\":") + quote(label(context, *context.decl_at(target))) + "}}";
+	};
+
+	fn location(Document& document, Token& token) -> rt::string {
+		return rt::string("{\"uri\":") + quote(source_uri(document, token)) + ",\"range\":" + range(token) + "}";
+	};
+
+	fn definition(Document& document, usize offset) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		u32 target = declaration_at(context, document.uri, offset);
+		if (!target) { return rt::string("null"); };
+		return location(document, context.decl_at(target)->name);
+	};
+
+	fn references(Document& document, usize offset, bool declaration) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		u32 target = declaration_at(context, document.uri, offset);
+		rt::string result = rt::string("[");
+		bool previous = false;
+		if (target && declaration) { @result.append(location(document, context.decl_at(target)->name)); @previous = true; };
+		for (usize index = 0; target && index < context.expressions.size(); @index = index + 1) {
+			Expr& expression = context.expressions.data()[index];
+			if (expression.declaration != target) { continue; };
+			if (expression.kind == expr_kind::call || expression.location.kind != token_kind::identifier) { continue; };
+			if (previous) { @result.append(","); };
+			@previous = true;
+			@result.append(location(document, expression.location));
+		};
+		@result.append("]");
+		return $result;
+	};
+
+	fn symbol_kind(decl_kind kind) -> usize {
+		if (kind == decl_kind::function) { return 12; };
+		if (kind == decl_kind::record) { return 23; };
+		if (kind == decl_kind::field) { return 8; };
+		if (kind == decl_kind::type_alias) { return 26; };
+		return 13;
+	};
+
+	fn symbols(Document& document) -> rt::string {
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		rt::string result = rt::string("[");
+		bool previous = false;
+		for (usize index = 0; index < context.declarations.size(); @index = index + 1) {
+			Decl& declaration = context.declarations.data()[index];
+			if (!declaration.name.source || declaration.name.source->path() != document.uri || declaration.kind == decl_kind::parameter || declaration.kind == decl_kind::import) { continue; };
+			if (previous) { @result.append(","); };
+			@previous = true;
+			@result.append("{\"name\":");
+			@result.append(quote(declaration.name.text()));
+			@result.append(",\"kind\":");
+			cli_number(@result, symbol_kind(declaration.kind));
+			@result.append(",\"location\":");
+			@result.append(location(document, declaration.name));
+			@result.append("}");
+		};
+		@result.append("]");
+		return $result;
+	};
+
+	fn identifier_character(char value) -> bool {
+		return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '_';
+	};
+
+	fn prefix_match(rt::string_view name, rt::string_view prefix) -> bool {
+		if (prefix.size() > name.size()) { return false; };
+		for (usize index = 0; index < prefix.size(); @index = index + 1) {
+			char left = name.data()[index];
+			char right = prefix.data()[index];
+			if (left >= 'A' && left <= 'Z') { @left = static_cast<char>(left - 'A' + 'a'); };
+			if (right >= 'A' && right <= 'Z') { @right = static_cast<char>(right - 'A' + 'a'); };
+			if (left != right) { return false; };
+		};
+		return true;
+	};
+
+	fn completions(Document& document, usize offset) -> rt::string {
+		if (offset > document.text.size()) { @offset = document.text.size(); };
+		usize begin = offset;
+		while (begin && identifier_character(document.text.data()[begin - 1])) { @begin = begin - 1; };
+		var prefix = document.text.view().slice(begin, offset - begin);
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		rt::string result = rt::string("{\"isIncomplete\":false,\"items\":[");
+		rt::buffer<rt::string_view> emitted;
+		for (usize index = 0; index < context.declarations.size(); @index = index + 1) {
+			Decl& declaration = context.declarations.data()[index];
+			var name = declaration.name.text();
+			if (name.empty() || !prefix_match(name, prefix) || declaration.kind == decl_kind::scope || declaration.kind == decl_kind::import || declaration.kind == decl_kind::translation_unit) { continue; };
+			bool duplicate = false;
+			for (usize previous = 0; previous < emitted.size(); @previous = previous + 1) { if (emitted.data()[previous] == name) { @duplicate = true; }; };
+			if (duplicate) { continue; };
+			if (emitted.size()) { @result.append(","); };
+			@emitted.push_back(name);
+			@result.append("{\"label\":");
+			@result.append(quote(name));
+			@result.append(",\"kind\":");
+			if (declaration.kind == decl_kind::function) { @result.append("3"); }
+			else if (declaration.kind == decl_kind::record || declaration.kind == decl_kind::type_alias) { @result.append("7"); }
+			else { @result.append("6"); };
+			@result.append(",\"detail\":");
+			@result.append(quote(label(context, declaration)));
+			@result.append("}");
+		};
+		for (i32 keyword = static_cast<i32>(token_kind::kw_fn); keyword <= static_cast<i32>(token_kind::kw_sizeof); @keyword = keyword + 1) {
+			var name = Lexer::keyword_spelling(static_cast<token_kind>(keyword));
+			if (name.empty() || !prefix_match(name, prefix)) { continue; };
+			if (emitted.size()) { @result.append(","); };
+			@emitted.push_back(name);
+			@result.append("{\"label\":");
+			@result.append(quote(name));
+			@result.append(",\"kind\":14}");
+		};
+		@result.append("]}");
+		return $result;
+	};
+
+	fn signature_help(Document& document, usize offset) -> rt::string {
+		SourceFile source;
+		@source.assign(document.uri, document.text);
+		var lexer = Lexer(@source);
+		discard @lexer.scan();
+		rt::buffer<Token>& tokens = source.tokens();
+		usize cursor = 0;
+		while (cursor < tokens.size() && tokens.data()[cursor].begin < offset) { @cursor = cursor + 1; };
+		usize nesting = 0;
+		usize parameter = 0;
+		rt::string_view name;
+		while (cursor) {
+			@cursor = cursor - 1;
+			token_kind kind = tokens.data()[cursor].kind;
+			if (kind == token_kind::punct_right_paren) { @nesting = nesting + 1; }
+			else if (kind == token_kind::punct_left_paren) {
+				if (!nesting) {
+					usize function = cursor;
+					usize angles = 0;
+					while (function) {
+						@function = function - 1;
+						var part = tokens.data()[function].kind;
+						if (part == token_kind::op_greater) { @angles = angles + 1; }
+						else if (part == token_kind::op_shift_right) { @angles = angles + 2; }
+						else if (part == token_kind::op_less && angles) { @angles = angles - 1; }
+						else if (!angles) { @name = tokens.data()[function].text(); break; };
+					};
+					break;
+				};
+				@nesting = nesting - 1;
+			}
+			else if (!nesting && kind == token_kind::punct_comma) { @parameter = parameter + 1; };
+		};
+		CompilerInstance compiler;
+		prepare(@compiler, document);
+		ASTContext& context = compiler.context();
+		rt::string result = rt::string("{\"signatures\":[");
+		bool previous = false;
+		for (usize index = 0; !name.empty() && index < context.declarations.size(); @index = index + 1) {
+			Decl& declaration = context.declarations.data()[index];
+			if (declaration.kind != decl_kind::function || declaration.name.text() != name) { continue; };
+			if (previous) { @result.append(","); };
+			@previous = true;
+			@result.append("{\"label\":");
+			@result.append(quote(label(context, declaration)));
+			@result.append("}");
+		};
+		@result.append("],\"activeSignature\":0,\"activeParameter\":");
+		cli_number(@result, parameter);
+		@result.append("}");
+		return $result;
+	};
+};

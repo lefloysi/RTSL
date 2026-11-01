@@ -1,0 +1,256 @@
+namespace rtsl {
+	export enum type_kind : [u08] {
+		builtin;
+		named;
+		template_parameter;
+		specialization;
+		pointer;
+		reference;
+	};
+
+	export enum builtin_type : [u08] {
+		void_type;
+		boolean;
+		signed_integer;
+		unsigned_integer;
+		size;
+		floating;
+	};
+
+	export struct QualType {
+		u32 type;
+		bool constant;
+	};
+
+	export enum template_argument_kind : [u08] {
+		type;
+		integer;
+		parameter;
+	};
+
+	export struct TemplateArgument {
+		template_argument_kind kind;
+		QualType type;
+		u32 integer;
+		Token parameter;
+	};
+
+	export struct Type {
+		type_kind kind;
+		Token name;
+		builtin_type builtin;
+		QualType pointee;
+		u32 declaration;
+		rt::buffer<TemplateArgument> arguments;
+	};
+
+	export struct Attribute {
+		Token name;
+		rt::buffer<Token> arguments;
+	};
+
+	export enum template_constraint : [u08] {
+		none;
+		true_value;
+		false_value;
+	};
+
+	export struct TemplateParameter {
+		Token name;
+		QualType type;
+		bool is_type;
+		template_constraint constraint;
+	};
+
+	export enum decl_kind : [u08] {
+		translation_unit;
+		scope;
+		import;
+		record;
+		field;
+		variable;
+		parameter;
+		function;
+		type_alias;
+	};
+
+	export enum storage_class : [u08] {
+		ordinary;
+		uniform;
+		storage;
+	};
+
+	export enum import_kind : [u08] {
+		file;
+		library;
+	};
+
+	export struct ParameterContract {
+		u32 parameter;
+		rt::buffer<Token> member_path;
+		Token contract;
+	};
+
+	export struct Decl {
+		decl_kind kind;
+		Token name;
+		var SourceFile* source;
+		usize source_begin;
+		usize source_end;
+		u32 parent;
+		QualType type;
+		QualType base;
+		QualType receiver_type;
+		rt::buffer<u32> members;
+		rt::buffer<Attribute> attributes;
+		rt::buffer<TemplateParameter> parameters;
+		rt::buffer<TemplateArgument> template_arguments;
+		rt::buffer<QualType> type_only_parameters;
+		rt::buffer<ParameterContract> contracts;
+		storage_class storage;
+		import_kind import_type;
+		bool exported;
+		bool internal;
+		bool complete;
+		bool builtin_position;
+		bool implicit_decl;
+		bool implicit_emitter;
+		bool implicit_object;
+		u32 initializer;
+		u32 template_pattern;
+		u32 redeclaration;
+		u32 body;
+	};
+
+	export enum expr_kind : [u08] {
+		type;
+		declaration;
+		emitter;
+		integer;
+		floating;
+		unary;
+		binary;
+		member;
+		subscript;
+		call;
+		construct;
+	};
+
+	export struct Expr {
+		expr_kind kind;
+		Token location;
+		QualType type;
+		token_kind opcode;
+		u32 declaration;
+		u32 left;
+		u32 right;
+		rt::buffer<u32> arguments;
+		rt::buffer<TemplateArgument> template_arguments;
+		u64 integer;
+		f64 floating;
+	};
+
+	export enum stmt_kind : [u08] {
+		compound;
+		declaration;
+		condition;
+		return_value;
+		emission;
+		barrier;
+		expression;
+		while_loop;
+		for_loop;
+		break_loop;
+		continue_loop;
+	};
+
+	export struct Stmt {
+		stmt_kind kind;
+		Token location;
+		u32 scope;
+		rt::buffer<u32> body;
+		u32 declaration;
+		u32 value;
+		u32 then_branch;
+		u32 else_branch;
+		u32 initialization;
+		u32 increment;
+	};
+
+	// IDs are one-based buffer positions. Zero denotes an absent node.
+	// Resolve IDs again after insertion; buffer growth invalidates element pointers.
+	export struct ASTContext {
+		fn identifier(var ASTContext& this, rt::string_view spelling) -> Token;
+		fn add_type(var ASTContext& this, Type value) -> u32;
+		fn add_decl(var ASTContext& this, Decl value) -> u32;
+		fn add_expr(var ASTContext& this, Expr value) -> u32;
+		fn add_stmt(var ASTContext& this, Stmt value) -> u32;
+		fn type_at(auto ASTContext& this, u32 id) -> const[this] Type*;
+		fn decl_at(auto ASTContext& this, u32 id) -> const[this] Decl*;
+		fn expr_at(auto ASTContext& this, u32 id) -> const[this] Expr*;
+		fn stmt_at(auto ASTContext& this, u32 id) -> const[this] Stmt*;
+
+		rt::buffer<Type> types;
+		rt::buffer<Decl> declarations;
+		rt::buffer<Expr> expressions;
+		rt::buffer<Stmt> statements;
+		u32 root;
+		SourceManager generated_names;
+	};
+
+	export fn ASTContext::identifier(var ASTContext& this, rt::string_view spelling) -> Token {
+		Token result;
+		@result.source = @this.generated_names.add("<generated>", spelling);
+		@result.kind = token_kind::identifier;
+		@result.length = spelling.size();
+		return $result;
+	};
+
+	export fn ASTContext::add_type(var ASTContext& this, Type value) -> u32 {
+		@this.types.push_back($value);
+		return static_cast<u32>(this.types.size());
+	};
+
+	export fn ASTContext::add_decl(var ASTContext& this, Decl value) -> u32 {
+		@this.declarations.push_back($value);
+		return static_cast<u32>(this.declarations.size());
+	};
+
+	export fn ASTContext::add_expr(var ASTContext& this, Expr value) -> u32 {
+		@this.expressions.push_back($value);
+		return static_cast<u32>(this.expressions.size());
+	};
+
+	export fn ASTContext::add_stmt(var ASTContext& this, Stmt value) -> u32 {
+		@this.statements.push_back($value);
+		return static_cast<u32>(this.statements.size());
+	};
+
+	export fn ASTContext::type_at(auto ASTContext& this, u32 id) -> const[this] Type* {
+		if (!id || static_cast<usize>(id) > this.types.size()) {
+			return nullptr;
+		};
+		return const_cast<const[this] Type*>(&this.types.data()[static_cast<usize>(id) - 1]);
+	};
+
+	export fn ASTContext::decl_at(auto ASTContext& this, u32 id) -> const[this] Decl* {
+		if (!id || static_cast<usize>(id) > this.declarations.size()) {
+			return nullptr;
+		};
+		return const_cast<const[this] Decl*>(&this.declarations.data()[static_cast<usize>(id) - 1]);
+	};
+
+	export fn ASTContext::expr_at(auto ASTContext& this, u32 id) -> const[this] Expr* {
+		if (!id || static_cast<usize>(id) > this.expressions.size()) {
+			return nullptr;
+		};
+		return const_cast<const[this] Expr*>(&this.expressions.data()[static_cast<usize>(id) - 1]);
+	};
+
+	export fn ASTContext::stmt_at(auto ASTContext& this, u32 id) -> const[this] Stmt* {
+		if (!id || static_cast<usize>(id) > this.statements.size()) {
+			return nullptr;
+		};
+		return const_cast<const[this] Stmt*>(&this.statements.data()[static_cast<usize>(id) - 1]);
+	};
+};

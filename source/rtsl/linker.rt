@@ -1,0 +1,59 @@
+namespace rtsl {
+	fn interface_type(ir::Module& module, u32 id) -> u32 {
+		var type = module.find_type(id);
+		if (!type) { return 0; };
+		if (type->kind == ir::type_kind::pointer || type->kind == ir::type_kind::patch || type->kind == ir::type_kind::primitive) { return interface_type(module, type->element_type); };
+		return id;
+	};
+
+	fn finalize_program(var ir::ModuleBuilder& builder, var DiagnosticsEngine& diagnostics) {
+		var count = builder.module.entry_points.size();
+		for (usize i = 0; i < count; @i = i + 1) {
+			var source_name = builder.module.entry_points.data()[i].source_name;
+			if (builder.module.entry_points.data()[i].kind != ir::stage::tessellation_control) { continue; };
+			var bool found = false;
+			for (usize j = 0; j < builder.module.entry_points.size(); @j = j + 1) {
+				if (builder.module.entry_points.data()[j].source_name == source_name && builder.module.entry_points.data()[j].kind == ir::stage::vertex) { @found = true; };
+			};
+			if (found) { continue; };
+			var control = builder.module.find_function(builder.module.entry_points.data()[i].function);
+			if (!control->parameters.size()) { @diagnostics.report(diagnostic_level::error, Token(), "cannot synthesize vertex stage without a tessellation control input"); continue; };
+			var type = interface_type(builder.module, control->parameters.data()[0].type);
+			var ir::Function function;
+			@function.symbol = @builder.symbol(rt::string("__rtsl_identity_vertex@") + builder.module.strings.get(source_name), false);
+			@function.return_type = type;
+			var ir::Parameter parameter; @parameter.type = type; @parameter.value = @builder.value();
+			var input = parameter.value;
+			@function.parameters.push_back($parameter);
+			var symbol = function.symbol;
+			var function_id = @builder.add_function($function);
+			var block_id = @builder.add_block(function_id);
+			var ir::Terminator terminator; @terminator.kind = ir::terminator_kind::return_value;
+			@terminator.operands.push_back(input);
+			var ir::Block* block = @builder.block(function_id, block_id);
+			@block->terminator = rt::optional<ir::Terminator>($terminator);
+			var ir::EntryPoint entry; @entry.function = function_id; @entry.symbol = symbol; @entry.source_name = source_name; @entry.kind = ir::stage::vertex;
+			@builder.module.entry_points.push_back($entry);
+		};
+		for (usize i = 0; i < builder.module.functions.size(); @i = i + 1) {
+			var function = &builder.module.functions.data()[i];
+			if (function->declaration && !function->implicit_decl) { @diagnostics.report(diagnostic_level::error, Token(), rt::string("function has no linked definition: ") + builder.module.strings.get(builder.module.find_symbol(function->symbol)->name)); };
+		};
+		for (usize i = 0; i < builder.module.entry_points.size(); @i = i + 1) {
+			var entry = &builder.module.entry_points.data()[i];
+			ir::EntryPoint* previous = nullptr;
+			for (usize j = 0; j < builder.module.entry_points.size(); @j = j + 1) {
+				var candidate = &builder.module.entry_points.data()[j];
+				if (candidate->source_name != entry->source_name || j == i) { continue; };
+				if (candidate->kind == entry->kind) { @diagnostics.report(diagnostic_level::error, Token(), "program contains multiple entries for one stage"); };
+				if (candidate->kind == ir::stage::compute || entry->kind == ir::stage::compute || static_cast<u08>(candidate->kind) >= static_cast<u08>(entry->kind)) { continue; };
+				if (!previous || static_cast<u08>(candidate->kind) > static_cast<u08>(previous->kind)) { @previous = candidate; };
+			};
+			if (previous) {
+				var before = builder.module.find_function(previous->function);
+				var after = builder.module.find_function(entry->function);
+				if (!after->parameters.size() || interface_type(builder.module, before->return_type) != interface_type(builder.module, after->parameters.data()[0].type)) { @diagnostics.report(diagnostic_level::error, Token(), "adjacent shader stage interfaces are incompatible"); };
+			};
+		};
+	};
+};

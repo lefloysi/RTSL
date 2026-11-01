@@ -1,0 +1,286 @@
+namespace rtsl {
+	fn CodeGenerator::project_base(var CodeGenerator& this, ir::ValueID value, ir::TypeID destination) -> ir::ValueID {
+		if (this.value_type(value) == destination) { return value; };
+		var target = this.builder.module.find_type(destination);
+		if (!target || target->kind != ir::type_kind::structure) { return value; };
+		var ir::Instruction projection; @projection.operation = ir::opcode::construct; @projection.type = destination;
+		for (usize i = 0; i < target->members.size(); @i = i + 1) {
+			var member = &target->members.data()[i];
+			var ir::Instruction field; @field.operation = ir::opcode::access; @field.type = member->type;
+			@field.operands.push_back(value); @field.immediates.push_back(member->name);
+			@projection.operands.push_back(@this.append_instruction($field));
+		};
+		return @this.append_instruction($projection);
+	};
+
+	fn CodeGenerator::aggregate_base(var CodeGenerator& this, var ir::Instruction& result, u32 id, u32 value) {
+		var record = this.context->decl_at(id);
+		if (record->base.type) { @this.aggregate_base(@result, this.record_type(record->base), value); };
+		for (usize i = 0; i < record->members.size(); @i = i + 1) {
+			var field = this.context->decl_at(record->members.data()[i]);
+			if (field->kind != decl_kind::field) { continue; };
+			var ir::Instruction extract; @extract.operation = ir::opcode::access; @extract.type = @this.lower_type(field->type);
+			@extract.operands.push_back(value); @extract.immediates.push_back(@this.builder.module.strings.intern(field->name.text()));
+			@result.operands.push_back(@this.append_instruction($extract));
+		};
+	};
+
+	fn CodeGenerator::resource(CodeGenerator& this, u32 id) -> ir::SymbolID {
+		var expression = this.context->expr_at(id);
+		if (!expression || expression->kind != expr_kind::declaration || !expression->declaration) { return 0; };
+		return this.globals.data()[expression->declaration];
+	};
+
+	fn CodeGenerator::value_type(CodeGenerator& this, ir::ValueID value) -> ir::TypeID {
+		var function = this.builder.module.find_function(this.current_function);
+		for (usize i = 0; i < function->parameters.size(); @i = i + 1) {
+			if (function->parameters.data()[i].value == value) { return function->parameters.data()[i].type; };
+		};
+		for (usize i = 0; i < function->blocks.size(); @i = i + 1) {
+			var block = &function->blocks.data()[i];
+			for (usize j = 0; j < block->arguments.size(); @j = j + 1) {
+				if (block->arguments.data()[j].value == value) { return block->arguments.data()[j].type; };
+			};
+			for (usize j = 0; j < block->instructions.size(); @j = j + 1) {
+				if (block->instructions.data()[j].result == value) { return block->instructions.data()[j].type; };
+			};
+		};
+		return 0;
+	};
+
+	fn binary_opcode(token_kind kind) -> ir::opcode {
+		if (kind == token_kind::op_plus) { return ir::opcode::add; };
+		if (kind == token_kind::op_minus) { return ir::opcode::subtract; };
+		if (kind == token_kind::op_star) { return ir::opcode::multiply; };
+		if (kind == token_kind::op_slash) { return ir::opcode::divide; };
+		if (kind == token_kind::op_remainder) { return ir::opcode::remainder; };
+		if (kind == token_kind::op_equal) { return ir::opcode::compare_equal; };
+		if (kind == token_kind::op_not_equal) { return ir::opcode::compare_not_equal; };
+		if (kind == token_kind::op_less) { return ir::opcode::compare_less; };
+		if (kind == token_kind::op_less_equal) { return ir::opcode::compare_less_equal; };
+		if (kind == token_kind::op_greater) { return ir::opcode::compare_greater; };
+		if (kind == token_kind::op_greater_equal) { return ir::opcode::compare_greater_equal; };
+		if (kind == token_kind::op_and) { return ir::opcode::logical_and; };
+		if (kind == token_kind::op_or) { return ir::opcode::logical_or; };
+		return ir::opcode::undef;
+	};
+
+	fn CodeGenerator::append_instruction(var CodeGenerator& this, ir::Instruction instruction) -> ir::ValueID {
+		return @this.builder.append(this.current_function, this.current_block, $instruction);
+	};
+
+	fn CodeGenerator::expression(var CodeGenerator& this, u32 id) -> ir::ValueID {
+		var value = this.context->expr_at(id);
+		if (!value) { return 0; };
+		var ir::Instruction instruction;
+		@instruction.type = @this.lower_type(value->type);
+		if (value->kind == expr_kind::emitter) {
+			return this.values.data()[0];
+		} else if (value->kind == expr_kind::integer) {
+			@instruction.operation = ir::opcode::constant_integer;
+			var type = this.builder.module.find_type(instruction.type);
+			if (type && type->kind == ir::type_kind::floating) {
+				@instruction.operation = ir::opcode::constant_floating;
+				var number = static_cast<f32>(value->integer);
+				@instruction.immediates.push_back(*reinterpret_cast<u32*>(&number));
+				return @this.append_instruction($instruction);
+			};
+			if (type && type->kind == ir::type_kind::boolean) { @instruction.operation = ir::opcode::constant_boolean; };
+			@instruction.immediates.push_back(static_cast<u32>(value->integer));
+			if (instruction.operation == ir::opcode::constant_integer) {
+				@instruction.immediates.push_back(static_cast<u32>(value->integer >> 32));
+			};
+		} else if (value->kind == expr_kind::floating) {
+			var type = this.builder.module.find_type(instruction.type);
+			if (type && (type->kind == ir::type_kind::signed_integer || type->kind == ir::type_kind::unsigned_integer)) {
+				@instruction.operation = ir::opcode::constant_integer;
+				var number = static_cast<u64>(value->floating);
+				@instruction.immediates.push_back(static_cast<u32>(number));
+				@instruction.immediates.push_back(static_cast<u32>(number >> 32));
+				return @this.append_instruction($instruction);
+			};
+			@instruction.operation = ir::opcode::constant_floating;
+			var number = static_cast<f32>(value->floating);
+			@instruction.immediates.push_back(*reinterpret_cast<u32*>(&number));
+		} else if (value->kind == expr_kind::declaration) {
+			if (!value->declaration) { @this.diagnose(value->location, "unresolved value reference"); return 0; };
+			if (this.values.data()[value->declaration]) { return this.values.data()[value->declaration]; };
+			var declaration = this.context->decl_at(value->declaration);
+			if (declaration->kind == decl_kind::field && this.current_object) {
+				@instruction.operation = ir::opcode::access;
+				@instruction.operands.push_back(this.current_object);
+				@instruction.immediates.push_back(@this.builder.module.strings.intern(declaration->name.text()));
+				return @this.append_instruction($instruction);
+			};
+			if (declaration->type.constant && declaration->initializer) { return @this.expression(declaration->initializer); };
+			if (declaration->type.constant && !declaration->initializer) {
+				@instruction.operation = ir::opcode::construct;
+				return @this.append_instruction($instruction);
+			};
+			if (!this.globals.data()[value->declaration]) { @this.diagnose(value->location, "use of an uninitialized value"); return 0; };
+			@instruction.operation = ir::opcode::resource_load;
+			@instruction.immediates.push_back(this.globals.data()[value->declaration]);
+		} else if (value->kind == expr_kind::unary) {
+			var operand = @this.expression(value->left);
+			if (!operand) { return 0; };
+			if (value->opcode == token_kind::op_access || value->opcode == token_kind::op_relocate || value->opcode == token_kind::op_plus) { return operand; };
+			if (value->opcode == token_kind::op_minus) { @instruction.operation = ir::opcode::negate; }
+			else if (value->opcode == token_kind::op_bang) { @instruction.operation = ir::opcode::logical_not; }
+			else { @this.diagnose(value->location, "unsupported unary operation"); return 0; };
+			@instruction.operands.push_back(operand);
+		} else if (value->kind == expr_kind::binary) {
+			if (value->opcode == token_kind::op_emit) {
+				@this.current_emitter = this.values.data()[0];
+				if (!this.current_emitter || !value->declaration || !this.functions.data()[value->declaration]) { @this.diagnose(value->location, "emission has no resolved output operator"); return 0; };
+				@instruction.operation = ir::opcode::call;
+				@instruction.callee = this.functions.data()[value->declaration];
+				@instruction.operands.push_back(this.current_emitter);
+				@instruction.operands.push_back(@this.expression(value->right));
+				var result = @this.append_instruction($instruction);
+				@this.current_emitter = result; @(@this.values).data()[0] = result;
+				return result;
+			};
+			if (value->opcode == token_kind::op_assign || value->opcode == token_kind::op_copy) {
+				var target = this.context->expr_at(value->left);
+				if (target->kind == expr_kind::unary && target->opcode == token_kind::op_access) { @target = this.context->expr_at(target->left); };
+				var stored = @this.expression(value->right);
+				if (this.current_constructor && target->kind == expr_kind::member) {
+					var receiver = this.context->expr_at(target->left);
+					if (receiver && receiver->kind == expr_kind::declaration && receiver->location.is("this") && target->declaration) {
+						@(@this.values).data()[target->declaration] = stored;
+						return stored;
+					};
+				};
+				if (target->kind == expr_kind::subscript) {
+					var resource = this.resource(target->left);
+					if (resource) {
+						@instruction.operation = ir::opcode::resource_store; @instruction.type = 0;
+						@instruction.immediates.push_back(resource);
+						for (usize i = 0; i < target->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(target->arguments.data()[i])); };
+						@instruction.operands.push_back(stored);
+						discard @this.append_instruction($instruction);
+						return stored;
+					};
+				};
+				if (target->kind == expr_kind::declaration && !this.globals.data()[target->declaration]) {
+					@(@this.values).data()[target->declaration] = stored;
+					return stored;
+				};
+				@instruction.operation = ir::opcode::store;
+				@instruction.type = 0;
+				@instruction.operands.push_back(@this.expression(value->left));
+				@instruction.operands.push_back(stored);
+				discard @this.append_instruction($instruction);
+				return stored;
+			};
+			@instruction.operation = binary_opcode(value->opcode);
+			if (instruction.operation == ir::opcode::undef) { @this.diagnose(value->location, "unsupported binary operation"); return 0; };
+			@instruction.operands.push_back(@this.expression(value->left));
+			@instruction.operands.push_back(@this.expression(value->right));
+			var type = this.builder.module.find_type(instruction.type);
+			if (type && type->kind == ir::type_kind::vector) {
+				for (usize i = 0; i < instruction.operands.size(); @i = i + 1) {
+					var operand = instruction.operands.data()[i];
+					if (this.value_type(operand) != type->element_type) { continue; };
+					var ir::Instruction splat; @splat.operation = ir::opcode::construct; @splat.type = instruction.type;
+					for (u32 j = 0; j < type->element_count; @j = j + 1) { @splat.operands.push_back(operand); };
+					@(@instruction.operands).data()[i] = @this.append_instruction($splat);
+				};
+			};
+		} else if (value->kind == expr_kind::construct || value->kind == expr_kind::call) {
+			@instruction.operation = ir::opcode::construct;
+			if (value->kind == expr_kind::construct && value->declaration) {
+				@instruction.operation = ir::opcode::call;
+				@instruction.callee = this.functions.data()[value->declaration];
+				if (!instruction.callee) { @this.diagnose(value->location, "constructor has no instantiated function"); return 0; };
+			};
+			if (value->kind == expr_kind::call) {
+				var callee = this.context->expr_at(value->left);
+				var declaration = callee->declaration;
+				var function = this.context->decl_at(declaration);
+				var name = callee->location.text();
+				if (function) { @name = function->name.text(); };
+				if (name == "sqrt" || name == "clamp") {
+					@instruction.operation = ir::opcode::sqrt;
+					if (name == "clamp") { @instruction.operation = ir::opcode::clamp; };
+					for (usize i = 0; i < value->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(value->arguments.data()[i])); };
+					return @this.append_instruction($instruction);
+				};
+				if (name == "sample" || name == "size") {
+					var u32 resource = 0;
+					var usize first = 0;
+					if (callee->kind == expr_kind::member) { @resource = this.resource(callee->left); }
+					else if (value->arguments.size()) { @resource = this.resource(value->arguments.data()[0]); @first = 1; };
+					if (!resource) { @this.diagnose(value->location, "resource intrinsic requires a global resource"); return 0; };
+					@instruction.operation = ir::opcode::resource_sample;
+					if (name == "size") { @instruction.operation = ir::opcode::resource_query; };
+					@instruction.immediates.push_back(resource);
+					for (usize i = first; i < value->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(value->arguments.data()[i])); };
+					return @this.append_instruction($instruction);
+				};
+				if (!declaration || !this.functions.data()[declaration]) { @this.diagnose(value->location, "call has no resolved function"); return 0; };
+				@instruction.operation = ir::opcode::call;
+				@instruction.callee = this.functions.data()[declaration];
+				if (function->implicit_object && callee->kind == expr_kind::member) {
+					var receiver = @this.expression(callee->left);
+					var expected = this.builder.module.find_function(instruction.callee)->parameters.data()[0].type;
+					@instruction.operands.push_back(@this.project_base(receiver, expected));
+				};
+			};
+			var usize first_argument = 0;
+			if (value->kind == expr_kind::construct && !value->declaration) {
+				var record_id = this.record_type(value->type);
+				var record = this.context->decl_at(record_id);
+				if (record && record->base.type) {
+					if (!value->arguments.size()) { @this.diagnose(value->location, "record construction requires its direct base value first"); return 0; };
+					var base = @this.expression(value->arguments.data()[0]);
+					@this.aggregate_base(@instruction, this.record_type(record->base), base);
+					@first_argument = 1;
+				};
+			};
+			for (usize i = first_argument; i < value->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(value->arguments.data()[i])); };
+			if (value->kind == expr_kind::construct && instruction.operands.size() == 1) {
+				var destination = this.builder.module.find_type(instruction.type);
+				if (destination && (destination->kind == ir::type_kind::signed_integer || destination->kind == ir::type_kind::unsigned_integer || destination->kind == ir::type_kind::floating)) { @instruction.operation = ir::opcode::convert; };
+			};
+		} else if (value->kind == expr_kind::member) {
+			if (this.current_constructor && value->declaration) {
+				var receiver = this.context->expr_at(value->left);
+				if (receiver && receiver->kind == expr_kind::declaration && receiver->location.is("this")) {
+					if (!this.values.data()[value->declaration]) { @this.diagnose(value->location, "use of an uninitialized constructor field"); return 0; };
+					return this.values.data()[value->declaration];
+				};
+			};
+			@instruction.operation = ir::opcode::access;
+			var symbol = this.resource(value->left);
+			var u32 base = 0;
+			if (symbol) {
+				var source = this.context->expr_at(value->left);
+				var type = this.context->type_at(source->type.type);
+				if (type && type->name.is("buffer") && type->arguments.size()) {
+					var ir::Instruction header; @header.operation = ir::opcode::resource_load;
+					@header.type = @this.lower_type(type->arguments.data()[0].type);
+					@header.immediates.push_back(symbol); @base = @this.append_instruction($header);
+				};
+			};
+			if (!base) { @base = @this.expression(value->left); };
+			@instruction.operands.push_back(base);
+			@instruction.immediates.push_back(@this.builder.module.strings.intern(value->location.text()));
+		} else if (value->kind == expr_kind::subscript) {
+			var base = this.context->expr_at(value->left);
+			if (base && base->kind == expr_kind::member && base->location.is("outer")) {
+				@instruction.operation = ir::opcode::access;
+				@instruction.immediates.push_back(@this.builder.module.strings.intern("outer"));
+				@instruction.operands.push_back(@this.expression(base->left));
+				for (usize i = 0; i < value->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(value->arguments.data()[i])); };
+				return @this.append_instruction($instruction);
+			};
+			var resource = this.resource(value->left);
+			@instruction.operation = ir::opcode::access;
+			if (resource) { @instruction.operation = ir::opcode::resource_load; @instruction.immediates.push_back(resource); }
+			else { @instruction.operands.push_back(@this.expression(value->left)); };
+			for (usize i = 0; i < value->arguments.size(); @i = i + 1) { @instruction.operands.push_back(@this.expression(value->arguments.data()[i])); };
+		} else { @this.diagnose(value->location, "expression cannot be lowered"); return 0; };
+		return @this.append_instruction($instruction);
+	};
+};

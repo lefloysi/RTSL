@@ -1,3 +1,5 @@
+import <std>;
+
 struct Point {
 	vec3 position;
 	vec4 color;
@@ -6,17 +8,17 @@ struct Point {
 struct Vertex : Position {
 	vec4 color;
 
-	fn Vertex(Point point) : Position(vec4(point.position, 1.0)) {
+	fn Vertex(var Vertex& this, Point point) : Position(vec4(point.position, 1.0)) {
 		color = point.color;
-	}
+	};
 };
 
-@stage : vertex
+[[stage : vertex]]
 fn main(Point point) -> Vertex {
 	return Vertex(point);
-}
+};
 
-@stage : fragment
-fn main(Vertex vertex{ .color : flat }) -> vec4 {
+[[stage : fragment]]
+fn main(Vertex vertex{ .color : flat };) -> vec4 {
 	return vertex.color;
-}
+};
