@@ -1,5 +1,12 @@
 fn "C" rtsl_write(i32 file, void* bytes, u32 count) -> i32;
 fn "C" rtsl_executable_directory() -> char*;
+fn "C" rtslc_cli_reset();
+fn "C" rtslc_cli_add(char* text, usize length);
+fn "C" rtslc_cli_parse() -> i32;
+fn "C" rtslc_cli_value(i32 field, usize index) -> char*;
+fn "C" rtslc_cli_count(i32 field) -> usize;
+fn "C" rtslc_cli_kind() -> i32;
+fn "C" rtslc_cli_emit() -> bool;
 
 namespace rtsl {
 	fn imports_standard_library(rt::string_view text) -> bool {
@@ -31,7 +38,7 @@ namespace rtsl {
 		@compiler.add_source(path, loaded.get<rt::string>(), "std");
 	};
 
-	fn cli_write(i32 destination, rt::string_view text) {
+	export fn cli_write(i32 destination, rt::string_view text) {
 		usize offset = 0;
 		while (offset < text.size()) {
 			usize remaining = text.size() - offset;
@@ -79,60 +86,56 @@ namespace rtsl {
 		return $messages;
 	};
 
-	fn cli_error(rt::string_view text) -> rt::runtime::error {
-		return rt::runtime::error(rt::string("rtslc: ") + text);
+	fn cli_error(rt::string_view text) -> rt::error {
+		rt::string message;
+		@message.append("rtslc: ");
+		@message.append(text);
+		return rt::error(message);
 	};
 
-	fn cli_read_module(rt::string_view path) -> ir::Module {
+	fn diagnostics_error(rt::string messages) -> rt::error {
+		return rt::error(messages);
+	};
+
+	fn cli_read_module(rt::string_view path) -> ir::Module | rt::error {
 		var contents = rt::fs::read(path);
-		if (!contents.has<rt::string>()) { throw cli_error("cannot read binary artifact"); };
+		if (!contents.has<rt::string>()) { return cli_error("cannot read binary artifact"); };
 		rt::string& bytes = contents.get<rt::string>();
 		var input_bytes = rt::span<u08>(reinterpret_cast<u08*>(bytes.data()), bytes.size());
 		var decoded = read_artifact(input_bytes);
-		if (!decoded.has<Artifact>()) { throw cli_error(decoded.get<artifact_error>().message); };
-		if (decoded.get<Artifact>().kind == artifact_kind::program) { throw cli_error("a linked program cannot be used as an object or module input"); };
+		if (!decoded.has<Artifact>()) { return cli_error(decoded.get<artifact_error>().message); };
+		if (decoded.get<Artifact>().kind == artifact_kind::program) { return cli_error("a linked program cannot be used as an object or module input"); };
 		return ir::Module(decoded.get<Artifact>().module);
 	};
 
-	export fn run_cli(rt::span<rt::string_view> arguments) -> rt::runtime::result {
-		rt::string_view standard_directory;
-		rt::string_view output;
-		rt::string_view module;
-		rt::string_view interface_output;
+	export fn run_cli(rt::span<rt::string_view> arguments) -> void | rt::error {
+		rtslc_cli_reset();
+		for (usize index = 0; index < arguments.size(); @index = index + 1) {
+			rtslc_cli_add(arguments.data()[index].data(), arguments.data()[index].size());
+		};
+		i32 parse_status = rtslc_cli_parse();
+		if (parse_status > 0) { return; };
+		if (parse_status < 0) { return cli_error("invalid arguments"); };
+		rt::string_view standard_directory = rt::from_c_string(rtslc_cli_value(0, 0));
+		rt::string_view output = rt::from_c_string(rtslc_cli_value(1, 0));
+		rt::string_view module = rt::from_c_string(rtslc_cli_value(2, 0));
+		rt::string_view interface_output = rt::from_c_string(rtslc_cli_value(3, 0));
 		rt::buffer<rt::string_view> sources;
 		rt::buffer<rt::string_view> libraries;
 		rt::buffer<rt::string_view> interfaces;
-		artifact_kind kind = artifact_kind::program;
-		bool write_binary = false;
-		for (usize index = 0; index < arguments.size(); @index = index + 1) {
-			var argument = rt::string_view(arguments.data()[index]);
-			if (argument == "--help" || argument == "-h") {
-				cli_write(1, "rtslc [sources...] [--source file] [--std directory] [--interface file] [--emit-interface file] [--library artifact|--object artifact] [--module name] [-o output] [--emit-program|--emit-module|--emit-object]\n");
-				return;
-			};
-			if (argument == "--emit-program" || argument == "--emit-module" || argument == "--emit-object") {
-				@write_binary = true;
-				if (argument == "--emit-module") { @kind = artifact_kind::module; }
-				else if (argument == "--emit-object") { @kind = artifact_kind::object; }
-				else { @kind = artifact_kind::program; };
-				continue;
-			};
-			if (argument == "--source" || argument == "--std" || argument == "--interface" || argument == "--emit-interface" || argument == "--library" || argument == "--object" || argument == "--module" || argument == "-m" || argument == "--output" || argument == "-o") {
-				if (index + 1 >= arguments.size()) { return cli_error("option requires a value"); };
-				@index = index + 1;
-				var value = rt::string_view(arguments.data()[index]);
-				if (argument == "--source") { @sources.push_back($value); }
-				else if (argument == "--std") { @standard_directory = $value; }
-				else if (argument == "--interface") { @interfaces.push_back($value); }
-				else if (argument == "--emit-interface") { @interface_output = $value; }
-				else if (argument == "--library" || argument == "--object") { @libraries.push_back($value); }
-				else if (argument == "--module" || argument == "-m") { @module = $value; }
-				else { @output = $value; @write_binary = true; };
-				continue;
-			};
-			if (!argument.empty() && argument.data()[0] == '-') { return cli_error("unknown option"); };
-			@sources.push_back($argument);
+		for (usize index = 0; index < rtslc_cli_count(4); @index = index + 1) {
+			@sources.push_back(rt::from_c_string(rtslc_cli_value(4, index)));
 		};
+		for (usize index = 0; index < rtslc_cli_count(5); @index = index + 1) {
+			@libraries.push_back(rt::from_c_string(rtslc_cli_value(5, index)));
+		};
+		for (usize index = 0; index < rtslc_cli_count(6); @index = index + 1) {
+			@interfaces.push_back(rt::from_c_string(rtslc_cli_value(6, index)));
+		};
+		artifact_kind kind = artifact_kind::program;
+		if (rtslc_cli_kind() == 1) { @kind = artifact_kind::module; };
+		if (rtslc_cli_kind() == 2) { @kind = artifact_kind::object; };
+		bool write_binary = rtslc_cli_emit();
 		if (!sources.size() && !libraries.size()) { return cli_error("an input source or binary artifact is required; use --help"); };
 		if (libraries.size() && !write_binary) { return cli_error("binary artifact linking requires -o/--output"); };
 		if (write_binary && output.empty()) { return cli_error("artifact emission requires -o/--output"); };
@@ -146,7 +149,7 @@ namespace rtsl {
 			var decoded = read_interface(interface_bytes);
 			if (!decoded.has<ModuleInterface>()) { return cli_error(decoded.get<artifact_error>().message); };
 			ModuleInterface& interface_module = decoded.get<ModuleInterface>();
-			if (!(@compiler.add_interface(interface_module)).has<void>()) { return rt::runtime::error(cli_diagnostics(compiler.diagnostics())); };
+			if (!(@compiler.add_interface(interface_module)).has<void>()) { return diagnostics_error(cli_diagnostics(compiler.diagnostics())); };
 			for (usize unit = 0; unit < interface_module.units.size(); @unit = unit + 1) {
 				rt::buffer<InterfaceImport>& imports = interface_module.units.data()[unit].imports;
 				for (usize dependency = 0; dependency < imports.size(); @dependency = dependency + 1) {
@@ -167,14 +170,14 @@ namespace rtsl {
 		};
 		if (!interface_output.empty()) {
 			var encoded = @compiler.emit_interface(module);
-			if (!encoded.has<rt::buffer<u08>>()) { return rt::runtime::error(cli_diagnostics(compiler.diagnostics())); };
+			if (!encoded.has<rt::buffer<u08>>()) { return diagnostics_error(cli_diagnostics(compiler.diagnostics())); };
 			rt::buffer<u08>& contents = encoded.get<rt::buffer<u08>>();
 			var saved = rt::fs::write(interface_output, rt::string_view(reinterpret_cast<char*>(contents.data()), contents.size()));
 			if (!saved.has<void>()) { return cli_error("cannot write module interface"); };
 		};
 		if (!write_binary) {
 			var checked = @compiler.analyze();
-			if (checked.has<compilation_error>()) { return rt::runtime::error(cli_diagnostics(compiler.diagnostics())); };
+			if (checked.has<compilation_error>()) { return diagnostics_error(cli_diagnostics(compiler.diagnostics())); };
 			cli_write(2, cli_diagnostics(compiler.diagnostics()));
 			return;
 		};
@@ -183,7 +186,7 @@ namespace rtsl {
 			rt::buffer<ir::Module> modules;
 			if (sources.size()) {
 				var generated = @compiler.compile(module, artifact_kind::object);
-				if (!generated.has<rt::buffer<u08>>()) { return rt::runtime::error(cli_diagnostics(compiler.diagnostics())); };
+				if (!generated.has<rt::buffer<u08>>()) { return diagnostics_error(cli_diagnostics(compiler.diagnostics())); };
 				cli_write(2, cli_diagnostics(compiler.diagnostics()));
 				rt::buffer<u08>& object = generated.get<rt::buffer<u08>>();
 				var object_bytes = rt::span<u08>(object.data(), object.size());
@@ -193,18 +196,19 @@ namespace rtsl {
 			};
 			for (usize index = 0; index < libraries.size(); @index = index + 1) {
 				var loaded = cli_read_module(libraries.data()[index]);
-				@modules.push_back($loaded);
+				if (loaded.has<rt::error>()) { return rt::error(loaded.get<rt::error>()); };
+				@modules.push_back(ir::Module(loaded.get<ir::Module>()));
 			};
 			DiagnosticsEngine messages;
 			var input_modules = rt::span<ir::Module>(modules.data(), modules.size());
 			var linked = link_modules(input_modules, module, @messages, kind);
-			if (!linked.has<ir::Module>()) { return rt::runtime::error(cli_diagnostics(messages.diagnostics())); };
+			if (!linked.has<ir::Module>()) { return diagnostics_error(cli_diagnostics(messages.diagnostics())); };
 			cli_write(2, cli_diagnostics(messages.diagnostics()));
 			@bytes = write_artifact(linked.get<ir::Module>(), kind);
 		}
 		else {
 			var result = @compiler.compile(module, kind);
-			if (!result.has<rt::buffer<u08>>()) { return rt::runtime::error(cli_diagnostics(compiler.diagnostics())); };
+			if (!result.has<rt::buffer<u08>>()) { return diagnostics_error(cli_diagnostics(compiler.diagnostics())); };
 			cli_write(2, cli_diagnostics(compiler.diagnostics()));
 			@bytes = rt::buffer<u08>(result.get<rt::buffer<u08>>());
 		};

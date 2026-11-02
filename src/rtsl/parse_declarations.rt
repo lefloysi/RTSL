@@ -42,6 +42,27 @@ namespace rtsl {
 						@this.error("template constraint requires true or false");
 					};
 				};
+				if (@this.take(token_kind::op_assign)) {
+					@parameter.has_default = true;
+					if (parameter.is_type) {
+						@parameter.default_argument.kind = template_argument_kind::type;
+						@parameter.default_argument.type = @this.type();
+					} else if (this.token(0).kind == token_kind::identifier) {
+						@parameter.default_argument.kind = template_argument_kind::parameter;
+						@parameter.default_argument.parameter = @this.consume();
+					} else {
+						@parameter.default_argument.kind = template_argument_kind::integer;
+						var literal = @this.consume();
+						if (literal.kind != token_kind::literal_number) { @this.error("expected unsigned integer template default"); };
+						for (usize digit = 0; digit < literal.length; @digit = digit + 1) {
+							char character = literal.text().data()[digit];
+							if (character < '0' || character > '9') { @this.error("expected unsigned integer template default"); break; };
+							u32 value = static_cast<u32>(character - '0');
+							if (parameter.default_argument.integer > (u32::max - value) / 10) { @this.error("integer template default exceeds u32 range"); break; };
+							@parameter.default_argument.integer = parameter.default_argument.integer * 10 + value;
+						};
+					};
+				};
 				@value.parameters.push_back($parameter);
 				if (!@this.take(token_kind::punct_comma)) {
 					break;

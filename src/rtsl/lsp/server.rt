@@ -92,10 +92,10 @@ namespace rtsl::lsp {
 };
 
 namespace rtsl {
-	export fn run_lsp(rt::span<rt::string_view> arguments) -> rt::runtime::result {
+	export fn run_lsp(rt::span<rt::string_view> arguments) -> void | rt::error {
 		if (arguments.size() == 2 && arguments.data()[0] == "--check") {
 			var loaded = rt::fs::read(arguments.data()[1]);
-			if (!loaded.has<rt::string>()) { return cli_error("cannot read input source"); };
+			if (!loaded.has<rt::string>()) { return rt::error("rtsl-lsp: cannot read input source"); };
 			lsp::Document document;
 			@document.uri = rt::string(arguments.data()[1]);
 			@document.text = rt::string(loaded.get<rt::string>());
@@ -109,13 +109,13 @@ namespace rtsl {
 		while (true) {
 			var input = lsp::receive();
 			if (input.has<lsp::EndOfInput>()) { break; };
-			if (!input.has<rt::string>()) { return rt::runtime::error("rtsl-lsp: could not read a complete protocol message."); };
+			if (!input.has<rt::string>()) { return rt::error("rtsl-lsp: could not read a complete protocol message."); };
 			var parsed = rt::json_parse(input.get<rt::string>());
 			if (!parsed.has<rt::unique<rt::json_value>>()) { lsp::error_reply(nullptr, -32700, "invalid JSON"); continue; };
 			rt::json_value& request = *parsed.get<rt::unique<rt::json_value>>().get();
 			if (!lsp::dispatch(@documents, request, @shutdown)) { break; };
 		};
 		if (shutdown) { return; };
-		return rt::runtime::error("rtsl-lsp: connection closed before the shutdown request.");
+		return rt::error("rtsl-lsp: connection closed before the shutdown request.");
 	};
 };

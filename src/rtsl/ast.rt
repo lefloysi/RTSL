@@ -60,6 +60,8 @@ namespace rtsl {
 		QualType type;
 		bool is_type;
 		template_constraint constraint;
+		bool has_default;
+		TemplateArgument default_argument;
 	};
 
 	export enum decl_kind : [u08] {

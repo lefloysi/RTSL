@@ -1,5 +1,0 @@
-import <std>;
-
-export struct Camera {
-	mat4 view_projection;
-};

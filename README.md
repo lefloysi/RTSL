@@ -1,6 +1,6 @@
 RTSL is the shader language used by RutileGraphics. Its lexer, parser, retained AST,
 semantic analysis, templates, IR construction, linker, artifact reader/writer and
-command-line tools are written in Rutile under `source/rtsl`.
+command-line tools are written in Rutile under `src/rtsl`.
 
 Build from the Outposts workspace root:
 

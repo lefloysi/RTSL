@@ -328,7 +328,7 @@ bool readTypes(Reader& reader, ir::Module& module) {
 			type.builtin_members.reserve(builtin_members);
 			for (std::uint32_t builtin_index = 0; builtin_index < builtin_members; ++builtin_index) {
 				ir::BuiltinMember member;
-				if (!reader.readEnum(member.builtin, ir::Builtin::builtin_position, "type.builtin_member.builtin") ||
+				if (!reader.readEnum(member.builtin, ir::Builtin::builtin_cull_distance, "type.builtin_member.builtin") ||
 					!reader.readVector(member.member_path, "type.builtin_member.path", readU32Value)) return false;
 				type.builtin_members.push_back(std::move(member));
 			}

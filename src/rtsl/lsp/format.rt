@@ -1,4 +1,5 @@
 struct FormatFiles;
+fn system(char* command) -> i32;
 fn rtsl_format_files_create(char* text, usize size) -> var FormatFiles*;
 fn rtsl_format_files_command(var FormatFiles* files, char* executable, char* assumed) -> char*;
 fn rtsl_format_files_output(var FormatFiles* files, var usize* size) -> char*;
@@ -29,7 +30,7 @@ namespace rtsl::lsp {
 		for (usize index = 0; index < candidates.size(); @index = index + 1) {
 			var command = rtsl_format_files_command(files.get(), candidates.data()[index].c_str(), assumed.c_str());
 			if (!command) { continue; };
-			i32 result = rt::sys::cmd(command);
+			i32 result = system(command);
 			if (result) { continue; };
 			usize size = 0;
 			var output = rtsl_format_files_output(files.get(), &@size);

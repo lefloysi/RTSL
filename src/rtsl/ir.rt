@@ -64,6 +64,9 @@ namespace rtsl::ir {
 		global_invocation_x;
 		global_invocation_y;
 		global_invocation_z;
+		point_size;
+		clip_distance;
+		cull_distance;
 	};
 
 	struct StructMember {

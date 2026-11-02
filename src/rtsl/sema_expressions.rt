@@ -147,7 +147,7 @@ namespace rtsl {
 			else {
 				Type* lhs = this.context->type_at(left.type);
 				Type* rhs = this.context->type_at(right.type);
-				if (lhs && rhs && rhs->kind != type_kind::builtin && (lhs->kind == type_kind::builtin || lhs->name.is("__mat2") || lhs->name.is("__mat3") || lhs->name.is("__mat4"))) {
+				if (lhs && rhs && rhs->kind != type_kind::builtin && (lhs->kind == type_kind::builtin || lhs->name.is("mat2") || lhs->name.is("mat3") || lhs->name.is("mat4"))) {
 					@value.type = QualType(right);
 				};
 			};
@@ -238,6 +238,62 @@ namespace rtsl {
 				return QualType();
 			};
 			var callee = Expr(*target);
+			if (callee.kind == expr_kind::declaration && (callee.location.is("sqrt") || callee.location.is("clamp"))) {
+				usize count = 1;
+				if (callee.location.is("clamp")) { @count = 3; };
+				if (value.arguments.size() != count) { @this.error(callee.location, "intrinsic argument count does not match"); };
+				for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+					discard @this.expression(value.arguments.data()[index], scope, this.builtin(builtin_type::floating));
+				};
+				@value.type = this.builtin(builtin_type::floating);
+				return @this.finish_expression(id, $value);
+			};
+			if ((callee.kind == expr_kind::member && (callee.location.is("size") || callee.location.is("sample"))) || (callee.kind == expr_kind::declaration && callee.location.is("sample") && value.arguments.size())) {
+				QualType receiver;
+				if (callee.kind == expr_kind::member) { @receiver = @this.expression(callee.left, scope, QualType()); }
+				else { @receiver = @this.expression(value.arguments.data()[0], scope, QualType()); };
+				Type* resource = this.context->type_at(receiver.type);
+				if (resource && resource->kind == type_kind::specialization && resource->arguments.size() && (resource->name.is("image_1d") || resource->name.is("image_2d") || resource->name.is("image_3d") || resource->name.is("texture_2d"))) {
+					var element = QualType(resource->arguments.data()[0].type);
+					bool size_2d = resource->name.is("image_2d");
+					bool size_3d = resource->name.is("image_3d");
+					bool texture_2d = resource->name.is("texture_2d");
+					usize expected = 0;
+					if (callee.location.is("sample")) { @expected = 1; };
+					if (callee.kind != expr_kind::member) { @expected = expected + 1; };
+					if (value.arguments.size() != expected) { @this.error(callee.location, "intrinsic argument count does not match"); };
+					for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
+						if (callee.kind != expr_kind::member && index == 0) { continue; };
+						discard @this.expression(value.arguments.data()[index], scope, QualType());
+					};
+					@value.type = QualType(element);
+					if (callee.location.is("sample") && texture_2d) {
+						Type vector;
+						@vector.kind = type_kind::specialization;
+						@vector.name = @this.context->identifier("vec4");
+						TemplateArgument argument;
+						@argument.kind = template_argument_kind::type;
+						@argument.type = QualType(element);
+						@vector.arguments.push_back($argument);
+						@value.type.type = @this.context->add_type($vector);
+					};
+					if (callee.location.is("size")) {
+						@value.type = this.builtin(builtin_type::size);
+						if (size_2d || size_3d) {
+							Type vector;
+							@vector.kind = type_kind::specialization;
+							@vector.name = @this.context->identifier("vec2");
+							if (size_3d) { @vector.name = @this.context->identifier("vec3"); };
+							TemplateArgument argument;
+							@argument.kind = template_argument_kind::type;
+							@argument.type = this.builtin(builtin_type::size);
+							@vector.arguments.push_back($argument);
+							@value.type.type = @this.context->add_type($vector);
+						};
+					};
+					return @this.finish_expression(id, $value);
+				};
+			};
 			if (callee.location.is("barrier")) {
 				if (value.arguments.size()) {
 					@this.error(value.location, "barrier takes no arguments");
@@ -332,7 +388,7 @@ namespace rtsl {
 						continue;
 					};
 					if (requested.size()) {
-						if (candidate.parameters.size() && candidate.parameters.size() != requested.size()) {
+						if (candidate.parameters.size() && candidate.parameters.size() < requested.size()) {
 							continue;
 						};
 						if (!candidate.parameters.size()) {
@@ -397,6 +453,25 @@ namespace rtsl {
 					};
 					for (usize index = 0; index < value.arguments.size(); @index = index + 1) {
 						@this.infer_type(this.context->decl_at(this.context->decl_at(function)->members.data()[index])->type, this.context->expr_at(value.arguments.data()[index])->type, function, @arguments);
+					};
+					for (usize index = 0; index < count; @index = index + 1) {
+						var parameter = TemplateParameter(this.context->decl_at(function)->parameters.data()[index]);
+						if (arguments.data()[index].kind == template_argument_kind::parameter && parameter.has_default) {
+							var argument = TemplateArgument(parameter.default_argument);
+							if (argument.kind == template_argument_kind::parameter) {
+								for (usize prior = 0; prior < index; @prior = prior + 1) {
+									if (this.context->decl_at(function)->parameters.data()[prior].name.same(argument.parameter)) {
+										@argument = TemplateArgument(arguments.data()[prior]);
+										break;
+									};
+								};
+							};
+							if (argument.kind == template_argument_kind::type) {
+								@argument.type = @this.substitute(argument.type, function, @arguments);
+								@argument.type = @this.resolve_type(argument.type, scope, 0);
+							};
+							@(@arguments).data()[index] = $argument;
+						};
 					};
 					bool allowed = true;
 					for (usize index = 0; index < count; @index = index + 1) {

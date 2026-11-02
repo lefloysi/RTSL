@@ -100,6 +100,9 @@ enum class Builtin : std::uint8_t {
 	builtin_global_invocation_x,
 	builtin_global_invocation_y,
 	builtin_global_invocation_z,
+	builtin_point_size,
+	builtin_clip_distance,
+	builtin_cull_distance,
 };
 
 struct BuiltinMember {

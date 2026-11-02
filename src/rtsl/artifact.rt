@@ -216,7 +216,7 @@ namespace rtsl {
 		@writer.byte(0); @writer.byte(0);
 		@writer.byte(1); @writer.byte(0);
 		@writer.word(16909060);
-		@writer.byte(static_cast<u08>(kind)); @writer.byte(7); @writer.byte(0); @writer.byte(0);
+		@writer.byte(static_cast<u08>(kind)); @writer.byte(8); @writer.byte(0); @writer.byte(0);
 		@writer.word(9);
 		var u64 offset = 240;
 		for (usize i = 0; i < 9; @i = i + 1) {

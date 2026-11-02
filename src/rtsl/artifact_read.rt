@@ -144,7 +144,7 @@ namespace rtsl {
 				var builtins = @reader.records();
 				for (usize j = 0; j < builtins; @j = j + 1) {
 					ir::BuiltinMember member;
-					@member.kind = static_cast<ir::builtin>(@reader.enumeration(static_cast<u32>(ir::builtin::position)));
+					@member.kind = static_cast<ir::builtin>(@reader.enumeration(static_cast<u32>(ir::builtin::cull_distance)));
 					@member.member_path = @reader.words();
 					@value.builtin_members.push_back($member);
 				};
@@ -351,7 +351,7 @@ namespace rtsl {
 	struct ArtifactSection { u32 kind; usize offset; usize size; };
 
 	fn decode_artifact(rt::span<u08> bytes) -> Artifact {
-		var reader = BinaryReader(bytes, 0, 7);
+		var reader = BinaryReader(bytes, 0, 8);
 		var rt::string_view magic = "RTSLRTIR";
 		for (usize i = 0; i < 8; @i = i + 1) {
 			if (@reader.byte() != static_cast<u08>(magic.data()[i])) { reader.fail(artifact_error_code::invalid_magic, "artifact magic does not identify RTIR"); };
@@ -364,7 +364,7 @@ namespace rtsl {
 		var reserved_a = @reader.byte();
 		var reserved_b = @reader.byte();
 		var count = @reader.word();
-		if (major || minor != 1 || patch > 7) { reader.fail(artifact_error_code::unsupported_version, "artifact version is not supported"); };
+		if (major || minor != 1 || patch > 8) { reader.fail(artifact_error_code::unsupported_version, "artifact version is not supported"); };
 		if (endian != 16909060) { reader.fail(artifact_error_code::wrong_endian_marker, "artifact endian marker is invalid"); };
 		if (kind > 2) { reader.fail(artifact_error_code::invalid_enum, "artifact kind is invalid"); };
 		if (reserved_a || reserved_b || count != 9 || bytes.size() < 240) { reader.fail(artifact_error_code::invalid_directory, "artifact must contain the complete RTIR section set"); };

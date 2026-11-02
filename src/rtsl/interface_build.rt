@@ -157,7 +157,7 @@ namespace rtsl {
 				for (usize j = 0; j < declaration->parameters.size(); @j = j + 1) {
 					@value.template_parameters.push_back(rt::string(declaration->parameters.data()[j].name.text()));
 				};
-				if (declaration->parameters.size() && declaration->body) {
+				if (declaration->parameters.size()) {
 					usize begin = declaration->source_begin;
 					usize end = declaration->source_end;
 					var text = source.text();

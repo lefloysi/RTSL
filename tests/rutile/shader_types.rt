@@ -1,0 +1,74 @@
+fn puts(char* text) -> i32;
+
+[[test]]
+fn default_template_arguments_and_builtin_shader_types() {
+	rtsl::SourceFile source;
+	@source.assign("intrinsics.rtsl", "template<typename T = f32, usize N = 3> struct Example { T value; }; var Example first; var Example<i32> second; var Example<u32, 2> third; var vec2 coordinates; var vec3<usize> extents; var texture_2d<f32> texture; fn component(vec2 value) -> f32 { return value.x; };");
+	var lexer = rtsl::Lexer(@source);
+	rt::test::expect((@lexer.scan()).has<void>());
+	rtsl::ASTContext context;
+	rtsl::DiagnosticsEngine diagnostics;
+	var parser = rtsl::Parser(@source, @context, @diagnostics);
+	var parsed = @parser.parse();
+	if (!parsed.has<void>()) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) {
+			discard puts(diagnostics.diagnostics().data()[i].message.c_str());
+		};
+	};
+	rt::test::expect(parsed.has<void>());
+	var sema = rtsl::Sema(@context, @diagnostics);
+	var analyzed = @sema.analyze();
+	if (!analyzed.has<void>()) {
+		for (usize i = 0; i < diagnostics.diagnostics().size(); @i = i + 1) {
+			discard puts(diagnostics.diagnostics().data()[i].message.c_str());
+		};
+	};
+	rt::test::expect(analyzed.has<void>());
+	usize found = 0;
+	for (usize i = 0; i < context.declarations.size(); @i = i + 1) {
+		rtsl::Decl& declaration = context.declarations.data()[i];
+		if (declaration.name.is("first") || declaration.name.is("second") || declaration.name.is("third")) {
+			var type = context.type_at(declaration.type.type);
+			rt::test::expect(type && type->kind == rtsl::type_kind::specialization && type->arguments.size() == 2);
+			if (type && type->arguments.size() == 2) {
+				if (declaration.name.is("third")) { rt::test::expect(type->arguments.data()[1].integer == 2); }
+				else { rt::test::expect(type->arguments.data()[1].integer == 3); };
+				var element = context.type_at(type->arguments.data()[0].type.type);
+				rt::test::expect(element && element->kind == rtsl::type_kind::builtin);
+				if (element) {
+					if (declaration.name.is("first")) { rt::test::expect(element->builtin == rtsl::builtin_type::floating); }
+					else if (declaration.name.is("second")) { rt::test::expect(element->builtin == rtsl::builtin_type::signed_integer); }
+					else { rt::test::expect(element->builtin == rtsl::builtin_type::unsigned_integer); };
+				};
+			};
+			@found = found + 1;
+		};
+	};
+	rt::test::expect(found == 3);
+};
+
+[[test]]
+fn builtin_shader_operations_compile_without_standard_stubs() {
+	rtsl::CompilerInstance compiler;
+	@compiler.add_source("intrinsic-geometry.rtsl", "struct Vertex { vec4 position; }; [[stage : geometry]] fn main(triangle<Vertex> input) -> triangle_strip<Vertex, 3> { emit input[0]; emit end; };");
+	var artifact = @compiler.compile("intrinsic-geometry", rtsl::artifact_kind::object);
+	if (!artifact.has<rt::buffer<u08>>()) {
+		for (usize i = 0; i < compiler.diagnostics().size(); @i = i + 1) {
+			discard puts(compiler.diagnostics().data()[i].message.c_str());
+		};
+	};
+	rt::test::expect(artifact.has<rt::buffer<u08>>());
+};
+
+[[test]]
+fn builtin_image_size_and_math_compile_without_standard_stubs() {
+	rtsl::CompilerInstance compiler;
+	@compiler.add_source("intrinsic-compute.rtsl", "var image_2d<vec4> target; [[stage : compute]] [[workgroup_size(8, 8, 1)]] fn main(usize x, usize y, usize z) { var vec2<usize> extent = target.size(); var f32 intensity = clamp(sqrt(1.0), 0.0, 1.0); target[x, y] = vec4(intensity, 0.0, 0.0, 1.0); };");
+	var artifact = @compiler.compile("intrinsic-compute", rtsl::artifact_kind::object);
+	if (!artifact.has<rt::buffer<u08>>()) {
+		for (usize i = 0; i < compiler.diagnostics().size(); @i = i + 1) {
+			discard puts(compiler.diagnostics().data()[i].message.c_str());
+		};
+	};
+	rt::test::expect(artifact.has<rt::buffer<u08>>());
+};

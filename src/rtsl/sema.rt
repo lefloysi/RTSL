@@ -39,6 +39,114 @@ namespace rtsl {
 			@type.type = @context.add_type($value);
 			@this.builtins.push_back($type);
 		};
+		for (u32 index = 0; index < 27; @index = index + 1) {
+			Decl intrinsic;
+			@intrinsic.kind = decl_kind::record;
+			@intrinsic.parent = context.root;
+			@intrinsic.complete = true;
+			if (index == 0) { @intrinsic.name = @context.identifier("vec2"); }
+			else if (index == 1) { @intrinsic.name = @context.identifier("vec3"); }
+			else if (index == 2) { @intrinsic.name = @context.identifier("vec4"); }
+			else if (index == 3) { @intrinsic.name = @context.identifier("mat2"); }
+			else if (index == 4) { @intrinsic.name = @context.identifier("mat3"); }
+			else if (index == 5) { @intrinsic.name = @context.identifier("mat4"); }
+			else if (index == 6) { @intrinsic.name = @context.identifier("texture_1d"); }
+			else if (index == 7) { @intrinsic.name = @context.identifier("texture_2d"); }
+			else if (index == 8) { @intrinsic.name = @context.identifier("texture_3d"); }
+			else if (index == 9) { @intrinsic.name = @context.identifier("triangle"); }
+			else if (index == 10) { @intrinsic.name = @context.identifier("patch"); }
+			else if (index == 11) { @intrinsic.name = @context.identifier("triangle_patch"); }
+			else if (index == 12) { @intrinsic.name = @context.identifier("quad_patch"); }
+			else if (index == 13) { @intrinsic.name = @context.identifier("isoline_patch"); }
+			else if (index == 14) { @intrinsic.name = @context.identifier("tessellation"); }
+			else if (index == 15) { @intrinsic.name = @context.identifier("equal"); }
+			else if (index == 16) { @intrinsic.name = @context.identifier("fractional_even"); }
+			else if (index == 17) { @intrinsic.name = @context.identifier("fractional_odd"); }
+			else if (index == 18) { @intrinsic.name = @context.identifier("cw"); }
+			else if (index == 19) { @intrinsic.name = @context.identifier("ccw"); }
+			else if (index == 20) { @intrinsic.name = @context.identifier("sampler"); }
+			else if (index == 21) { @intrinsic.name = @context.identifier("buffer"); }
+			else if (index == 22) { @intrinsic.name = @context.identifier("image_1d"); }
+			else if (index == 23) { @intrinsic.name = @context.identifier("image_2d"); }
+			else if (index == 24) { @intrinsic.name = @context.identifier("image_3d"); }
+			else if (index == 25) { @intrinsic.name = @context.identifier("End"); }
+			else { @intrinsic.name = @context.identifier("triangle_strip"); };
+			TemplateParameter element;
+			@element.name = @context.identifier("T");
+			@element.is_type = true;
+			if (index < 6) {
+				@element.has_default = true;
+				@element.default_argument.kind = template_argument_kind::type;
+				@element.default_argument.type = this.builtin(builtin_type::floating);
+			};
+			if (index < 15 || (index >= 21 && index <= 24) || index == 26) { @intrinsic.parameters.push_back($element); };
+			if (index == 21) {
+				TemplateParameter element_type;
+				@element_type.name = @context.identifier("Element");
+				@element_type.is_type = true;
+				@intrinsic.parameters.push_back($element_type);
+			};
+			if (index == 26) {
+				TemplateParameter count;
+				@count.name = @context.identifier("N");
+				@count.type = this.builtin(builtin_type::size);
+				@intrinsic.parameters.push_back($count);
+			};
+			u32 declaration = @context.add_decl($intrinsic);
+			@(@context.decl_at(context.root))->members.push_back(declaration);
+			if (index == 25) {
+				Type end_type;
+				@end_type.kind = type_kind::named;
+				@end_type.name = @context.identifier("End");
+				Decl end_value;
+				@end_value.kind = decl_kind::variable;
+				@end_value.name = @context.identifier("end");
+				@end_value.parent = context.root;
+				@end_value.type.type = @context.add_type($end_type);
+				@end_value.type.constant = true;
+				u32 id = @context.add_decl($end_value);
+				@(@context.decl_at(context.root))->members.push_back(id);
+			};
+			if (index == 26) {
+				for (u32 operation = 0; operation < 2; @operation = operation + 1) {
+					Type element_type;
+					@element_type.kind = type_kind::named;
+					@element_type.name = @context.identifier("T");
+					if (operation == 1) { @element_type.name = @context.identifier("End"); };
+					QualType parameter_type;
+					@parameter_type.type = @context.add_type($element_type);
+					Type strip_type;
+					@strip_type.kind = type_kind::specialization;
+					@strip_type.name = @context.identifier("triangle_strip");
+					Type template_type;
+					@template_type.kind = type_kind::named;
+					@template_type.name = @context.identifier("T");
+					TemplateArgument element_argument;
+					@element_argument.kind = template_argument_kind::type;
+					@element_argument.type.type = @context.add_type($template_type);
+					@strip_type.arguments.push_back($element_argument);
+					TemplateArgument count_argument;
+					@count_argument.kind = template_argument_kind::parameter;
+					@count_argument.parameter = @context.identifier("N");
+					@strip_type.arguments.push_back($count_argument);
+					Decl emit;
+					@emit.kind = decl_kind::function;
+					@emit.name = @context.identifier("operator<-");
+					@emit.parent = declaration;
+					@emit.implicit_decl = true;
+					@emit.type.type = @context.add_type($strip_type);
+					u32 emit_id = @context.add_decl($emit);
+					Decl parameter;
+					@parameter.kind = decl_kind::parameter;
+					@parameter.name = @context.identifier("emitted");
+					@parameter.parent = emit_id;
+					@parameter.type = $parameter_type;
+					u32 parameter_id = @context.add_decl($parameter);
+					@(@context.decl_at(emit_id))->members.push_back(parameter_id);
+					@(@context.decl_at(declaration))->members.push_back(emit_id);
+				};
+			};
+		};
 	};
 
 	export fn Sema::builtin(Sema& this, builtin_type kind) -> QualType {
@@ -55,7 +163,7 @@ namespace rtsl {
 			for (usize index = 0; index < this.context->declarations.size(); @index = index + 1) {
 				Decl& candidate = this.context->declarations.data()[index];
 				bool is_type = candidate.kind == decl_kind::record || candidate.kind == decl_kind::type_alias;
-				if (candidate.parent != scope || is_type != types || !candidate.name.same(name)) {
+				if (candidate.parent != scope || is_type != types || !candidate.name.same(name) || (types && candidate.template_pattern)) {
 					continue;
 				};
 				if (!types && candidate.kind == decl_kind::variable && candidate.name.source == name.source && candidate.name.begin > name.begin) {
@@ -96,6 +204,39 @@ namespace rtsl {
 			return $value;
 		};
 		var name = Token(type->name);
+		if (type->kind == type_kind::named || type->kind == type_kind::specialization) {
+			u32 generic = this.lookup(name, scope, true);
+			if (generic && this.context->decl_at(generic)->kind == decl_kind::record && this.context->decl_at(generic)->parameters.size()) {
+				var expanded = Type(*type);
+				bool named = type->kind == type_kind::named;
+				usize provided = expanded.arguments.size();
+				usize count = this.context->decl_at(generic)->parameters.size();
+				if (provided < count) {
+					for (usize index = provided; index < count; @index = index + 1) {
+						var parameter = TemplateParameter(this.context->decl_at(generic)->parameters.data()[index]);
+						if (!parameter.has_default) { break; };
+						var argument = TemplateArgument(parameter.default_argument);
+						if (argument.kind == template_argument_kind::parameter) {
+							for (usize prior = 0; prior < index; @prior = prior + 1) {
+								if (this.context->decl_at(generic)->parameters.data()[prior].name.same(argument.parameter)) {
+									@argument = TemplateArgument(expanded.arguments.data()[prior]);
+									break;
+								};
+							};
+						};
+						if (argument.kind == template_argument_kind::type) {
+							@argument.type = @this.substitute(argument.type, generic, @expanded.arguments);
+						};
+						@expanded.arguments.push_back($argument);
+					};
+				};
+				if (provided != expanded.arguments.size() || named) {
+					@expanded.kind = type_kind::specialization;
+					@value.type = @this.context->add_type($expanded);
+					return @this.resolve_type($value, scope, depth + 1);
+				};
+			};
+		};
 		if (type->kind == type_kind::specialization) {
 			for (usize index = 0; index < type->arguments.size(); @index = index + 1) {
 				var TemplateArgument& argument = @(@type->arguments).data()[index];
@@ -247,6 +388,10 @@ namespace rtsl {
 	};
 
 	export fn Sema::member(Sema& this, QualType type, Token& name) -> u32 {
+		Type* resource = this.context->type_at(type.type);
+		if (resource && resource->kind == type_kind::specialization && resource->name.is("buffer") && resource->arguments.size() == 2) {
+			return this.member(resource->arguments.data()[0].type, name);
+		};
 		u32 record = this.record_for(type);
 		usize depth = 0;
 		while (record && depth < 128) {
