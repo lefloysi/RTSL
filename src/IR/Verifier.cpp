@@ -39,9 +39,18 @@ VerificationResult verify(const Module& module) {
 		for (TypeId parameter : type.parameter_types) require_type(parameter, "parameter type");
 		for (const StructMember& member : type.members) require_type(member.type, "member type");
 		for (const BuiltinMember& member : type.builtin_members) {
-			if (type.kind != TypeKind::type_structure || member.member_path.empty() || member.member_path.front() >= type.members.size())
-				result.add(VerificationCode::verification_invalid_metadata, std::format("type {}", type.id.value()),
-					"builtin member path does not identify a structure member");
+			const Type* current = &type;
+			bool valid = !member.member_path.empty();
+			for (std::uint32_t index : member.member_path) {
+				if (!current || current->kind != TypeKind::type_structure || index >= current->members.size()) {
+					valid = false;
+					break;
+				}
+				current = module.findType(current->members[index].type);
+			}
+			if (!valid || !current) {
+				result.add(VerificationCode::verification_invalid_metadata, context, "builtin member path does not identify a structure member");
+			}
 		}
 	}
 

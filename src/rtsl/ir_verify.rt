@@ -228,7 +228,17 @@ namespace rtsl {
 			};
 			for (usize j = 0; j < type->builtin_members.size(); @j = j + 1) {
 				var member = &type->builtin_members.data()[j];
-				if (type->kind != ir::type_kind::structure || !member->member_path.size() || static_cast<usize>(member->member_path.data()[0]) >= type->members.size()) { ir_issue(@diagnostics, "builtin member path does not identify a structure member"); };
+				var current = type;
+				bool valid = member->member_path.size() != 0;
+				for (usize k = 0; k < member->member_path.size(); @k = k + 1) {
+					usize index = static_cast<usize>(member->member_path.data()[k]);
+					if (!current || current->kind != ir::type_kind::structure || index >= current->members.size()) {
+						@valid = false;
+						break;
+					};
+					@current = module.find_type(current->members.data()[index].type);
+				};
+				if (!valid || !current) { ir_issue(@diagnostics, "builtin member path does not identify a structure member"); };
 			};
 		};
 		@ids.clear();
